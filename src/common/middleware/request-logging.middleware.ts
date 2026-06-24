@@ -25,6 +25,11 @@ export function requestLogger(
         : randomUUID();
     const start = Date.now();
 
+    // Attach request ID to request object for access in controllers/services
+    if (req) {
+      req.requestId = id;
+    }
+
     if (res && typeof res.setHeader === 'function') {
       try {
         res.setHeader('x-request-id', id);

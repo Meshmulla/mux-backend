@@ -22,15 +22,18 @@ import {
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { CacheService } from '../common/cache/cache.service';
 
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
+  private readonly TRANSACTION_CACHE_TTL = 300000; // 5 minutes
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly balanceIndexer: BalanceIndexerService,
     private readonly webhookEventEmitter: WebhookEventEmitterService,
+    private readonly cache: CacheService,
   ) {}
 
   /**
@@ -171,9 +174,18 @@ export class TransactionsService {
   }
 
   /**
-   * Find a transaction by ID
+   * Find a transaction by ID with caching
    */
   async findOne(id: string): Promise<TransactionEntity> {
+    const cacheKey = `transaction:${id}`;
+
+    // Check cache first
+    const cachedTransaction = this.cache.get<TransactionEntity>(cacheKey);
+    if (cachedTransaction) {
+      this.logger.debug(`Cache hit for transaction ${id}`);
+      return cachedTransaction;
+    }
+
     const transaction = await this.prisma.transaction.findUnique({
       where: { id },
     });
@@ -182,7 +194,12 @@ export class TransactionsService {
       throw new NotFoundException(`Transaction ${id} not found`);
     }
 
-    return this.mapPrismaToEntity(transaction);
+    const entity = this.mapPrismaToEntity(transaction);
+
+    // Store in cache
+    this.cache.set(cacheKey, entity, this.TRANSACTION_CACHE_TTL);
+
+    return entity;
   }
 
   /**
@@ -248,6 +265,9 @@ export class TransactionsService {
       where: { id },
       data: updateData,
     });
+
+    // Invalidate cache for this transaction
+    this.cache.delete(`transaction:${id}`);
 
     this.logger.log(
       `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,

@@ -7,6 +7,7 @@ import { TransactionsService } from './transactions.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { CacheService } from '../common/cache/cache.service';
 import { TransactionStatus } from './domain/transaction.model';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { AssetType } from '../balance-indexer/domain/balance.model';
@@ -70,6 +71,7 @@ const baseDto = {
 
 describe('TransactionsService', () => {
   let service: TransactionsService;
+  let cacheService: CacheService;
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -77,6 +79,7 @@ describe('TransactionsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TransactionsService,
+        CacheService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: BalanceIndexerService, useValue: mockBalanceIndexer },
         { provide: WebhookEventEmitterService, useValue: mockWebhookEmitter },
@@ -84,6 +87,7 @@ describe('TransactionsService', () => {
     }).compile();
 
     service = module.get<TransactionsService>(TransactionsService);
+    cacheService = module.get<CacheService>(CacheService);
   });
 
   it('should be defined', () => {
@@ -202,6 +206,40 @@ describe('TransactionsService', () => {
     });
   });
 
+  describe('findOne', () => {
+    it('retrieves transaction from database when not cached', async () => {
+      const tx = makePrismaTransaction();
+      mockPrisma.transaction.findUnique.mockResolvedValue(tx);
+
+      const result = await service.findOne('tx-1');
+
+      expect(result.id).toBe('tx-1');
+      expect(mockPrisma.transaction.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it('retrieves transaction from cache on subsequent calls', async () => {
+      const tx = makePrismaTransaction();
+      mockPrisma.transaction.findUnique.mockResolvedValue(tx);
+
+      // First call - should hit database
+      const result1 = await service.findOne('tx-1');
+      expect(mockPrisma.transaction.findUnique).toHaveBeenCalledTimes(1);
+
+      // Second call - should hit cache
+      const result2 = await service.findOne('tx-1');
+      expect(mockPrisma.transaction.findUnique).toHaveBeenCalledTimes(1); // Still 1, not 2
+      expect(result2).toEqual(result1);
+    });
+
+    it('throws NotFoundException when transaction does not exist', async () => {
+      mockPrisma.transaction.findUnique.mockResolvedValue(null);
+
+      await expect(service.findOne('nonexistent')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
   describe('updateStatus', () => {
     it('updates status with valid transition', async () => {
       const existing = makePrismaTransaction({ status: TransactionStatus.PENDING });
@@ -231,6 +269,30 @@ describe('TransactionsService', () => {
       await expect(
         service.updateStatus('tx-1', { status: TransactionStatus.PENDING }),
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('invalidates cache when transaction is updated', async () => {
+      const existing = makePrismaTransaction({ status: TransactionStatus.PENDING });
+      const tx = makePrismaTransaction();
+      const updated = makePrismaTransaction({ status: TransactionStatus.SUBMITTED });
+
+      // Populate cache by calling findOne
+      mockPrisma.transaction.findUnique.mockResolvedValueOnce(tx);
+      await service.findOne('tx-1');
+
+      // Update status
+      mockPrisma.transaction.findUnique.mockResolvedValueOnce(existing);
+      mockPrisma.transaction.update.mockResolvedValue(updated);
+
+      await service.updateStatus('tx-1', {
+        status: TransactionStatus.SUBMITTED,
+      });
+
+      // Cache should be cleared, so next findOne should hit database
+      mockPrisma.transaction.findUnique.mockResolvedValueOnce(updated);
+      await service.findOne('tx-1');
+
+      expect(mockPrisma.transaction.findUnique).toHaveBeenCalledTimes(3);
     });
 
     it('emits transaction.pending webhook on SUBMITTED status', async () => {
