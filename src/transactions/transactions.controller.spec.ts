@@ -77,7 +77,8 @@ describe('TransactionsController', () => {
 
     it('should return the result from the service', async () => {
       const tx = { id: 'tx-1', status: TransactionStatus.PENDING };
-      mockTransactionsService.findByWallet.mockResolvedValue([tx]);
+      const paginated = { data: [tx], total: 1, limit: 20, offset: 0, hasMore: false };
+      mockTransactionsService.findByWallet.mockResolvedValue(paginated);
 
       const result = await controller.findByWallet(
         'wallet-1',
@@ -85,7 +86,7 @@ describe('TransactionsController', () => {
         undefined,
       );
 
-      expect(result).toEqual([tx]);
+      expect(result).toEqual(paginated);
     });
   });
 

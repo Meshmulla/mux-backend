@@ -3,7 +3,6 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
-  Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
@@ -20,6 +19,7 @@ import {
   StellarNetworkReferences,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
+import { PaginatedTransactionsDto } from './dto/paginated-transactions.dto';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
@@ -137,7 +137,7 @@ export class TransactionsService {
   }
 
   /**
-   * Find all transactions with optional filters
+   * Find all transactions with optional filters, returns paginated response
    */
   async findAll(filters?: {
     senderWalletId?: string;
@@ -145,7 +145,7 @@ export class TransactionsService {
     status?: TransactionStatus;
     limit?: number;
     offset?: number;
-  }): Promise<TransactionEntity[]> {
+  }): Promise<PaginatedTransactionsDto> {
     const where: any = {};
 
     if (filters?.senderWalletId) {
@@ -160,14 +160,26 @@ export class TransactionsService {
       where.status = filters.status;
     }
 
-    const transactions = await this.prisma.transaction.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: filters?.limit,
-      skip: filters?.offset,
-    });
+    const limit = filters?.limit ?? 20;
+    const offset = filters?.offset ?? 0;
 
-    return transactions.map((t) => this.mapPrismaToEntity(t));
+    const [transactions, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.transaction.count({ where }),
+    ]);
+
+    return {
+      data: transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+      limit,
+      offset,
+      hasMore: offset + transactions.length < total,
+    };
   }
 
   /**
@@ -274,12 +286,12 @@ export class TransactionsService {
   }
 
   /**
-   * Find transactions by wallet ID with pagination
+   * Find transactions by wallet ID with pagination metadata
    */
   async findByWallet(
     walletId: string,
     pagination?: { limit?: number; offset?: number },
-  ): Promise<TransactionEntity[]> {
+  ): Promise<PaginatedTransactionsDto> {
     const wallet = await this.prisma.wallet.findUnique({
       where: { id: walletId },
     });
@@ -288,16 +300,29 @@ export class TransactionsService {
       throw new NotFoundException(`Wallet ${walletId} not found`);
     }
 
-    const transactions = await this.prisma.transaction.findMany({
-      where: {
-        OR: [{ senderWalletId: walletId }, { receiverWalletId: walletId }],
-      },
-      orderBy: { createdAt: 'desc' },
-      take: pagination?.limit,
-      skip: pagination?.offset,
-    });
+    const limit = pagination?.limit ?? 20;
+    const offset = pagination?.offset ?? 0;
+    const where = {
+      OR: [{ senderWalletId: walletId }, { receiverWalletId: walletId }],
+    };
 
-    return transactions.map((t) => this.mapPrismaToEntity(t));
+    const [transactions, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.transaction.count({ where }),
+    ]);
+
+    return {
+      data: transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+      limit,
+      offset,
+      hasMore: offset + transactions.length < total,
+    };
   }
 
   /**
