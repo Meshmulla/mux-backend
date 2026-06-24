@@ -5,10 +5,11 @@ import { AuthRateLimitService } from './auth-rate-limit.service';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { IdempotentUserModule } from '../users/idempotent-user.module';
 import { WalletsModule } from '../wallets/wallets.module';
+import { PrismaModule } from '../prisma/prisma.module';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 
 @Module({
-  imports: [IdempotentUserModule, WalletsModule],
+  imports: [PrismaModule, IdempotentUserModule, WalletsModule],
   controllers: [AuthOrchestratorController],
   providers: [
     AuthOrchestrator,
