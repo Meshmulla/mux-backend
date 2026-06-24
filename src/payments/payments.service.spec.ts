@@ -36,6 +36,7 @@ describe('PaymentsService', () => {
         findMany: jest.fn(),
         findUnique: jest.fn(),
         update: jest.fn(),
+        count: jest.fn(),
       },
     };
     limitsService = { checkLimits: jest.fn() };
