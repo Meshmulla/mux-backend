@@ -18,10 +18,12 @@ import {
   RateLimitGuard,
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
+import { FeatureFlagGuard, FeatureFlag } from '../common/feature-flags/feature-flag.guard';
 import { TransactionStatus } from './domain/transaction.model';
 
 @Controller('transactions')
-@UseGuards(ApiKeyGuard, RateLimitGuard)
+@UseGuards(ApiKeyGuard, RateLimitGuard, FeatureFlagGuard)
+@FeatureFlag('transactions_enabled')
 export class TransactionsController {
   constructor(
     private readonly transactionsService: TransactionsService,
