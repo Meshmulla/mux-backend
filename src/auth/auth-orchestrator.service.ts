@@ -20,6 +20,7 @@ import {
 import { WalletNetwork } from '../wallets/domain/wallet.model';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { retryWithBackoff } from './auth-retry.helper';
 
 export interface AuthenticationRequest {
   authId: string;
@@ -314,7 +315,8 @@ export class AuthOrchestrator {
   }
 
   /**
-   * Step 1: Find or create user using idempotent service
+   * Step 1: Find or create user using idempotent service.
+   * Retries on transient connectivity errors with exponential backoff.
    */
   private async findOrCreateUser(
     request: AuthenticationRequest,
@@ -326,11 +328,14 @@ export class AuthOrchestrator {
       authProvider: request.authProvider || 'UNKNOWN',
     };
 
-    return await this.idempotentUserService.findOrCreateUser(userRequest);
+    return retryWithBackoff(() =>
+      this.idempotentUserService.findOrCreateUser(userRequest),
+    );
   }
 
   /**
-   * Step 2: Ensure user has a wallet on the specified network
+   * Step 2: Ensure user has a wallet on the specified network.
+   * Retries on transient connectivity errors with exponential backoff.
    */
   private async ensureUserHasWallet(
     userId: string,
@@ -338,8 +343,9 @@ export class AuthOrchestrator {
     isNewUser: boolean,
   ) {
     // Check if wallet already exists
-    const existingWallet =
-      await this.walletCreationOrchestrator.getWalletByUser(userId, network);
+    const existingWallet = await retryWithBackoff(() =>
+      this.walletCreationOrchestrator.getWalletByUser(userId, network),
+    );
 
     if (existingWallet) {
       this.logger.log(`User ${userId} already has wallet on ${network}`);
@@ -357,8 +363,9 @@ export class AuthOrchestrator {
       idempotencyKey: `auth-wallet-${userId}-${network}`, // Idempotency key for safety
     };
 
-    const walletResult =
-      await this.walletCreationOrchestrator.createWallet(walletRequest);
+    const walletResult = await retryWithBackoff(() =>
+      this.walletCreationOrchestrator.createWallet(walletRequest),
+    );
 
     return {
       wallet: walletResult.wallet,
