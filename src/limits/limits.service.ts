@@ -3,10 +3,12 @@ import {
   NotFoundException,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 export const LIMIT_ERROR_CODES = {
   PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
@@ -27,7 +29,12 @@ export class LimitExceededException extends HttpException {
 
 @Injectable()
 export class LimitsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(LimitsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly requestContext: RequestContextService,
+  ) {}
 
   async setLimits(walletId: string, daily: number, perTx: number) {
     return this.prisma.walletLimit.upsert({
@@ -42,8 +49,13 @@ export class LimitsService {
   }
 
   async checkLimits(walletId: string, amount: number): Promise<void> {
+    const requestId = this.requestContext.getRequestId();
     const limits = await this.getLimits(walletId);
     if (!limits) return;
+
+    this.logger.log(
+      `Checking limits walletId=${walletId} amount=${amount} requestId=${requestId}`,
+    );
 
     // Enforce per-transaction cap: a cap of 0 blocks all transactions
     if (

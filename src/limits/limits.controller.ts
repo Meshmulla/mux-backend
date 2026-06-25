@@ -7,6 +7,7 @@ import {
   Delete,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -17,9 +18,15 @@ import {
 } from '@nestjs/swagger';
 import { LimitsService } from './limits.service';
 import { SetLimitsDto } from './dto/set-limits.dto';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 
 @ApiTags('limits')
 @Controller('wallets/:walletId/limits')
+@UseGuards(FeatureFlagGuard)
+@FeatureFlag('limits_api')
 export class LimitsController {
   constructor(private readonly limitsService: LimitsService) {}
 

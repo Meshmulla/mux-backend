@@ -6,6 +6,7 @@ import { LimitsService } from '../limits/limits.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 const ACTIVE_WALLET = { id: 'wallet-uuid-sender', status: WalletStatus.ACTIVE };
 const RECEIVER_WALLET = {
@@ -28,6 +29,7 @@ describe('PaymentsService', () => {
   let prisma: any;
   let limitsService: any;
   let walletsService: any;
+  let requestContext: any;
 
   beforeEach(async () => {
     prisma = {
@@ -41,6 +43,7 @@ describe('PaymentsService', () => {
     };
     limitsService = { checkLimits: jest.fn() };
     walletsService = { findWalletById: jest.fn() };
+    requestContext = { getRequestId: jest.fn().mockReturnValue('test-req-id') };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -48,6 +51,7 @@ describe('PaymentsService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: LimitsService, useValue: limitsService },
         { provide: WalletsService, useValue: walletsService },
+        { provide: RequestContextService, useValue: requestContext },
       ],
     }).compile();
 
@@ -197,6 +201,39 @@ describe('PaymentsService', () => {
         skip: 20,
         take: 20,
       });
+    });
+  });
+
+  describe('request id propagation', () => {
+    it('should call getRequestId when creating a payment', async () => {
+      walletsService.findWalletById
+        .mockResolvedValueOnce(ACTIVE_WALLET)
+        .mockResolvedValueOnce(RECEIVER_WALLET);
+      limitsService.checkLimits.mockResolvedValue(undefined);
+      prisma.payment.create.mockResolvedValue({
+        id: 1,
+        ...BASE_DTO,
+        status: PaymentStatus.PENDING,
+      });
+
+      await service.create(BASE_DTO);
+
+      expect(requestContext.getRequestId).toHaveBeenCalled();
+    });
+
+    it('should call getRequestId when updating a payment', async () => {
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.PENDING,
+      });
+      prisma.payment.update.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.CONFIRMED,
+      });
+
+      await service.update('1', { status: PaymentStatus.CONFIRMED });
+
+      expect(requestContext.getRequestId).toHaveBeenCalled();
     });
   });
 

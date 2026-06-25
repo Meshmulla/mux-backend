@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { LimitsService, LimitExceededException } from './limits.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 describe('LimitsService', () => {
   let service: LimitsService;
@@ -22,7 +23,14 @@ describe('LimitsService', () => {
     };
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [LimitsService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        LimitsService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: RequestContextService,
+          useValue: { getRequestId: jest.fn().mockReturnValue('test-req-id') },
+        },
+      ],
     }).compile();
 
     service = module.get<LimitsService>(LimitsService);

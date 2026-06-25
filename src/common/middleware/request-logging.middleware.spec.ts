@@ -1,5 +1,6 @@
 import requestLogger from './request-logging.middleware';
 import { Logger } from '@nestjs/common';
+import { RequestContextService } from '../request-context/request-context.service';
 
 describe('requestLogger', () => {
   beforeEach(() => jest.restoreAllMocks());
@@ -107,5 +108,33 @@ describe('requestLogger', () => {
     requestLogger(req, res, next as any);
 
     expect(req.requestId).toBe(existingId);
+  });
+
+  it('propagates request ID into RequestContextService async context', () => {
+    const req: any = {
+      method: 'GET',
+      originalUrl: '/test',
+      headers: {},
+      ip: '1.2.3.4',
+    };
+    const res: any = {
+      setHeader: jest.fn(),
+      on: jest.fn(),
+      statusCode: 200,
+    };
+
+    let capturedRequestId: string | undefined;
+    const next = jest.fn().mockImplementation(() => {
+      const service = new RequestContextService();
+      capturedRequestId = service.getRequestId();
+    });
+
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+
+    requestLogger(req, res, next as any);
+
+    expect(next).toHaveBeenCalled();
+    expect(capturedRequestId).toBeDefined();
+    expect(capturedRequestId).toBe(req.requestId);
   });
 });

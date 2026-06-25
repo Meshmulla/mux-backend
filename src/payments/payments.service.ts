@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
@@ -12,6 +13,7 @@ import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 import { PaginationDto, PaginatedResponse } from '../common/dto/pagination.dto';
 import { PaymentsFilterDto } from './dto/payments-filter.dto';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -22,13 +24,17 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
 
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly limitsService: LimitsService,
     private readonly walletsService: WalletsService,
+    private readonly requestContext: RequestContextService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
+    const requestId = this.requestContext.getRequestId();
     const {
       walletId,
       receiverWalletId,
@@ -38,6 +44,10 @@ export class PaymentsService {
       currency,
       description,
     } = createPaymentDto;
+
+    this.logger.log(
+      `Creating payment walletId=${walletId} amount=${amount} requestId=${requestId}`,
+    );
 
     const senderWallet = await this.walletsService.findWalletById(walletId);
     if (senderWallet.status !== WalletStatus.ACTIVE) {
@@ -49,7 +59,7 @@ export class PaymentsService {
     await this.walletsService.findWalletById(receiverWalletId);
     await this.limitsService.checkLimits(walletId, amount);
 
-    return this.prisma.payment.create({
+    const payment = await this.prisma.payment.create({
       data: {
         fromId,
         toId,
@@ -60,6 +70,12 @@ export class PaymentsService {
         status: PaymentStatus.PENDING,
       },
     });
+
+    this.logger.log(
+      `Payment created id=${payment.id} requestId=${requestId}`,
+    );
+
+    return payment;
   }
 
   async findAll(
@@ -97,7 +113,13 @@ export class PaymentsService {
   }
 
   async update(id: string, updatePaymentDto: UpdatePaymentDto) {
+    const requestId = this.requestContext.getRequestId();
     const paymentId = parseInt(id, 10);
+
+    this.logger.log(
+      `Updating payment id=${paymentId} requestId=${requestId}`,
+    );
+
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
     });
