@@ -4,9 +4,12 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
+import { LimitUpdatedEvent } from './events/limit-updated.event';
+import { LimitExceededEvent } from './events/limit-exceeded.event';
 
 export const LIMIT_ERROR_CODES = {
   PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
@@ -27,14 +30,65 @@ export class LimitExceededException extends HttpException {
 
 @Injectable()
 export class LimitsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
 
   async setLimits(walletId: string, daily: number, perTx: number) {
-    return this.prisma.walletLimit.upsert({
+    const existing = await this.prisma.walletLimit.findUnique({
+      where: { walletId },
+    });
+
+    const result = await this.prisma.walletLimit.upsert({
       where: { walletId },
       update: { dailyLimit: daily, perTransactionLimit: perTx },
       create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
     });
+
+    if (existing) {
+      if (existing.dailyLimit !== daily) {
+        this.eventEmitter.emit(
+          'limit.updated',
+          new LimitUpdatedEvent(
+            walletId,
+            'daily',
+            existing.dailyLimit,
+            daily,
+            new Date(),
+          ),
+        );
+      }
+      if (existing.perTransactionLimit !== perTx) {
+        this.eventEmitter.emit(
+          'limit.updated',
+          new LimitUpdatedEvent(
+            walletId,
+            'perTransaction',
+            existing.perTransactionLimit,
+            perTx,
+            new Date(),
+          ),
+        );
+      }
+    } else {
+      this.eventEmitter.emit(
+        'limit.updated',
+        new LimitUpdatedEvent(walletId, 'daily', null, daily, new Date()),
+      );
+      this.eventEmitter.emit(
+        'limit.updated',
+        new LimitUpdatedEvent(
+          walletId,
+          'perTransaction',
+          null,
+          perTx,
+          new Date(),
+        ),
+      );
+    }
+
+    return result;
   }
 
   async getLimits(walletId: string) {
@@ -50,6 +104,16 @@ export class LimitsService {
       limits.perTransactionLimit >= 0 &&
       amount > limits.perTransactionLimit
     ) {
+      this.eventEmitter.emit(
+        'limit.exceeded',
+        new LimitExceededEvent(
+          walletId,
+          'perTransaction',
+          limits.perTransactionLimit,
+          amount,
+          new Date(),
+        ),
+      );
       throw new LimitExceededException(
         LIMIT_ERROR_CODES.PER_TX_LIMIT_EXCEEDED,
         `Per-transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
@@ -71,6 +135,16 @@ export class LimitsService {
         0,
       );
       if (currentDailyTotal + amount > limits.dailyLimit) {
+        this.eventEmitter.emit(
+          'limit.exceeded',
+          new LimitExceededEvent(
+            walletId,
+            'daily',
+            limits.dailyLimit,
+            currentDailyTotal + amount,
+            new Date(),
+          ),
+        );
         throw new LimitExceededException(
           LIMIT_ERROR_CODES.DAILY_LIMIT_EXCEEDED,
           `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,

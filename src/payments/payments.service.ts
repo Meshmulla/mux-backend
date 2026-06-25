@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -12,6 +13,9 @@ import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 import { PaginationDto, PaginatedResponse } from '../common/dto/pagination.dto';
 import { PaymentsFilterDto } from './dto/payments-filter.dto';
+import { PaymentCreatedEvent } from './events/payment-created.event';
+import { PaymentCompletedEvent } from './events/payment-completed.event';
+import { PaymentFailedEvent } from './events/payment-failed.event';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -26,6 +30,7 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly limitsService: LimitsService,
     private readonly walletsService: WalletsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
@@ -49,7 +54,7 @@ export class PaymentsService {
     await this.walletsService.findWalletById(receiverWalletId);
     await this.limitsService.checkLimits(walletId, amount);
 
-    return this.prisma.payment.create({
+    const payment = await this.prisma.payment.create({
       data: {
         fromId,
         toId,
@@ -60,6 +65,19 @@ export class PaymentsService {
         status: PaymentStatus.PENDING,
       },
     });
+
+    this.eventEmitter.emit(
+      'payment.created',
+      new PaymentCreatedEvent(
+        payment.id,
+        payment.amount,
+        payment.currency,
+        payment.userId,
+        new Date(),
+      ),
+    );
+
+    return payment;
   }
 
   async findAll(
@@ -114,10 +132,36 @@ export class PaymentsService {
       }
     }
 
-    return this.prisma.payment.update({
+    const updatedPayment = await this.prisma.payment.update({
       where: { id: paymentId },
       data: updatePaymentDto,
     });
+
+    if (updatePaymentDto.status === PaymentStatus.CONFIRMED) {
+      this.eventEmitter.emit(
+        'payment.completed',
+        new PaymentCompletedEvent(
+          updatedPayment.id,
+          updatedPayment.amount,
+          updatedPayment.currency,
+          updatedPayment.userId,
+          new Date(),
+        ),
+      );
+    } else if (updatePaymentDto.status === PaymentStatus.FAILED) {
+      this.eventEmitter.emit(
+        'payment.failed',
+        new PaymentFailedEvent(
+          updatedPayment.id,
+          updatedPayment.amount,
+          updatedPayment.currency,
+          updatedPayment.userId,
+          new Date(),
+        ),
+      );
+    }
+
+    return updatedPayment;
   }
 
   remove(id: string) {
