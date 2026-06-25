@@ -3,6 +3,7 @@ import { AuthOrchestrator } from './auth-orchestrator.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WalletCreationOrchestrator } from '../wallets/wallet-creation-orchestrator.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { WalletNetwork } from '../wallets/domain/wallet.model';
 import { UserStatus } from '../users/entities/user.entity';
 
@@ -41,6 +42,12 @@ describe('AuthOrchestrator.listSessions', () => {
     cacheResponse: jest.fn(),
   };
 
+  const mockWebhookEventEmitter = {
+    emitUserAuthenticated: jest.fn().mockResolvedValue(undefined),
+    emitNewUserRegistered: jest.fn().mockResolvedValue(undefined),
+    emitAuthenticationFailed: jest.fn().mockResolvedValue(undefined),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -51,6 +58,10 @@ describe('AuthOrchestrator.listSessions', () => {
           useValue: mockWalletCreationOrchestrator,
         },
         { provide: IdempotencyService, useValue: mockIdempotencyService },
+        {
+          provide: WebhookEventEmitterService,
+          useValue: mockWebhookEventEmitter,
+        },
       ],
     }).compile();
 
