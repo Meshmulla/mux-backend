@@ -19,6 +19,7 @@ import {
 } from '../wallets/wallet-creation-orchestrator.service';
 import { WalletNetwork } from '../wallets/domain/wallet.model';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
 export interface AuthenticationRequest {
   authId: string;
@@ -162,6 +163,7 @@ export class AuthOrchestrator {
     private readonly idempotentUserService: IdempotentUserService,
     private readonly walletCreationOrchestrator: WalletCreationOrchestrator,
     private readonly idempotencyService: IdempotencyService,
+    private readonly webhookEventEmitter: WebhookEventEmitterService,
   ) {}
 
   /**
@@ -255,16 +257,59 @@ export class AuthOrchestrator {
         );
       }
 
+      // Emit domain event (best-effort; never blocks the auth response)
+      this.emitAuthEvent(result).catch((err) =>
+        this.logger.warn(`Auth domain event emission failed: ${err.message}`),
+      );
+
       return result;
     } catch (error) {
       this.logger.error(
         `Authentication orchestration failed for authId ${request.authId}:`,
         error,
       );
+
+      // Emit failure event best-effort
+      this.webhookEventEmitter
+        .emitAuthenticationFailed({
+          authId: request.authId,
+          reason: error.message ?? 'unknown',
+          errorCode: (error as any)?.status?.toString(),
+        })
+        .catch((err) =>
+          this.logger.warn(
+            `Auth failure event emission failed: ${err.message}`,
+          ),
+        );
+
       if (error instanceof HttpException) {
         throw error;
       }
       throw new Error(`Authentication failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Emits the appropriate domain event after a successful authentication.
+   */
+  private async emitAuthEvent(
+    result: AuthenticationResultWithMetadata,
+  ): Promise<void> {
+    if (result.isNewUser) {
+      await this.webhookEventEmitter.emitNewUserRegistered({
+        userId: result.user.id,
+        authId: result.user.authId,
+        authProvider: result.user.authProvider,
+        walletId: result.wallet.id,
+        walletNetwork: result.wallet.network,
+      });
+    } else {
+      await this.webhookEventEmitter.emitUserAuthenticated({
+        userId: result.user.id,
+        authId: result.user.authId,
+        authProvider: result.user.authProvider,
+        isNewWallet: result.isNewWallet,
+      });
     }
   }
 

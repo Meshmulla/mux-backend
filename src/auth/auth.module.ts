@@ -6,9 +6,10 @@ import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { IdempotentUserModule } from '../users/idempotent-user.module';
 import { WalletsModule } from '../wallets/wallets.module';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { WebhookModule } from '../webhooks/webhook.module';
 
 @Module({
-  imports: [IdempotentUserModule, WalletsModule],
+  imports: [IdempotentUserModule, WalletsModule, WebhookModule],
   controllers: [AuthOrchestratorController],
   providers: [
     AuthOrchestrator,

@@ -16,6 +16,7 @@ import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WalletCreationOrchestrator } from '../wallets/wallet-creation-orchestrator.service';
 import { WalletNetwork, WalletStatus } from '../wallets/domain/wallet.model';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -89,6 +90,14 @@ describe('AuthOrchestrator (integration harness)', () => {
           useValue: {
             getCachedResponse: jest.fn().mockResolvedValue(null),
             cacheResponse: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: WebhookEventEmitterService,
+          useValue: {
+            emitUserAuthenticated: jest.fn().mockResolvedValue(undefined),
+            emitNewUserRegistered: jest.fn().mockResolvedValue(undefined),
+            emitAuthenticationFailed: jest.fn().mockResolvedValue(undefined),
           },
         },
       ],
