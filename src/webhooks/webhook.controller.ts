@@ -9,6 +9,7 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import { WebhookService } from './webhook.service';
 import type {
@@ -16,8 +17,14 @@ import type {
   UpdateWebhookEndpointRequest,
 } from './webhook.service';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 
 @Controller('webhooks')
+@UseGuards(FeatureFlagGuard)
+@FeatureFlag('webhooks_enabled')
 export class WebhookController {
   constructor(
     private readonly webhookService: WebhookService,
