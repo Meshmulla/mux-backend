@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { RequestContextService } from '../request-context/request-context.service';
 
 export function requestLogger(
   req: Request | any,
@@ -25,10 +26,11 @@ export function requestLogger(
         : randomUUID();
     const start = Date.now();
 
-    // Attach request ID to request object for access in controllers/services
+    // Attach request ID to request object and async context for services
     if (req) {
       req.requestId = id;
     }
+    RequestContextService.bootstrapRequestId(id);
 
     if (res && typeof res.setHeader === 'function') {
       try {

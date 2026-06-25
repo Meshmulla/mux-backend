@@ -1,7 +1,12 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { CacheService } from '../common/cache/cache.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 import { WebhookEndpoint, EndpointStatus } from './domain/webhook-events';
 import * as crypto from 'crypto';
+
+export const WEBHOOK_CACHE_TTL = 60_000;
+export const WEBHOOK_ENDPOINT_CACHE_PREFIX = 'webhook:endpoint:';
 
 export interface CreateWebhookEndpointRequest {
   projectId: string;
@@ -32,7 +37,11 @@ export interface UpdateWebhookEndpointRequest {
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: CacheService,
+    private readonly requestContext: RequestContextService,
+  ) {}
 
   /**
    * Creates a new webhook endpoint
@@ -40,9 +49,9 @@ export class WebhookService {
   async createEndpoint(
     request: CreateWebhookEndpointRequest,
   ): Promise<WebhookEndpoint> {
-    this.logger.log(
-      `Creating webhook endpoint for project ${request.projectId}`,
-    );
+    this.log('log', 'Creating webhook endpoint', {
+      projectId: request.projectId,
+    });
 
     // Generate secret for signing
     const secret = this.generateSecret();
@@ -58,7 +67,7 @@ export class WebhookService {
       },
     });
 
-    this.logger.log(`Created webhook endpoint ${endpoint.id}`);
+    this.log('log', 'Created webhook endpoint', { endpointId: endpoint.id });
     return this.mapPrismaEndpointToDomain(endpoint);
   }
 
@@ -78,6 +87,12 @@ export class WebhookService {
    * Gets a webhook endpoint by ID
    */
   async getEndpoint(endpointId: string): Promise<WebhookEndpoint> {
+    const cacheKey = `${WEBHOOK_ENDPOINT_CACHE_PREFIX}${endpointId}`;
+    const cached = this.cache.get<WebhookEndpoint>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const endpoint = await this.prisma.webhookEndpoint.findUnique({
       where: { id: endpointId },
     });
@@ -86,7 +101,9 @@ export class WebhookService {
       throw new NotFoundException(`Webhook endpoint ${endpointId} not found`);
     }
 
-    return this.mapPrismaEndpointToDomain(endpoint);
+    const mapped = this.mapPrismaEndpointToDomain(endpoint);
+    this.cache.set(cacheKey, mapped, WEBHOOK_CACHE_TTL);
+    return mapped;
   }
 
   /**
@@ -101,7 +118,8 @@ export class WebhookService {
       data: updates,
     });
 
-    this.logger.log(`Updated webhook endpoint ${endpointId}`);
+    this.invalidateEndpointCache(endpointId);
+    this.log('log', 'Updated webhook endpoint', { endpointId });
     return this.mapPrismaEndpointToDomain(endpoint);
   }
 
@@ -113,7 +131,8 @@ export class WebhookService {
       where: { id: endpointId },
     });
 
-    this.logger.log(`Deleted webhook endpoint ${endpointId}`);
+    this.invalidateEndpointCache(endpointId);
+    this.log('log', 'Deleted webhook endpoint', { endpointId });
   }
 
   /**
@@ -127,7 +146,8 @@ export class WebhookService {
       data: { secret: newSecret },
     });
 
-    this.logger.log(`Rotated secret for webhook endpoint ${endpointId}`);
+    this.invalidateEndpointCache(endpointId);
+    this.log('log', 'Rotated webhook endpoint secret', { endpointId });
     return { secret: newSecret };
   }
 
@@ -147,6 +167,24 @@ export class WebhookService {
    */
   private generateSecret(): string {
     return `whsec_${crypto.randomBytes(32).toString('base64url')}`;
+  }
+
+  private invalidateEndpointCache(endpointId: string): void {
+    this.cache.delete(`${WEBHOOK_ENDPOINT_CACHE_PREFIX}${endpointId}`);
+  }
+
+  private log(
+    level: 'log' | 'warn' | 'error',
+    message: string,
+    context: Record<string, unknown> = {},
+  ): void {
+    const requestId = this.requestContext.getRequestId();
+    const payload = {
+      message,
+      ...(requestId ? { requestId } : {}),
+      ...context,
+    };
+    this.logger[level](JSON.stringify(payload));
   }
 
   /**
