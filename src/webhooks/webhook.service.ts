@@ -32,7 +32,7 @@ export interface UpdateWebhookEndpointRequest {
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   /**
    * Creates a new webhook endpoint
@@ -65,13 +65,32 @@ export class WebhookService {
   /**
    * Lists webhook endpoints for a project
    */
-  async listEndpoints(projectId: string): Promise<WebhookEndpoint[]> {
-    const endpoints = await this.prisma.webhookEndpoint.findMany({
-      where: { projectId },
-      orderBy: { createdAt: 'desc' },
-    });
+  async listEndpoints(
+    projectId: string,
+    page: number = 1,
+    limit: number = 20,
+  ): Promise<{
+    endpoints: WebhookEndpoint[];
+    total: number;
+  }> {
+    const skip = (page - 1) * limit;
 
-    return endpoints.map((e) => this.mapPrismaEndpointToDomain(e));
+    const [endpoints, total] = await Promise.all([
+      this.prisma.webhookEndpoint.findMany({
+        where: { projectId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.webhookEndpoint.count({
+        where: { projectId },
+      }),
+    ]);
+
+    return {
+      endpoints: endpoints.map((e) => this.mapPrismaEndpointToDomain(e)),
+      total,
+    };
   }
 
   /**
@@ -134,12 +153,29 @@ export class WebhookService {
   /**
    * Gets delivery attempts for an endpoint
    */
-  async getDeliveries(endpointId: string, limit: number = 50) {
-    return await this.prisma.webhookDelivery.findMany({
-      where: { endpointId },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
+  async getDeliveries(
+    endpointId: string,
+    page: number = 1,
+    limit: number = 50,
+  ) {
+    const skip = (page - 1) * limit;
+
+    const [deliveries, total] = await Promise.all([
+      this.prisma.webhookDelivery.findMany({
+        where: { endpointId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.webhookDelivery.count({
+        where: { endpointId },
+      }),
+    ]);
+
+    return {
+      deliveries,
+      total,
+    };
   }
 
   /**
