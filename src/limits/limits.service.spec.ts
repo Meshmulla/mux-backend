@@ -3,6 +3,7 @@ import { NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { LimitsService, LimitExceededException } from './limits.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { MetricsService } from '../metrics/metrics.service';
 import { LimitUpdatedEvent } from './events/limit-updated.event';
 import { LimitExceededEvent } from './events/limit-exceeded.event';
 
@@ -10,6 +11,7 @@ describe('LimitsService', () => {
   let service: LimitsService;
   let prisma: any;
   let eventEmitter: any;
+  let metrics: any;
 
   const walletId = 'wallet-uuid-1';
 
@@ -25,17 +27,24 @@ describe('LimitsService', () => {
       },
     };
     eventEmitter = { emit: jest.fn() };
+    metrics = {
+      incrementLimitExceeded: jest.fn(),
+      incrementLimitChecks: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         LimitsService,
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: MetricsService, useValue: metrics },
       ],
     }).compile();
 
     service = module.get<LimitsService>(LimitsService);
   });
+
+  afterEach(() => jest.clearAllMocks());
 
   it('should be defined', () => {
     expect(service).toBeDefined();

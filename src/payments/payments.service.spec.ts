@@ -5,6 +5,7 @@ import { PaymentsService } from './payments.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from '../limits/limits.service';
 import { WalletsService } from '../wallets/wallets.service';
+import { MetricsService } from '../metrics/metrics.service';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 import { PaymentCreatedEvent } from './events/payment-created.event';
@@ -33,6 +34,7 @@ describe('PaymentsService', () => {
   let limitsService: any;
   let walletsService: any;
   let eventEmitter: any;
+  let metrics: any;
 
   beforeEach(async () => {
     prisma = {
@@ -47,6 +49,11 @@ describe('PaymentsService', () => {
     limitsService = { checkLimits: jest.fn() };
     walletsService = { findWalletById: jest.fn() };
     eventEmitter = { emit: jest.fn() };
+    metrics = {
+      incrementPaymentsCreated: jest.fn(),
+      incrementPaymentsFailed: jest.fn(),
+      recordPaymentProcessingDuration: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -55,6 +62,7 @@ describe('PaymentsService', () => {
         { provide: LimitsService, useValue: limitsService },
         { provide: WalletsService, useValue: walletsService },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: MetricsService, useValue: metrics },
       ],
     }).compile();
 
@@ -261,6 +269,7 @@ describe('PaymentsService', () => {
 
       await service.create(BASE_DTO);
 
+      expect(metrics.incrementPaymentsCreated).toHaveBeenCalled();
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'payment.created',
         expect.any(PaymentCreatedEvent),
@@ -317,6 +326,7 @@ describe('PaymentsService', () => {
 
       await service.update('1', { status: PaymentStatus.FAILED });
 
+      expect(metrics.incrementPaymentsFailed).toHaveBeenCalledWith('user_action');
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'payment.failed',
         expect.any(PaymentFailedEvent),

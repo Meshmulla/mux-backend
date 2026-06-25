@@ -18,6 +18,7 @@ import { PaymentCreatedEvent } from './events/payment-created.event';
 import { PaymentCompletedEvent } from './events/payment-completed.event';
 import { PaymentFailedEvent } from './events/payment-failed.event';
 import { retryWithBackoff } from '../common/utils/retry';
+import { MetricsService } from '../metrics/metrics.service';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -35,6 +36,7 @@ export class PaymentsService {
     private readonly limitsService: LimitsService,
     private readonly walletsService: WalletsService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly metrics: MetricsService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
@@ -84,6 +86,8 @@ export class PaymentsService {
         status: PaymentStatus.PENDING,
       },
     });
+
+    this.metrics.incrementPaymentsCreated();
 
     this.eventEmitter.emit(
       'payment.created',
@@ -168,6 +172,7 @@ export class PaymentsService {
         ),
       );
     } else if (updatePaymentDto.status === PaymentStatus.FAILED) {
+      this.metrics.incrementPaymentsFailed('user_action');
       this.eventEmitter.emit(
         'payment.failed',
         new PaymentFailedEvent(

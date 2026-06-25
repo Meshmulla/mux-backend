@@ -12,6 +12,7 @@ import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitUpdatedEvent } from './events/limit-updated.event';
 import { LimitExceededEvent } from './events/limit-exceeded.event';
 import { retryWithBackoff } from '../common/utils/retry';
+import { MetricsService } from '../metrics/metrics.service';
 
 export const LIMIT_ERROR_CODES = {
   PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
@@ -37,6 +38,7 @@ export class LimitsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly metrics: MetricsService,
   ) {}
 
   async setLimits(walletId: string, daily: number, perTx: number) {
@@ -119,7 +121,10 @@ export class LimitsService {
 
   async checkLimits(walletId: string, amount: number): Promise<void> {
     const limits = await this.getLimits(walletId);
-    if (!limits) return;
+    if (!limits) {
+      this.metrics.incrementLimitChecks('allowed');
+      return;
+    }
 
     // Enforce per-transaction cap: a cap of 0 blocks all transactions
     if (
@@ -163,6 +168,8 @@ export class LimitsService {
         0,
       );
       if (currentDailyTotal + amount > limits.dailyLimit) {
+        this.metrics.incrementLimitExceeded('daily');
+        this.metrics.incrementLimitChecks('denied');
         this.eventEmitter.emit(
           'limit.exceeded',
           new LimitExceededEvent(
@@ -179,6 +186,8 @@ export class LimitsService {
         );
       }
     }
+
+    this.metrics.incrementLimitChecks('allowed');
   }
 
   async removeLimits(walletId: string) {
