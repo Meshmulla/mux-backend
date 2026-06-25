@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreatePaymentDto } from './dto/create-payment.dto';
@@ -16,6 +17,7 @@ import { PaymentsFilterDto } from './dto/payments-filter.dto';
 import { PaymentCreatedEvent } from './events/payment-created.event';
 import { PaymentCompletedEvent } from './events/payment-completed.event';
 import { PaymentFailedEvent } from './events/payment-failed.event';
+import { retryWithBackoff } from '../common/utils/retry';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -26,6 +28,8 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
 
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly limitsService: LimitsService,
@@ -44,15 +48,30 @@ export class PaymentsService {
       description,
     } = createPaymentDto;
 
-    const senderWallet = await this.walletsService.findWalletById(walletId);
+    const senderWallet = await retryWithBackoff(
+      () => this.walletsService.findWalletById(walletId),
+      3,
+      100,
+      this.logger,
+    );
     if (senderWallet.status !== WalletStatus.ACTIVE) {
       throw new BadRequestException(
         `Sender wallet is not active (status: ${senderWallet.status})`,
       );
     }
 
-    await this.walletsService.findWalletById(receiverWalletId);
-    await this.limitsService.checkLimits(walletId, amount);
+    await retryWithBackoff(
+      () => this.walletsService.findWalletById(receiverWalletId),
+      3,
+      100,
+      this.logger,
+    );
+    await retryWithBackoff(
+      () => this.limitsService.checkLimits(walletId, amount),
+      3,
+      100,
+      this.logger,
+    );
 
     const payment = await this.prisma.payment.create({
       data: {
