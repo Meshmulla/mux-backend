@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
+import { TransactionQueryService } from './transaction-query.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
@@ -18,7 +19,10 @@ import {
   RateLimitGuard,
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
-import { FeatureFlagGuard, FeatureFlag } from '../common/feature-flags/feature-flag.guard';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 import { TransactionStatus } from './domain/transaction.model';
 
 @Controller('transactions')
@@ -27,6 +31,7 @@ import { TransactionStatus } from './domain/transaction.model';
 export class TransactionsController {
   constructor(
     private readonly transactionsService: TransactionsService,
+    private readonly queryService: TransactionQueryService,
     private readonly stellarBuildService: StellarTransactionBuildService,
   ) {}
 
@@ -54,7 +59,7 @@ export class TransactionsController {
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
-    return this.transactionsService.findAll({
+    return this.queryService.findAll({
       senderWalletId,
       receiverWalletId,
       status: status as TransactionStatus,
@@ -69,7 +74,7 @@ export class TransactionsController {
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
-    return this.transactionsService.findByWallet(walletId, {
+    return this.queryService.findByWallet(walletId, {
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
     });
@@ -77,12 +82,12 @@ export class TransactionsController {
 
   @Get('stellar/:hash')
   findByStellarHash(@Param('hash') hash: string) {
-    return this.transactionsService.findByStellarHash(hash);
+    return this.queryService.findByStellarHash(hash);
   }
 
   @Get(':id')
   findOne(@Param('id') id: string) {
-    return this.transactionsService.findOne(id);
+    return this.queryService.findOne(id);
   }
 
   @Patch(':id/status')

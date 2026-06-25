@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { TransactionsController } from './transactions.controller';
+import { TransactionQueryService } from './transaction-query.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BalanceIndexerModule } from '../balance-indexer/balance-indexer.module';
@@ -11,7 +12,17 @@ import { FeatureFlagService } from '../common/feature-flags/feature-flag.service
 @Module({
   imports: [PrismaModule, BalanceIndexerModule, WebhookModule],
   controllers: [TransactionsController],
-  providers: [TransactionsService, StellarTransactionBuildService, CacheService, FeatureFlagService],
-  exports: [TransactionsService, StellarTransactionBuildService],
+  providers: [
+    TransactionsService,
+    TransactionQueryService,
+    StellarTransactionBuildService,
+    CacheService,
+    FeatureFlagService,
+  ],
+  exports: [
+    TransactionsService,
+    TransactionQueryService,
+    StellarTransactionBuildService,
+  ],
 })
 export class TransactionsModule {}

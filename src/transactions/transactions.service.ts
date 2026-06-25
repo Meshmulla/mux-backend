@@ -3,7 +3,6 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
-  Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
@@ -11,29 +10,23 @@ import { Asset } from '../balance-indexer/domain/balance.model';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
 import {
-  Transaction,
   TransactionStatus,
-  createTransaction,
-  transitionTransactionStatus,
   canTransitionTransactionStatus,
-  TransactionAsset,
-  StellarNetworkReferences,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
-import { CacheService } from '../common/cache/cache.service';
+import { TransactionQueryService } from './transaction-query.service';
 
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
-  private readonly TRANSACTION_CACHE_TTL = 300000; // 5 minutes
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly balanceIndexer: BalanceIndexerService,
     private readonly webhookEventEmitter: WebhookEventEmitterService,
-    private readonly cache: CacheService,
+    private readonly queryService: TransactionQueryService,
   ) {}
 
   /**
@@ -140,70 +133,8 @@ export class TransactionsService {
   }
 
   /**
-   * Find all transactions with optional filters
-   */
-  async findAll(filters?: {
-    senderWalletId?: string;
-    receiverWalletId?: string;
-    status?: TransactionStatus;
-    limit?: number;
-    offset?: number;
-  }): Promise<TransactionEntity[]> {
-    const where: any = {};
-
-    if (filters?.senderWalletId) {
-      where.senderWalletId = filters.senderWalletId;
-    }
-
-    if (filters?.receiverWalletId) {
-      where.receiverWalletId = filters.receiverWalletId;
-    }
-
-    if (filters?.status) {
-      where.status = filters.status;
-    }
-
-    const transactions = await this.prisma.transaction.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: filters?.limit,
-      skip: filters?.offset,
-    });
-
-    return transactions.map((t) => this.mapPrismaToEntity(t));
-  }
-
-  /**
-   * Find a transaction by ID with caching
-   */
-  async findOne(id: string): Promise<TransactionEntity> {
-    const cacheKey = `transaction:${id}`;
-
-    // Check cache first
-    const cachedTransaction = this.cache.get<TransactionEntity>(cacheKey);
-    if (cachedTransaction) {
-      this.logger.debug(`Cache hit for transaction ${id}`);
-      return cachedTransaction;
-    }
-
-    const transaction = await this.prisma.transaction.findUnique({
-      where: { id },
-    });
-
-    if (!transaction) {
-      throw new NotFoundException(`Transaction ${id} not found`);
-    }
-
-    const entity = this.mapPrismaToEntity(transaction);
-
-    // Store in cache
-    this.cache.set(cacheKey, entity, this.TRANSACTION_CACHE_TTL);
-
-    return entity;
-  }
-
-  /**
-   * Update transaction status with proper state transition validation
+   * Update transaction status with proper state transition validation.
+   * Invalidates the read cache after a successful update.
    */
   async updateStatus(
     id: string,
@@ -266,8 +197,8 @@ export class TransactionsService {
       data: updateData,
     });
 
-    // Invalidate cache for this transaction
-    this.cache.delete(`transaction:${id}`);
+    // Invalidate read cache so next findOne fetches fresh data
+    this.queryService.invalidateCache(id);
 
     this.logger.log(
       `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,
@@ -282,47 +213,6 @@ export class TransactionsService {
     return this.mapPrismaToEntity(updated);
   }
 
-  /**
-   * Find transactions by Stellar hash
-   */
-  async findByStellarHash(hash: string): Promise<TransactionEntity | null> {
-    const transaction = await this.prisma.transaction.findUnique({
-      where: { stellarHash: hash },
-    });
-
-    return transaction ? this.mapPrismaToEntity(transaction) : null;
-  }
-
-  /**
-   * Find transactions by wallet ID with pagination
-   */
-  async findByWallet(
-    walletId: string,
-    pagination?: { limit?: number; offset?: number },
-  ): Promise<TransactionEntity[]> {
-    const wallet = await this.prisma.wallet.findUnique({
-      where: { id: walletId },
-    });
-
-    if (!wallet) {
-      throw new NotFoundException(`Wallet ${walletId} not found`);
-    }
-
-    const transactions = await this.prisma.transaction.findMany({
-      where: {
-        OR: [{ senderWalletId: walletId }, { receiverWalletId: walletId }],
-      },
-      orderBy: { createdAt: 'desc' },
-      take: pagination?.limit,
-      skip: pagination?.offset,
-    });
-
-    return transactions.map((t) => this.mapPrismaToEntity(t));
-  }
-
-  /**
-   * Emit the appropriate webhook event for a transaction status
-   */
   private async emitStatusWebhook(tx: any): Promise<void> {
     const status = tx.status as TransactionStatus;
     if (status === TransactionStatus.SUBMITTED) {
@@ -348,9 +238,6 @@ export class TransactionsService {
     }
   }
 
-  /**
-   * Map Prisma model to entity
-   */
   private mapPrismaToEntity(prismaTransaction: any): TransactionEntity {
     return {
       id: prismaTransaction.id,
