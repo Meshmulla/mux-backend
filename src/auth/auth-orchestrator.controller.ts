@@ -9,6 +9,7 @@ import {
   Headers,
   Res,
   UseGuards,
+  Query,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import {
@@ -18,6 +19,8 @@ import {
 } from './auth-orchestrator.service';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { Public } from './public.decorator';
+import { AuthSessionFilterDto } from './dto/auth-session-filter.dto';
+import { PaginationDto } from '../common/dto/pagination.dto';
 
 @Controller('auth')
 export class AuthOrchestratorController {
@@ -67,6 +70,27 @@ export class AuthOrchestratorController {
     }
 
     response.json(responseBody);
+  }
+
+  /**
+   * Sessions listing endpoint - returns recent auth sessions with optional filters.
+   *
+   * Supports filtering by account status, authProvider, and lastLoginAt date range.
+   * Results are paginated and ordered by lastLoginAt descending.
+   */
+  @Get('sessions')
+  listSessions(
+    @Query() pagination: PaginationDto,
+    @Query() filters: AuthSessionFilterDto,
+  ) {
+    return this.authOrchestrator.listSessions({
+      page: pagination.page,
+      limit: pagination.limit,
+      status: filters.status,
+      authProvider: filters.authProvider,
+      dateFrom: filters.dateFrom ? new Date(filters.dateFrom) : undefined,
+      dateTo: filters.dateTo ? new Date(filters.dateTo) : undefined,
+    });
   }
 
   /**

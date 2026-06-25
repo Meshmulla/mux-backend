@@ -9,6 +9,8 @@ import {
   IdempotentUserService,
   FindOrCreateUserRequest,
   FindOrCreateUserResult,
+  SessionListOptions,
+  SessionListResult,
 } from '../users/idempotent-user.service';
 import { UserStatus } from '../users/entities/user.entity';
 import {
@@ -317,6 +319,15 @@ export class AuthOrchestrator {
       wallet: walletResult.wallet,
       isNewWallet: walletResult.isNewWallet,
     };
+  }
+
+  /**
+   * Lists recent auth sessions with optional filtering.
+   * A "session" is any user record that has logged in at least once.
+   * Supports filtering by status, authProvider, and lastLoginAt date range.
+   */
+  async listSessions(options: SessionListOptions): Promise<SessionListResult> {
+    return this.idempotentUserService.listSessions(options);
   }
 
   /**
