@@ -36,7 +36,6 @@ describe('LimitsController', () => {
     }).compile();
 
     controller = module.get<LimitsController>(LimitsController);
-    service = module.get(LimitsService);
   });
 
   it('should be defined', () => {
@@ -71,6 +70,21 @@ describe('LimitsController', () => {
         expect(descriptor).toBeDefined();
 
         const metadata = Reflect.getMetadata('swagger/apiResponse', descriptor.value);
+        expect(metadata).toBeDefined();
+      });
+    });
+
+    it('should have @ApiOperation on all routes', () => {
+      const routes = ['setLimits', 'getLimits', 'removeLimits'];
+
+      routes.forEach((route) => {
+        const descriptor = Object.getOwnPropertyDescriptor(
+          LimitsController.prototype,
+          route,
+        );
+        expect(descriptor).toBeDefined();
+
+        const metadata = Reflect.getMetadata('swagger/apiOperation', descriptor.value);
         expect(metadata).toBeDefined();
       });
     });

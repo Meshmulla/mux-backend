@@ -23,8 +23,11 @@ import { SetLimitsDto } from './dto/set-limits.dto';
 export class LimitsController {
   constructor(private readonly limitsService: LimitsService) {}
 
-  @ApiOperation({ summary: 'Set wallet transaction and daily limits' })
-  @ApiParam({ name: 'walletId', description: 'Wallet ID' })
+  @ApiOperation({
+    summary: 'Set wallet transaction and daily limits',
+    description: 'Set or update daily and per-transaction limits for a wallet. Requires API key authentication. Emits limit.updated events for each limit changed.',
+  })
+  @ApiParam({ name: 'walletId', description: 'Wallet ID (UUID)' })
   @ApiBody({
     type: SetLimitsDto,
     examples: {
@@ -38,7 +41,7 @@ export class LimitsController {
   })
   @ApiResponse({
     status: 201,
-    description: 'Limits set successfully',
+    description: 'Limits set successfully. Emits limit.updated events.',
     example: {
       walletId: '123e4567-e89b-12d3-a456-426614174000',
       dailyLimit: 5000,
@@ -78,8 +81,11 @@ export class LimitsController {
     );
   }
 
-  @ApiOperation({ summary: 'Get wallet limits' })
-  @ApiParam({ name: 'walletId', description: 'Wallet ID' })
+  @ApiOperation({
+    summary: 'Get wallet limits',
+    description: 'Retrieve current daily and per-transaction limits for a wallet. Requires API key authentication.',
+  })
+  @ApiParam({ name: 'walletId', description: 'Wallet ID (UUID)' })
   @ApiResponse({
     status: 200,
     description: 'Wallet limits retrieved successfully',
@@ -101,13 +107,28 @@ export class LimitsController {
       error: 'Not Found',
     },
   })
+  @ApiResponse({
+    status: 422,
+    description: 'Limit exceeded - transaction blocked',
+    example: {
+      statusCode: 422,
+      timestamp: '2024-06-24T12:34:56.789Z',
+      path: '/payments',
+      message: 'Per-transaction limit exceeded. Limit: 1000',
+      error: 'Unprocessable Entity',
+      errorCode: 'LIMIT_PER_TX_EXCEEDED',
+    },
+  })
   @Get()
   getLimits(@Param('walletId') walletId: string) {
     return this.limitsService.getLimits(walletId);
   }
 
-  @ApiOperation({ summary: 'Remove wallet limits' })
-  @ApiParam({ name: 'walletId', description: 'Wallet ID' })
+  @ApiOperation({
+    summary: 'Remove wallet limits',
+    description: 'Delete all limits for a wallet. Requires API key authentication.',
+  })
+  @ApiParam({ name: 'walletId', description: 'Wallet ID (UUID)' })
   @ApiResponse({
     status: 204,
     description: 'Limits removed successfully',
