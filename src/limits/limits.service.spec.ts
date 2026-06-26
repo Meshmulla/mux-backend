@@ -2,10 +2,12 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { LimitsService, LimitExceededException } from './limits.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CacheService } from '../common/cache/cache.service';
 
 describe('LimitsService', () => {
   let service: LimitsService;
   let prisma: any;
+  let cacheService: { get: jest.Mock; set: jest.Mock; delete: jest.Mock };
 
   const walletId = 'wallet-uuid-1';
 
@@ -21,8 +23,14 @@ describe('LimitsService', () => {
       },
     };
 
+    cacheService = { get: jest.fn(), set: jest.fn(), delete: jest.fn() };
+
     const module: TestingModule = await Test.createTestingModule({
-      providers: [LimitsService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        LimitsService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: CacheService, useValue: cacheService },
+      ],
     }).compile();
 
     service = module.get<LimitsService>(LimitsService);
@@ -49,6 +57,17 @@ describe('LimitsService', () => {
       prisma.walletLimit.findUnique.mockResolvedValue(limit);
       const result = await service.getLimits(walletId);
       expect(result).toEqual(limit);
+    });
+
+    it('should use the cache layer for wallet limits', async () => {
+      const limit = { walletId, dailyLimit: 100, perTransactionLimit: 10 };
+      cacheService.get.mockReturnValue(limit);
+
+      const result = await service.getLimits(walletId);
+
+      expect(result).toEqual(limit);
+      expect(cacheService.get).toHaveBeenCalledWith(`limits:${walletId}`);
+      expect(prisma.walletLimit.findUnique).not.toHaveBeenCalled();
     });
   });
 

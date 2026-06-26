@@ -5,8 +5,8 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
-import { UpdateLimitDto } from './dto/update-limit.dto';
+import { CacheService } from '../common/cache/cache.service';
+import { PaymentLimitsPort } from '../payments/ports/payment-limits.port';
 
 export const LIMIT_ERROR_CODES = {
   PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
@@ -26,19 +26,36 @@ export class LimitExceededException extends HttpException {
 }
 
 @Injectable()
-export class LimitsService {
-  constructor(private readonly prisma: PrismaService) {}
+export class LimitsService implements PaymentLimitsPort {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cacheService: CacheService,
+  ) {}
 
   async setLimits(walletId: string, daily: number, perTx: number) {
-    return this.prisma.walletLimit.upsert({
+    const updated = await this.prisma.walletLimit.upsert({
       where: { walletId },
       update: { dailyLimit: daily, perTransactionLimit: perTx },
       create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
     });
+
+    this.cacheService.set(`limits:${walletId}`, updated);
+    return updated;
   }
 
   async getLimits(walletId: string) {
-    return this.prisma.walletLimit.findUnique({ where: { walletId } });
+    const cacheKey = `limits:${walletId}`;
+    const cached = this.cacheService.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const limits = await this.prisma.walletLimit.findUnique({ where: { walletId } });
+    if (limits) {
+      this.cacheService.set(cacheKey, limits);
+    }
+
+    return limits;
   }
 
   async checkLimits(walletId: string, amount: number): Promise<void> {
@@ -83,6 +100,9 @@ export class LimitsService {
     const existing = await this.getLimits(walletId);
     if (!existing)
       throw new NotFoundException(`No limits found for wallet ${walletId}`);
-    return this.prisma.walletLimit.delete({ where: { walletId } });
+
+    const deleted = await this.prisma.walletLimit.delete({ where: { walletId } });
+    this.cacheService.delete(`limits:${walletId}`);
+    return deleted;
   }
 }

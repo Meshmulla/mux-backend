@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   NotFoundException,
   BadRequestException,
@@ -6,8 +7,11 @@ import {
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
-import { LimitsService } from '../limits/limits.service';
 import { WalletsService } from '../wallets/wallets.service';
+import {
+  PAYMENT_LIMITS_PORT,
+  PaymentLimitsPort,
+} from './ports/payment-limits.port';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 import { PaginationDto, PaginatedResponse } from '../common/dto/pagination.dto';
@@ -24,7 +28,8 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
 export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly limitsService: LimitsService,
+    @Inject(PAYMENT_LIMITS_PORT)
+    private readonly paymentLimitsPort: PaymentLimitsPort,
     private readonly walletsService: WalletsService,
   ) {}
 
@@ -47,7 +52,7 @@ export class PaymentsService {
     }
 
     await this.walletsService.findWalletById(receiverWalletId);
-    await this.limitsService.checkLimits(walletId, amount);
+    await this.paymentLimitsPort.checkLimits(walletId, amount);
 
     return this.prisma.payment.create({
       data: {
