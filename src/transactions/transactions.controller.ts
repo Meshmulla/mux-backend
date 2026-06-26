@@ -18,7 +18,10 @@ import {
   RateLimitGuard,
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
-import { FeatureFlagGuard, FeatureFlag } from '../common/feature-flags/feature-flag.guard';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 import { TransactionStatus } from './domain/transaction.model';
 
 @Controller('transactions')
@@ -51,6 +54,12 @@ export class TransactionsController {
     @Query('senderWalletId') senderWalletId?: string,
     @Query('receiverWalletId') receiverWalletId?: string,
     @Query('status') status?: TransactionStatus,
+    @Query('assetType') assetType?: string,
+    @Query('assetCode') assetCode?: string,
+    @Query('minAmount') minAmount?: string,
+    @Query('maxAmount') maxAmount?: string,
+    @Query('createdAfter') createdAfter?: string,
+    @Query('createdBefore') createdBefore?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
@@ -58,6 +67,12 @@ export class TransactionsController {
       senderWalletId,
       receiverWalletId,
       status: status as TransactionStatus,
+      assetType,
+      assetCode,
+      minAmount,
+      maxAmount,
+      createdAfter: createdAfter ? new Date(createdAfter) : undefined,
+      createdBefore: createdBefore ? new Date(createdBefore) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
     });

@@ -5,6 +5,7 @@ import {
   BadRequestException,
   Optional,
 } from '@nestjs/common';
+
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
 import { Asset } from '../balance-indexer/domain/balance.model';
@@ -32,6 +33,7 @@ export class TransactionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly balanceIndexer: BalanceIndexerService,
+    @Optional()
     private readonly webhookEventEmitter: WebhookEventEmitterService,
     private readonly cache: CacheService,
   ) {}
@@ -122,19 +124,15 @@ export class TransactionsService {
       },
     });
 
-    this.webhookEventEmitter
-      .emitTransactionCreated({
+    this.emitDomainEvent('transaction.created', () =>
+      this.webhookEventEmitter?.emitTransactionCreated({
         transactionId: created.id,
         walletId: created.senderWalletId,
         amount: created.amount,
         asset: created.assetCode ?? created.assetType,
         destination: created.receiverWalletId ?? '',
-      })
-      .catch((err) =>
-        this.logger.error(
-          `Failed to emit transaction.created webhook for ${created.id}: ${err?.message}`,
-        ),
-      );
+      }),
+    );
 
     return this.mapPrismaToEntity(created);
   }
@@ -146,6 +144,12 @@ export class TransactionsService {
     senderWalletId?: string;
     receiverWalletId?: string;
     status?: TransactionStatus;
+    assetType?: string;
+    assetCode?: string;
+    minAmount?: string;
+    maxAmount?: string;
+    createdAfter?: Date;
+    createdBefore?: Date;
     limit?: number;
     offset?: number;
   }): Promise<TransactionEntity[]> {
@@ -161,6 +165,34 @@ export class TransactionsService {
 
     if (filters?.status) {
       where.status = filters.status;
+    }
+
+    if (filters?.assetType) {
+      where.assetType = filters.assetType;
+    }
+
+    if (filters?.assetCode) {
+      where.assetCode = filters.assetCode;
+    }
+
+    if (filters?.minAmount || filters?.maxAmount) {
+      where.amount = {};
+      if (filters.minAmount) {
+        where.amount.gte = filters.minAmount;
+      }
+      if (filters.maxAmount) {
+        where.amount.lte = filters.maxAmount;
+      }
+    }
+
+    if (filters?.createdAfter || filters?.createdBefore) {
+      where.createdAt = {};
+      if (filters.createdAfter) {
+        where.createdAt.gte = filters.createdAfter;
+      }
+      if (filters.createdBefore) {
+        where.createdAt.lte = filters.createdBefore;
+      }
     }
 
     const transactions = await this.prisma.transaction.findMany({
@@ -273,11 +305,7 @@ export class TransactionsService {
       `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,
     );
 
-    this.emitStatusWebhook(updated).catch((err) =>
-      this.logger.error(
-        `Failed to emit webhook for transaction ${id} status ${updateDto.status}: ${err?.message}`,
-      ),
-    );
+    this.emitStatusDomainEvent(updated);
 
     return this.mapPrismaToEntity(updated);
   }
@@ -321,31 +349,53 @@ export class TransactionsService {
   }
 
   /**
-   * Emit the appropriate webhook event for a transaction status
+   * Emit the appropriate domain event for a transaction status change.
+   * Fire-and-forget: failures are logged as warnings and never surface to callers.
    */
-  private async emitStatusWebhook(tx: any): Promise<void> {
+  private emitStatusDomainEvent(tx: any): void {
     const status = tx.status as TransactionStatus;
     if (status === TransactionStatus.SUBMITTED) {
-      await this.webhookEventEmitter.emitTransactionPending({
-        transactionId: tx.id,
-        walletId: tx.senderWalletId,
-        txHash: tx.stellarHash ?? '',
-      });
+      this.emitDomainEvent('transaction.submitted', () =>
+        this.webhookEventEmitter?.emitTransactionPending({
+          transactionId: tx.id,
+          walletId: tx.senderWalletId,
+          txHash: tx.stellarHash ?? '',
+        }),
+      );
     } else if (status === TransactionStatus.CONFIRMED) {
-      await this.webhookEventEmitter.emitTransactionConfirmed({
-        transactionId: tx.id,
-        walletId: tx.senderWalletId,
-        txHash: tx.stellarHash ?? '',
-        ledger: tx.stellarLedger ?? 0,
-        confirmations: 1,
-      });
+      this.emitDomainEvent('transaction.confirmed', () =>
+        this.webhookEventEmitter?.emitTransactionConfirmed({
+          transactionId: tx.id,
+          walletId: tx.senderWalletId,
+          txHash: tx.stellarHash ?? '',
+          ledger: tx.stellarLedger ?? 0,
+          confirmations: 1,
+        }),
+      );
     } else if (status === TransactionStatus.FAILED) {
-      await this.webhookEventEmitter.emitTransactionFailed({
-        transactionId: tx.id,
-        walletId: tx.senderWalletId,
-        reason: tx.statusReason ?? 'unknown',
-      });
+      this.emitDomainEvent('transaction.failed', () =>
+        this.webhookEventEmitter?.emitTransactionFailed({
+          transactionId: tx.id,
+          walletId: tx.senderWalletId,
+          reason: tx.statusReason ?? 'unknown',
+        }),
+      );
     }
+  }
+
+  /**
+   * Fire-and-forget domain event emission.
+   * Matches the pattern used across services in this codebase (see WalletsService).
+   */
+  private emitDomainEvent(
+    eventName: string,
+    emit: () => Promise<void> | undefined,
+  ): void {
+    void Promise.resolve(emit()).catch((error: unknown) =>
+      this.logger.warn(
+        `Unable to emit ${eventName} domain event: ${String(error)}`,
+      ),
+    );
   }
 
   /**

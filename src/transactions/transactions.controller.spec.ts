@@ -101,15 +101,111 @@ describe('TransactionsController', () => {
     it('should call findAll with parsed filters', async () => {
       mockTransactionsService.findAll.mockResolvedValue([]);
 
-      await controller.findAll('wallet-sender', undefined, undefined, '5', '0');
+      await controller.findAll(
+        'wallet-sender',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        '5',
+        '0',
+      );
 
       expect(mockTransactionsService.findAll).toHaveBeenCalledWith({
         senderWalletId: 'wallet-sender',
         receiverWalletId: undefined,
         status: undefined,
+        assetType: undefined,
+        assetCode: undefined,
+        minAmount: undefined,
+        maxAmount: undefined,
+        createdAfter: undefined,
+        createdBefore: undefined,
         limit: 5,
         offset: 0,
       });
+    });
+
+    it('should forward assetType and assetCode filters', async () => {
+      mockTransactionsService.findAll.mockResolvedValue([]);
+
+      await controller.findAll(
+        undefined,
+        undefined,
+        undefined,
+        'CREDIT_ALPHANUM4',
+        'USDC',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      );
+
+      expect(mockTransactionsService.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          assetType: 'CREDIT_ALPHANUM4',
+          assetCode: 'USDC',
+        }),
+      );
+    });
+
+    it('should parse minAmount and maxAmount filters', async () => {
+      mockTransactionsService.findAll.mockResolvedValue([]);
+
+      await controller.findAll(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        '10',
+        '500',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      );
+
+      expect(mockTransactionsService.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          minAmount: '10',
+          maxAmount: '500',
+        }),
+      );
+    });
+
+    it('should parse createdAfter and createdBefore as Date objects', async () => {
+      mockTransactionsService.findAll.mockResolvedValue([]);
+
+      const afterStr = '2024-01-01T00:00:00.000Z';
+      const beforeStr = '2024-12-31T23:59:59.999Z';
+
+      await controller.findAll(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        afterStr,
+        beforeStr,
+        undefined,
+        undefined,
+      );
+
+      expect(mockTransactionsService.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          createdAfter: new Date(afterStr),
+          createdBefore: new Date(beforeStr),
+        }),
+      );
     });
   });
 });
