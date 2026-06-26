@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
+import { validateEnvironment } from './common/config/env.validation';
 import { AppService } from './app.service';
 import { UsersModule } from './users/users.module';
 import { IdempotentUserModule } from './users/idempotent-user.module';
@@ -29,6 +30,7 @@ import { HealthModule } from './health/health.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      validate: validateEnvironment,
     }),
     PrismaModule,
     AuthModule,
