@@ -12,6 +12,7 @@ import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 import { PaginationDto, PaginatedResponse } from '../common/dto/pagination.dto';
 import { PaymentsFilterDto } from './dto/payments-filter.dto';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -26,6 +27,7 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly limitsService: LimitsService,
     private readonly walletsService: WalletsService,
+    private readonly webhookEventEmitter: WebhookEventEmitterService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
@@ -49,7 +51,7 @@ export class PaymentsService {
     await this.walletsService.findWalletById(receiverWalletId);
     await this.limitsService.checkLimits(walletId, amount);
 
-    return this.prisma.payment.create({
+    const payment = await this.prisma.payment.create({
       data: {
         fromId,
         toId,
@@ -60,6 +62,17 @@ export class PaymentsService {
         status: PaymentStatus.PENDING,
       },
     });
+
+    await this.webhookEventEmitter.emitPaymentCreated({
+      paymentId: payment.id,
+      walletId,
+      receiverWalletId,
+      amount,
+      currency,
+      status: payment.status,
+    });
+
+    return payment;
   }
 
   async findAll(
@@ -114,10 +127,21 @@ export class PaymentsService {
       }
     }
 
-    return this.prisma.payment.update({
+    const updatedPayment = await this.prisma.payment.update({
       where: { id: paymentId },
       data: updatePaymentDto,
     });
+
+    if (updatePaymentDto.status !== undefined) {
+      await this.webhookEventEmitter.emitPaymentStatusUpdated({
+        paymentId: updatedPayment.id,
+        walletId: String(updatedPayment.fromId),
+        previousStatus: payment.status,
+        status: updatedPayment.status,
+      });
+    }
+
+    return updatedPayment;
   }
 
   remove(id: string) {

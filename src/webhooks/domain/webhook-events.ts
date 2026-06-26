@@ -23,6 +23,13 @@ export enum WebhookEventType {
   // User events
   USER_CREATED = 'user.created',
   USER_UPDATED = 'user.updated',
+
+  // Payment events
+  PAYMENT_CREATED = 'payment.created',
+  PAYMENT_STATUS_UPDATED = 'payment.status.updated',
+
+  // Limit events
+  LIMITS_UPDATED = 'limits.updated',
 }
 
 export interface WebhookEvent {

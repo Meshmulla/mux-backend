@@ -5,6 +5,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 
@@ -27,14 +28,25 @@ export class LimitExceededException extends HttpException {
 
 @Injectable()
 export class LimitsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly webhookEventEmitter: WebhookEventEmitterService,
+  ) {}
 
   async setLimits(walletId: string, daily: number, perTx: number) {
-    return this.prisma.walletLimit.upsert({
+    const limits = await this.prisma.walletLimit.upsert({
       where: { walletId },
       update: { dailyLimit: daily, perTransactionLimit: perTx },
       create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
     });
+
+    await this.webhookEventEmitter.emitLimitsUpdated({
+      walletId,
+      dailyLimit: limits.dailyLimit,
+      perTransactionLimit: limits.perTransactionLimit,
+    });
+
+    return limits;
   }
 
   async getLimits(walletId: string) {

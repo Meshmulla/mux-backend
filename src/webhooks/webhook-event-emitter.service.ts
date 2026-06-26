@@ -178,6 +178,50 @@ export class WebhookEventEmitterService {
   }
 
   /**
+   * Emits a payment.created event
+   */
+  async emitPaymentCreated(data: {
+    paymentId: string | number;
+    walletId: string;
+    receiverWalletId: string;
+    amount: string | number;
+    currency: string;
+    status: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.PAYMENT_CREATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a payment.status.updated event
+   */
+  async emitPaymentStatusUpdated(data: {
+    paymentId: string | number;
+    walletId: string;
+    previousStatus: string;
+    status: string;
+    reason?: string;
+  }): Promise<void> {
+    const event = this.createEvent(
+      WebhookEventType.PAYMENT_STATUS_UPDATED,
+      data,
+    );
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a limits.updated event
+   */
+  async emitLimitsUpdated(data: {
+    walletId: string;
+    dailyLimit: number;
+    perTransactionLimit: number;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.LIMITS_UPDATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
    * Creates a webhook event with standard structure
    */
   private createEvent(
