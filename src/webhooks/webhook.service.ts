@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookEndpoint, EndpointStatus } from './domain/webhook-events';
+import { PaginationDto, PaginatedResponse } from '../common/dto/pagination.dto';
 import * as crypto from 'crypto';
 
 export interface CreateWebhookEndpointRequest {
@@ -75,6 +76,33 @@ export class WebhookService {
   }
 
   /**
+   * Lists webhook endpoints for a project with pagination
+   */
+  async listEndpointsPaginated(
+    projectId: string,
+    pagination: PaginationDto,
+  ): Promise<PaginatedResponse<WebhookEndpoint>> {
+    const skip = (pagination.page - 1) * pagination.limit;
+
+    const [endpoints, total] = await Promise.all([
+      this.prisma.webhookEndpoint.findMany({
+        where: { projectId },
+        skip,
+        take: pagination.limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.webhookEndpoint.count({ where: { projectId } }),
+    ]);
+
+    return {
+      data: endpoints.map((e) => this.mapPrismaEndpointToDomain(e)),
+      total,
+      page: pagination.page,
+      limit: pagination.limit,
+    };
+  }
+
+  /**
    * Gets a webhook endpoint by ID
    */
   async getEndpoint(endpointId: string): Promise<WebhookEndpoint> {
@@ -140,6 +168,33 @@ export class WebhookService {
       orderBy: { createdAt: 'desc' },
       take: limit,
     });
+  }
+
+  /**
+   * Gets delivery attempts for an endpoint with pagination
+   */
+  async getDeliveriesPaginated(
+    endpointId: string,
+    pagination: PaginationDto,
+  ): Promise<PaginatedResponse<any>> {
+    const skip = (pagination.page - 1) * pagination.limit;
+
+    const [deliveries, total] = await Promise.all([
+      this.prisma.webhookDelivery.findMany({
+        where: { endpointId },
+        skip,
+        take: pagination.limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.webhookDelivery.count({ where: { endpointId } }),
+    ]);
+
+    return {
+      data: deliveries,
+      total,
+      page: pagination.page,
+      limit: pagination.limit,
+    };
   }
 
   /**
