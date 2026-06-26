@@ -3,6 +3,7 @@ import {
   Logger,
   ConflictException,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
@@ -18,6 +19,8 @@ import { KeyManagementService } from '../key-management/key-management.service';
 import { KeyType } from '../key-management/domain/key-types';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { WalletRetryService } from './wallet-retry.service';
+import { WalletApiMetricsService } from './wallet-api-metrics.service';
 
 export type OrchestrationPhase =
   | 'user-resolution'
@@ -168,6 +171,9 @@ export class WalletCreationOrchestrator {
     private idempotentUserService: IdempotentUserService,
     private keyManagementService: KeyManagementService,
     prismaClient?: PrismaClient,
+    @Optional() private webhookEventEmitter?: WebhookEventEmitterService,
+    @Optional() private walletRetryService?: WalletRetryService,
+    @Optional() private walletApiMetrics?: WalletApiMetricsService,
   ) {
     this.prisma = prismaClient ?? new PrismaClient({} as any);
   }
@@ -199,6 +205,7 @@ export class WalletCreationOrchestrator {
     request: CreateWalletOrchestratorRequest,
   ): Promise<WalletOrchestrationResult> {
     const startTime = Date.now();
+    let committedWallet: Wallet | undefined;
     this.logger.log(
       `Starting wallet creation orchestration for user ${request.userId} on ${request.network}`,
     );
@@ -287,8 +294,32 @@ export class WalletCreationOrchestrator {
           phases: newWallet.phaseTimings,
         });
 
+        // This is set only on the original transaction path, never for an
+        // existing wallet or idempotency replay. Events are emitted below,
+        // after `$transaction` has committed successfully.
+        committedWallet = activatedWallet;
+
         return result;
       });
+
+      if (committedWallet) {
+        this.emitDomainEvent('wallet.created', () =>
+          this.webhookEventEmitter?.emitWalletCreated({
+            walletId: committedWallet.id,
+            userId: committedWallet.userId,
+            publicKey: committedWallet.publicKey,
+            network: committedWallet.network,
+            status: committedWallet.status,
+          }),
+        );
+        this.emitDomainEvent('wallet.activated', () =>
+          this.webhookEventEmitter?.emitWalletActivated({
+            walletId: committedWallet.id,
+            userId: committedWallet.userId,
+            publicKey: committedWallet.publicKey,
+          }),
+        );
+      }
 
       return result;
     } catch (error) {
@@ -346,6 +377,12 @@ export class WalletCreationOrchestrator {
     } else {
       this.logger.log(line);
     }
+    this.walletApiMetrics?.record({
+      operation: 'orchestrate_create',
+      outcome: metrics.outcome === 'failed' ? 'failure' : metrics.outcome,
+      durationMs: metrics.durationMs,
+      network: metrics.network,
+    });
   }
 
   /**
@@ -455,7 +492,7 @@ export class WalletCreationOrchestrator {
     let privateKey: string;
     try {
       const t = Date.now();
-      encryptedKeyMaterial = await this.keyManagementService.generateKey({
+      encryptedKeyMaterial = await this.generateKeyWithRetry({
         keyType: KeyType.STELLAR_ED25519,
         metadata: { userId: request.userId, network: request.network },
       });
@@ -706,7 +743,7 @@ export class WalletCreationOrchestrator {
         `Funding testnet account ${publicKey.substring(0, 8)}... via Friendbot`,
       );
 
-      const response = await fetch(friendbotUrl, { method: 'GET' });
+      const response = await this.fetchWithRetry(friendbotUrl);
 
       if (!response.ok) {
         const errorBody = await response.text();
@@ -788,5 +825,44 @@ export class WalletCreationOrchestrator {
       this.logger.error(`Failed to activate wallet ${walletId}:`, error);
       throw new Error('Wallet activation within transaction failed');
     }
+  }
+
+  private async generateKeyWithRetry(request: {
+    keyType: KeyType;
+    metadata: Record<string, unknown>;
+  }) {
+    if (!this.walletRetryService) {
+      return this.keyManagementService.generateKey(request);
+    }
+    return this.walletRetryService.execute(
+      { operation: 'orchestration_key_generation' },
+      () => this.keyManagementService.generateKey(request),
+    );
+  }
+
+  private async fetchWithRetry(url: string): Promise<Response> {
+    const request = async (): Promise<Response> => {
+      const response = await fetch(url, { method: 'GET' });
+      if (response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500) {
+        const error = Object.assign(
+          new Error(`Friendbot responded with status ${response.status}`),
+          { status: response.status },
+        );
+        throw error;
+      }
+      return response;
+    };
+    if (!this.walletRetryService) return request();
+    return this.walletRetryService.execute({ operation: 'testnet_funding' }, request);
+  }
+
+  /** A failed webhook dispatch is observable but cannot roll back a wallet. */
+  private emitDomainEvent(
+    eventName: string,
+    emit: () => Promise<void> | undefined,
+  ): void {
+    void Promise.resolve(emit()).catch((error: unknown) =>
+      this.logger.warn(`Unable to emit ${eventName} domain event: ${String(error)}`),
+    );
   }
 }
