@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitUpdatedEvent } from './events/limit-updated.event';
