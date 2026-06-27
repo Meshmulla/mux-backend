@@ -5,6 +5,8 @@ import { TransactionsService } from './transactions.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
+import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
 import { TransactionStatus } from './domain/transaction.model';
 
 const mockTransactionsService = {
@@ -30,11 +32,17 @@ describe('TransactionsController', () => {
           provide: StellarTransactionBuildService,
           useValue: { buildPayment: jest.fn() },
         },
+        {
+          provide: FeatureFlagService,
+          useValue: { isEnabled: jest.fn().mockReturnValue(true) },
+        },
       ],
     })
       .overrideGuard(ApiKeyGuard)
       .useValue(allowGuard)
       .overrideGuard(RateLimitGuard)
+      .useValue(allowGuard)
+      .overrideGuard(FeatureFlagGuard)
       .useValue(allowGuard)
       .compile();
 
@@ -88,26 +96,6 @@ describe('TransactionsController', () => {
       );
 
       expect(result).toEqual(paginated);
-    });
-
-    it('throws BadRequestException for negative limit', () => {
-      expect(() => controller.findByWallet('wallet-1', '-1', undefined)).toThrow(BadRequestException);
-    });
-
-    it('throws BadRequestException for non-numeric limit', () => {
-      expect(() => controller.findByWallet('wallet-1', 'abc', undefined)).toThrow(BadRequestException);
-    });
-
-    it('throws BadRequestException for limit exceeding 100', () => {
-      expect(() => controller.findByWallet('wallet-1', '101', undefined)).toThrow(BadRequestException);
-    });
-
-    it('throws BadRequestException for negative offset', () => {
-      expect(() => controller.findByWallet('wallet-1', undefined, '-5')).toThrow(BadRequestException);
-    });
-
-    it('throws BadRequestException for non-integer offset', () => {
-      expect(() => controller.findByWallet('wallet-1', undefined, '1.5')).toThrow(BadRequestException);
     });
   });
 

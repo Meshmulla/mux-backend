@@ -19,6 +19,7 @@ import {
   RateLimitGuard,
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
+import { FeatureFlagGuard, FeatureFlag } from '../common/feature-flags/feature-flag.guard';
 import { TransactionStatus } from './domain/transaction.model';
 
 /** Parse a pagination query param, throwing 400 on invalid input */
@@ -41,7 +42,8 @@ function parsePaginationParam(
 }
 
 @Controller('transactions')
-@UseGuards(ApiKeyGuard, RateLimitGuard)
+@UseGuards(ApiKeyGuard, RateLimitGuard, FeatureFlagGuard)
+@FeatureFlag('transactions_enabled')
 export class TransactionsController {
   constructor(
     private readonly transactionsService: TransactionsService,
