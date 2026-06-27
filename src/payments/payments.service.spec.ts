@@ -3,7 +3,6 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PaymentsService } from './payments.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { LimitsService } from '../limits/limits.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { WalletStatus } from '../wallets/domain/wallet.model';
@@ -31,7 +30,7 @@ const BASE_DTO = {
 describe('PaymentsService', () => {
   let service: PaymentsService;
   let prisma: any;
-  let limitsService: any;
+  let paymentLimitsPort: any;
   let walletsService: any;
   let eventEmitter: any;
   let metrics: any;
@@ -46,7 +45,7 @@ describe('PaymentsService', () => {
         count: jest.fn(),
       },
     };
-    limitsService = { checkLimits: jest.fn() };
+    paymentLimitsPort = { checkLimits: jest.fn() };
     walletsService = { findWalletById: jest.fn() };
     eventEmitter = { emit: jest.fn() };
     metrics = {
@@ -59,7 +58,7 @@ describe('PaymentsService', () => {
       providers: [
         PaymentsService,
         { provide: PrismaService, useValue: prisma },
-        { provide: LimitsService, useValue: limitsService },
+        { provide: PAYMENT_LIMITS_PORT, useValue: paymentLimitsPort },
         { provide: WalletsService, useValue: walletsService },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: MetricsService, useValue: metrics },
@@ -78,7 +77,7 @@ describe('PaymentsService', () => {
       walletsService.findWalletById
         .mockResolvedValueOnce(ACTIVE_WALLET)
         .mockResolvedValueOnce(RECEIVER_WALLET);
-      limitsService.checkLimits.mockResolvedValue(undefined);
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
       prisma.payment.create.mockResolvedValue({
         id: 1,
         ...BASE_DTO,
@@ -93,7 +92,7 @@ describe('PaymentsService', () => {
       expect(walletsService.findWalletById).toHaveBeenCalledWith(
         BASE_DTO.receiverWalletId,
       );
-      expect(limitsService.checkLimits).toHaveBeenCalledWith(
+      expect(paymentLimitsPort.checkLimits).toHaveBeenCalledWith(
         BASE_DTO.walletId,
         BASE_DTO.amount,
       );
@@ -166,7 +165,7 @@ describe('PaymentsService', () => {
       walletsService.findWalletById
         .mockResolvedValueOnce(ACTIVE_WALLET)
         .mockResolvedValueOnce(RECEIVER_WALLET);
-      limitsService.checkLimits.mockResolvedValue(undefined);
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
       prisma.payment.create.mockResolvedValue({
         id: 1,
         ...BASE_DTO,
@@ -175,7 +174,7 @@ describe('PaymentsService', () => {
 
       await service.create(BASE_DTO);
 
-      expect(limitsService.checkLimits).toHaveBeenCalledWith(
+      expect(paymentLimitsPort.checkLimits).toHaveBeenCalledWith(
         BASE_DTO.walletId,
         BASE_DTO.amount,
       );

@@ -32,6 +32,8 @@ describe('LimitsService', () => {
       incrementLimitChecks: jest.fn(),
     };
 
+    cacheService = { get: jest.fn(), set: jest.fn(), delete: jest.fn() };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         LimitsService,
@@ -67,6 +69,17 @@ describe('LimitsService', () => {
       prisma.walletLimit.findUnique.mockResolvedValue(limit);
       const result = await service.getLimits(walletId);
       expect(result).toEqual(limit);
+    });
+
+    it('should use the cache layer for wallet limits', async () => {
+      const limit = { walletId, dailyLimit: 100, perTransactionLimit: 10 };
+      cacheService.get.mockReturnValue(limit);
+
+      const result = await service.getLimits(walletId);
+
+      expect(result).toEqual(limit);
+      expect(cacheService.get).toHaveBeenCalledWith(`limits:${walletId}`);
+      expect(prisma.walletLimit.findUnique).not.toHaveBeenCalled();
     });
   });
 

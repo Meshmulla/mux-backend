@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   NotFoundException,
   BadRequestException,
@@ -8,8 +9,11 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
-import { LimitsService } from '../limits/limits.service';
 import { WalletsService } from '../wallets/wallets.service';
+import {
+  PAYMENT_LIMITS_PORT,
+  PaymentLimitsPort,
+} from './ports/payment-limits.port';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 import { PaginationDto, PaginatedResponse } from '../common/dto/pagination.dto';
@@ -33,7 +37,8 @@ export class PaymentsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly limitsService: LimitsService,
+    @Inject(PAYMENT_LIMITS_PORT)
+    private readonly paymentLimitsPort: PaymentLimitsPort,
     private readonly walletsService: WalletsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly metrics: MetricsService,

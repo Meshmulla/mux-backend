@@ -43,6 +43,7 @@ describe('Payments and Limits Integration', () => {
         PaymentsService,
         LimitsService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: PAYMENT_LIMITS_PORT, useExisting: LimitsService },
         { provide: WalletsService, useValue: mockWalletsService },
         { provide: RequestContextService, useValue: mockRequestContext },
       ],
