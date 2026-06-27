@@ -21,6 +21,14 @@ export class RequestContextService {
     return RequestContextService.asyncLocalStorage.getStore()?.requestId;
   }
 
+  static bootstrapRequestId(requestId: string): void {
+    const current = RequestContextService.asyncLocalStorage.getStore() || {};
+    RequestContextService.asyncLocalStorage.enterWith({
+      ...current,
+      requestId,
+    });
+  }
+
   static run<R>(
     data: RequestContextData,
     callback: () => R,

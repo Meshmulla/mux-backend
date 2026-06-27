@@ -2,7 +2,9 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { ConfigModule } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { PrismaModule } from './prisma/prisma.module';
+import { MetricsModule } from './metrics/metrics.module';
 import { AppService } from './app.service';
 import { UsersModule } from './users/users.module';
 import { IdempotentUserModule } from './users/idempotent-user.module';
@@ -29,7 +31,10 @@ import { HealthModule } from './health/health.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      validate: validateEnvironment,
     }),
+    EventEmitterModule.forRoot(),
+    MetricsModule,
     PrismaModule,
     AuthModule,
     RateLimitModule,

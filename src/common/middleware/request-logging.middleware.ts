@@ -9,16 +9,15 @@ export function requestLogger(
   next: NextFunction,
 ) {
   const logger = new Logger('RequestLogger');
-  let id: string | undefined;
-  try {
-    if (!req) {
-      logger.warn('Request logging skipped: invalid request object');
-      next();
-      return;
-    }
 
+  if (!req) {
+    logger.warn('Request logging skipped: invalid request object');
+    next();
+    return;
+  }
+
+  try {
     const idHeader =
-      req &&
       req.headers &&
       (req.headers['x-request-id'] || req.headers['X-Request-Id']);
     id =
@@ -27,10 +26,7 @@ export function requestLogger(
         : randomUUID();
     const start = Date.now();
 
-    // Attach request ID to request object for access in controllers/services
-    if (req) {
-      req.requestId = id;
-    }
+    req.requestId = id;
 
     if (res && typeof res.setHeader === 'function') {
       try {
@@ -41,10 +37,9 @@ export function requestLogger(
     }
 
     const ip =
-      (req && (req.ip || (req.socket && req.socket.remoteAddress))) ||
-      'unknown';
-    const method = (req && req.method) || 'UNKNOWN';
-    const url = (req && (req.originalUrl || req.url)) || 'unknown';
+      (req.ip || (req.socket && req.socket.remoteAddress)) || 'unknown';
+    const method = req.method || 'UNKNOWN';
+    const url = (req.originalUrl || req.url) || 'unknown';
 
     logger.log(`${method} ${url} id=${id} ip=${ip}`);
 
@@ -60,9 +55,16 @@ export function requestLogger(
         }
       });
     }
+
+    RequestContextService.run({ requestId: id }, () => {
+      try {
+        next();
+      } catch (e) {
+        logger.warn('next() threw in requestLogger');
+      }
+    });
   } catch (err: any) {
     logger.warn('Request logging failed: ' + (err && err.message));
-  } finally {
     try {
       // Propagate the request ID through AsyncLocalStorage so downstream
       // code (controllers, services — e.g. auth/session flows) can access
@@ -74,7 +76,7 @@ export function requestLogger(
         next();
       }
     } catch (e) {
-      logger.warn('next() threw in requestLogger');
+      logger.warn('next() threw after requestLogger error');
     }
   }
 }

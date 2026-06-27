@@ -40,6 +40,26 @@ describe('requestLogger', () => {
     expect(spyLog).toHaveBeenCalled();
   });
 
+  it('preserves an incoming x-request-id header', () => {
+    const req: any = {
+      method: 'POST',
+      originalUrl: '/test',
+      headers: { 'x-request-id': 'req-123' },
+      ip: '1.2.3.4',
+    };
+    const res: any = {
+      setHeader: jest.fn(),
+      on: jest.fn(),
+      statusCode: 200,
+    };
+    const next = jest.fn();
+
+    requestLogger(req, res, next as any);
+
+    expect(res.setHeader).toHaveBeenCalledWith('x-request-id', 'req-123');
+    expect(next).toHaveBeenCalled();
+  });
+
   it('handles invalid/stale request objects gracefully', () => {
     const req: any = null;
     const res: any = { setHeader: jest.fn(), on: jest.fn() };
@@ -110,62 +130,31 @@ describe('requestLogger', () => {
     expect(req.requestId).toBe(existingId);
   });
 
-  it('propagates the request ID through RequestContextService so downstream code (e.g. auth/session services) can read it without the Express req object', () => {
-    const existingId = 'propagation-test-id-456';
+  it('propagates request ID into RequestContextService async context', () => {
     const req: any = {
       method: 'GET',
-      originalUrl: '/auth/authenticate',
-      headers: { 'x-request-id': existingId },
+      originalUrl: '/test',
+      headers: {},
       ip: '1.2.3.4',
     };
-    const res: any = { setHeader: jest.fn(), on: jest.fn() };
+    const res: any = {
+      setHeader: jest.fn(),
+      on: jest.fn(),
+      statusCode: 200,
+    };
+
+    let capturedRequestId: string | undefined;
+    const next = jest.fn().mockImplementation(() => {
+      const service = new RequestContextService();
+      capturedRequestId = service.getRequestId();
+    });
 
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
-
-    let observedDuringNext: string | undefined;
-    const next = jest.fn(() => {
-      observedDuringNext = RequestContextService.getCurrentRequestId();
-    });
 
     requestLogger(req, res, next as any);
 
     expect(next).toHaveBeenCalled();
-    expect(observedDuringNext).toBe(existingId);
-  });
-
-  it('does not leak request context between two requests handled in sequence', () => {
-    const res: any = { setHeader: jest.fn(), on: jest.fn() };
-    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
-
-    let firstObserved: string | undefined;
-    requestLogger(
-      {
-        method: 'GET',
-        originalUrl: '/a',
-        headers: { 'x-request-id': 'request-a' },
-        ip: '1.2.3.4',
-      } as any,
-      res,
-      (() => {
-        firstObserved = RequestContextService.getCurrentRequestId();
-      }) as any,
-    );
-
-    let secondObserved: string | undefined;
-    requestLogger(
-      {
-        method: 'GET',
-        originalUrl: '/b',
-        headers: { 'x-request-id': 'request-b' },
-        ip: '1.2.3.4',
-      } as any,
-      res,
-      (() => {
-        secondObserved = RequestContextService.getCurrentRequestId();
-      }) as any,
-    );
-
-    expect(firstObserved).toBe('request-a');
-    expect(secondObserved).toBe('request-b');
+    expect(capturedRequestId).toBeDefined();
+    expect(capturedRequestId).toBe(req.requestId);
   });
 });

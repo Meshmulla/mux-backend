@@ -7,7 +7,9 @@ import { AuthMetricsService } from './auth-metrics.service';
 import { AuthMetricsController } from './auth-metrics.controller';
 import { IdempotentUserModule } from '../users/idempotent-user.module';
 import { WalletsModule } from '../wallets/wallets.module';
+import { PrismaModule } from '../prisma/prisma.module';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { WebhookModule } from '../webhooks/webhook.module';
 
 @Module({
   imports: [IdempotentUserModule, WalletsModule],
