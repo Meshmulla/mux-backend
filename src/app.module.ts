@@ -2,10 +2,14 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { ConfigModule } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { PrismaModule } from './prisma/prisma.module';
+import { MetricsModule } from './metrics/metrics.module';
 import { AppService } from './app.service';
 import { UsersModule } from './users/users.module';
+import { IdempotentUserModule } from './users/idempotent-user.module';
 import { WalletsModule } from './wallets/wallets.module';
+import { WalletCreationOrchestratorModule } from './wallets/wallet-creation-orchestrator.module';
 import { PaymentsModule } from './payments/payments.module';
 import { LimitsModule } from './limits/limits.module';
 import { RecoveryModule } from './recovery/recovery.module';
@@ -21,19 +25,23 @@ import { TransactionsModule } from './transactions/transactions.module';
 import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
-import { IdempotentUserModule } from './users/idempotent-user.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      validate: validateEnvironment,
     }),
+    EventEmitterModule.forRoot(),
+    MetricsModule,
     PrismaModule,
     AuthModule,
     RateLimitModule,
     UsersModule,
+    IdempotentUserModule,
     WalletsModule,
+    WalletCreationOrchestratorModule,
     PaymentsModule,
     LimitsModule,
     RecoveryModule,
@@ -45,7 +53,6 @@ import { IdempotentUserModule } from './users/idempotent-user.module';
     DevelopersModule,
     ProjectsModule,
     HealthModule,
-    IdempotentUserModule,
   ],
   controllers: [AppController],
   providers: [

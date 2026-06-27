@@ -8,16 +8,15 @@ import {
   HttpStatus,
   Param,
 } from '@nestjs/common';
-import {
-  KeyManagementService,
-  GenerateKeyRequest,
-  SignRequest,
-  RotateKeyRequest,
-} from './key-management.service';
+import { KeyManagementService } from './key-management.service';
+import type { GenerateKeyRequest, SignRequest } from './key-management.service';
 import { KeyType } from './domain/key-types';
 import { KeyStatisticsQuery } from './domain/key-statistics';
-import { KeyRotationAuditService, QueryAuditLogsRequest } from './key-rotation-audit.service';
-import { KeyOperation } from '@prisma/client';
+import {
+  KeyRotationAuditService,
+  QueryAuditLogsRequest,
+} from './key-rotation-audit.service';
+import { KeyOperation } from '../generated/prisma/client';
 
 /**
  * Internal controller for key management operations
@@ -45,6 +44,7 @@ export class KeyManagementController {
       publicKey: result.publicKey,
       encryptedData: result.encryptedData,
       encryptionVersion: result.encryptionVersion,
+      keyVersion: result.keyVersion,
       keyType: result.keyType,
       // Note: No private key is ever returned
     };
@@ -123,12 +123,12 @@ export class KeyManagementController {
 
   /**
    * Gets key management statistics
-   * 
+   *
    * Query parameters:
    * - startDate: ISO date string (optional)
    * - endDate: ISO date string (optional)
    * - operation: Filter by operation type (optional)
-   * 
+   *
    * Example: GET /internal/key-management/statistics?startDate=2024-01-01&endDate=2024-12-31
    */
   @Get('statistics')
@@ -153,13 +153,13 @@ export class KeyManagementController {
 
   /**
    * Gets detailed key management statistics with metrics and time series
-   * 
+   *
    * Query parameters:
    * - startDate: ISO date string (optional)
    * - endDate: ISO date string (optional)
    * - operation: Filter by operation type (optional)
    * - includeTimeSeries: Include hourly time series data (optional, default: false)
-   * 
+   *
    * Example: GET /internal/key-management/statistics/detailed?includeTimeSeries=true
    */
   @Get('statistics/detailed')
@@ -185,29 +185,8 @@ export class KeyManagementController {
   }
 
   /**
-   * Rotates a key (generates new keypair, marks old as rotated)
-   * 
-   * POST /internal/key-management/rotate
-   * Body: { keyId, encryptedKeyMaterial, keyType, reason?, metadata? }
-   */
-  @Post('rotate')
-  @HttpCode(HttpStatus.OK)
-  async rotateKey(@Body() request: RotateKeyRequest) {
-    const result = await this.keyManagementService.rotateKey(request);
-
-    return {
-      success: true,
-      newPublicKey: result.newKey.publicKey,
-      newEncryptedData: result.newKey.encryptedData,
-      encryptionVersion: result.newKey.encryptionVersion,
-      previousKeyId: result.previousKeyId,
-      rotatedAt: new Date(),
-    };
-  }
-
-  /**
    * Queries persistent audit logs with filtering
-   * 
+   *
    * Query parameters:
    * - operation: Filter by operation type (GENERATE, SIGN, ROTATE, etc.)
    * - keyId: Filter by key ID
@@ -217,7 +196,7 @@ export class KeyManagementController {
    * - success: Filter by success status (true/false)
    * - limit: Max results to return (default: 100)
    * - offset: Pagination offset (default: 0)
-   * 
+   *
    * Example: GET /internal/key-management/audit/persistent?operation=ROTATE&limit=50
    */
   @Get('audit/persistent')
@@ -252,7 +231,7 @@ export class KeyManagementController {
 
   /**
    * Gets complete rotation history for a specific key
-   * 
+   *
    * GET /internal/key-management/audit/rotation-history/:keyId
    */
   @Get('audit/rotation-history/:keyId')
@@ -267,11 +246,11 @@ export class KeyManagementController {
 
   /**
    * Gets audit log statistics
-   * 
+   *
    * Query parameters:
    * - startDate: Start of date range (ISO string)
    * - endDate: End of date range (ISO string)
-   * 
+   *
    * Example: GET /internal/key-management/audit/statistics?startDate=2024-01-01
    */
   @Get('audit/statistics')

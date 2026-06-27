@@ -2,8 +2,12 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IKeyProvider } from './interfaces/key-provider.interface';
 import { StellarKeyProvider } from './providers/stellar-key.provider';
-import { EncryptionService } from '../encryption/encryption.service';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../encryption/encryption.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 import {
   GeneratedKeyPair,
   SignatureResult,
@@ -66,6 +70,7 @@ export class KeyManagementService {
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly auditService: KeyRotationAuditService,
   ) {
     // Initialize key providers
     this.providers = new Map();
@@ -90,9 +95,9 @@ export class KeyManagementService {
     request: GenerateKeyRequest,
   ): Promise<EncryptedKeyMaterial> {
     const startTime = Date.now();
-    const provider = this.getProvider(request.keyType);
 
     try {
+      const provider = this.getProvider(request.keyType);
       // Generate the keypair
       const keyPair = await provider.generateKeyPair(request.keyType);
 
@@ -119,6 +124,7 @@ export class KeyManagementService {
       return {
         encryptedData,
         encryptionVersion: 1,
+        keyVersion: 1,
         keyType: request.keyType,
         publicKey: keyPair.publicKey,
       };
@@ -265,11 +271,14 @@ export class KeyManagementService {
       const newEncryptedData =
         this.encryptionService.encryptAndSerialize(privateKeyMaterial);
 
-      this.logger.log(`Successfully re-encrypted key material for key ${keyId}`);
+      this.logger.log(
+        `Successfully re-encrypted key material for key ${keyId}`,
+      );
 
       return {
         encryptedData: newEncryptedData,
-        encryptionVersion: 2, // Increment version
+        encryptionVersion: 2, // Increment encryption envelope version
+        keyVersion: 1,
         keyType,
         publicKey: '', // Would derive from private key in production
       };
@@ -308,15 +317,11 @@ export class KeyManagementService {
     });
 
     if (!predecessor) {
-      throw new NotFoundException(
-        `Wallet ${predecessorWalletId} not found`,
-      );
+      throw new NotFoundException(`Wallet ${predecessorWalletId} not found`);
     }
 
     if (!['ACTIVE', 'ROTATING'].includes(predecessor.status)) {
-      throw new Error(
-        `Cannot rotate wallet in status: ${predecessor.status}`,
-      );
+      throw new Error(`Cannot rotate wallet in status: ${predecessor.status}`);
     }
 
     if (predecessor.successorId) {
@@ -511,7 +516,11 @@ export class KeyManagementService {
 
     // Add time series if requested
     if (query?.includeTimeSeries) {
-      result.timeSeries = this.generateTimeSeries(filteredLogs, startDate, endDate);
+      result.timeSeries = this.generateTimeSeries(
+        filteredLogs,
+        startDate,
+        endDate,
+      );
     }
 
     return result;
@@ -530,7 +539,7 @@ export class KeyManagementService {
 
     logs.forEach((log) => {
       const hourKey = new Date(log.timestamp).toISOString().substring(0, 13); // YYYY-MM-DDTHH
-      
+
       if (!hourlyData.has(hourKey)) {
         hourlyData.set(hourKey, new Map());
       }
@@ -602,7 +611,10 @@ export class KeyManagementService {
       )
       .catch((error) => {
         // Already logged in service, just ensure it doesn't break the main flow
-        this.logger.error('Audit persistence failed (non-blocking):', error.message);
+        this.logger.error(
+          'Audit persistence failed (non-blocking):',
+          error.message,
+        );
       });
 
     // In production, send to external audit system

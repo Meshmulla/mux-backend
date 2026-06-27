@@ -2,10 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { KeyManagementController } from './key-management.controller';
 import { KeyManagementService } from './key-management.service';
 import { KeyType } from './domain/key-types';
-import {
-  KeyStatistics,
-  DetailedKeyStatistics,
-} from './domain/key-statistics';
+import { KeyRotationAuditService } from './key-rotation-audit.service';
+import { KeyStatistics, DetailedKeyStatistics } from './domain/key-statistics';
 
 describe('KeyManagementController', () => {
   let controller: KeyManagementController;
@@ -29,12 +27,17 @@ describe('KeyManagementController', () => {
           provide: KeyManagementService,
           useValue: mockKeyManagementService,
         },
+        {
+          provide: KeyRotationAuditService,
+          useValue: {
+            queryAuditLogs: jest.fn(),
+            getRotationHistory: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
-    controller = module.get<KeyManagementController>(
-      KeyManagementController,
-    );
+    controller = module.get<KeyManagementController>(KeyManagementController);
     service = module.get<KeyManagementService>(KeyManagementService);
 
     // Reset mocks

@@ -28,6 +28,62 @@ function makeBalance(overrides: Partial<any> = {}) {
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
+import { PrismaService } from '../prisma/prisma.service';
+import { AssetType, BalanceSyncStatus } from './domain/balance.model';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
+
+const WALLET_ID = 'wallet-123';
+const PUBLIC_KEY = 'GABC123';
+
+const nativeAsset = { type: AssetType.NATIVE };
+const nativeBalance = {
+  id: 'bal-1',
+  walletId: WALLET_ID,
+  assetType: AssetType.NATIVE,
+  assetCode: null,
+  assetIssuer: null,
+  balance: '100.0000000',
+  syncStatus: BalanceSyncStatus.SYNCED,
+  lastSyncedAt: new Date(),
+  lastSyncedLedger: 1000,
+  lastReconciledAt: null,
+  reconciliationAttempts: 0,
+  onChainBalance: '100.0000000',
+  mismatchDetectedAt: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+const makeBalanceUpdate = (balance = '100.0000000') => ({
+  walletId: WALLET_ID,
+  asset: nativeAsset,
+  balance,
+  ledgerSequence: 1000,
+  timestamp: new Date(),
+});
+
+describe('BalanceIndexerService', () => {
+  let service: BalanceIndexerService;
+  let prisma: jest.Mocked<PrismaService>;
+  let horizonService: jest.Mocked<StellarHorizonService>;
+
+  const mockPrisma = {
+    walletBalance: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      updateMany: jest.fn(),
+      upsert: jest.fn(),
+    },
+    wallet: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+    },
+    balanceSyncJob: {
+      create: jest.fn().mockResolvedValue({ id: 'job-1' }),
+      update: jest.fn().mockResolvedValue({}),
+    },
   };
 }
 
@@ -37,6 +93,27 @@ describe('BalanceIndexerService', () => {
   let horizonService: jest.Mocked<StellarHorizonService>;
   let webhookEmitter: jest.Mocked<WebhookEventEmitterService>;
   let configService: jest.Mocked<ConfigService>;
+  const mockHorizon = {
+    getAccountBalances: jest.fn(),
+    accountExists: jest.fn(),
+  };
+
+  const mockConfig = {
+    get: jest.fn().mockReturnValue(300_000),
+  };
+
+  const mockWebhookEmitter = {
+    emitBalanceUpdated: jest.fn().mockResolvedValue(undefined),
+    emitBalanceMismatch: jest.fn().mockResolvedValue(undefined),
+  };
+
+  const mockRequestContext = {
+    getRequestId: jest.fn().mockReturnValue('test-request-id-spec'),
+  };
+
+  const mockMetrics = {
+    record: jest.fn(),
+  };
 
   beforeEach(async () => {
     repo = {
@@ -68,14 +145,17 @@ describe('BalanceIndexerService', () => {
         return defaultValue;
       }),
     } as any;
+    jest.clearAllMocks();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BalanceIndexerService,
-        { provide: StellarHorizonService, useValue: horizonService },
-        { provide: ConfigService, useValue: configService },
-        { provide: WebhookEventEmitterService, useValue: webhookEmitter },
-        { provide: BalanceRepository, useValue: repo },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: StellarHorizonService, useValue: mockHorizon },
+        { provide: ConfigService, useValue: mockConfig },
+        { provide: WebhookEventEmitterService, useValue: mockWebhookEmitter },
+        { provide: RequestContextService, useValue: mockRequestContext },
+        { provide: BalanceIndexerMetricsService, useValue: mockMetrics },
       ],
     }).compile();
 
@@ -83,6 +163,15 @@ describe('BalanceIndexerService', () => {
     // Run lifecycle hook manually (compile() calls onModuleInit automatically
     // only in full NestJS apps; call explicitly in unit tests)
     service.onModuleInit();
+    prisma = module.get(PrismaService);
+    horizonService = module.get(StellarHorizonService);
+
+    mockPrisma.balanceSyncJob.create.mockResolvedValue({ id: 'job-1' });
+    mockPrisma.balanceSyncJob.update.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    service.onModuleDestroy();
   });
 
   afterEach(() => jest.clearAllMocks());

@@ -2,9 +2,14 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { NotFoundException } from '@nestjs/common';
 import { KeyManagementService } from './key-management.service';
-import { EncryptionService, DecryptionError } from '../encryption/encryption.service';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../encryption/encryption.service';
 import { KeyType } from './domain/key-types';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
+
+import { KeyRotationAuditService } from './key-rotation-audit.service';
 
 // Prevent loading the real PrismaService (which requires the generated Prisma client)
 jest.mock('../prisma/prisma.service', () => ({
@@ -28,11 +33,20 @@ describe('KeyManagementService', () => {
     $transaction: jest.fn(),
   };
 
+  const mockAuditService = {
+    persistAuditLog: jest.fn().mockResolvedValue(undefined),
+    convertToPersistentFormat: jest.fn().mockReturnValue({}),
+    queryAuditLogs: jest.fn(),
+    getRotationHistory: jest.fn(),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
     const mockConfigService = {
-      get: jest.fn().mockReturnValue('test-encryption-key-12345-long-enough-32-chars'),
+      get: jest
+        .fn()
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars'),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -46,6 +60,10 @@ describe('KeyManagementService', () => {
         {
           provide: PrismaService,
           useValue: mockPrisma,
+        },
+        {
+          provide: KeyRotationAuditService,
+          useValue: mockAuditService,
         },
       ],
     }).compile();
@@ -71,6 +89,7 @@ describe('KeyManagementService', () => {
       expect(result).toHaveProperty('publicKey');
       expect(result).toHaveProperty('keyType', KeyType.STELLAR_ED25519);
       expect(result).toHaveProperty('encryptionVersion');
+      expect(result).toHaveProperty('keyVersion', 1);
 
       // Critical: Should NOT contain plaintext private key
       expect(result).not.toHaveProperty('privateKey');
@@ -262,9 +281,9 @@ describe('KeyManagementService', () => {
       const stellarProvider = (service as any).providers.get(
         KeyType.STELLAR_ED25519,
       );
-      jest.spyOn(stellarProvider, 'sign').mockRejectedValue(
-        new Error('Network timeout'),
-      );
+      jest
+        .spyOn(stellarProvider, 'sign')
+        .mockRejectedValue(new Error('Network timeout'));
 
       await expect(
         service.sign({
@@ -322,15 +341,16 @@ describe('KeyManagementService', () => {
     });
 
     it('should throw KeyDecryptionException when decrypt fails during validate', async () => {
-      jest
-        .spyOn(encryptionService, 'deserializeAndDecrypt')
-        .mockImplementation(() => {
-          throw new DecryptionError('Decryption failed', 'DECRYPTION_FAILED');
-        });
+      const stellarProvider = (service as any).providers.get(
+        KeyType.STELLAR_ED25519,
+      );
+      jest.spyOn(stellarProvider, 'validateKeyPair').mockRejectedValue(
+        new DecryptionError('Decryption failed', 'DECRYPTION_FAILED'),
+      );
 
       await expect(
         service.validateKey(
-          'GSOME_PUBLIC_KEY',
+          'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST',
           'corrupted-material',
           KeyType.STELLAR_ED25519,
         ),
@@ -345,9 +365,9 @@ describe('KeyManagementService', () => {
       const stellarProvider = (service as any).providers.get(
         KeyType.STELLAR_ED25519,
       );
-      jest.spyOn(stellarProvider, 'validateKeyPair').mockRejectedValue(
-        new Error('Unexpected internal error'),
-      );
+      jest
+        .spyOn(stellarProvider, 'validateKeyPair')
+        .mockRejectedValue(new Error('Unexpected internal error'));
 
       const result = await service.validateKey(
         'GSOME_PUBLIC_KEY',
@@ -523,7 +543,11 @@ describe('KeyManagementService', () => {
         const tx = {
           wallet: {
             create: jest.fn().mockResolvedValue(createdSuccessor),
-            update: jest.fn().mockResolvedValue({ ...activePredecessor, successorId, status: 'ROTATING' }),
+            update: jest.fn().mockResolvedValue({
+              ...activePredecessor,
+              successorId,
+              status: 'ROTATING',
+            }),
           },
         };
         return cb(tx);

@@ -1,24 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { APP_GUARD } from '@nestjs/core';
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
+import { WalletCreationOrchestrator } from './wallet-creation-orchestrator.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { WalletNetwork } from './domain/wallet.model';
-
-// Mock guards to avoid dependency resolution issues
-class MockApiKeyGuard {
-  canActivate() { return true; }
-}
-class MockRateLimitGuard {
-  canActivate() { return true; }
-}
+import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
 
 describe('WalletsController', () => {
   let controller: WalletsController;
   let walletsService: WalletsService;
+  let walletCreationOrchestrator: WalletCreationOrchestrator;
 
   const mockWalletsService = {
-    create: jest.fn(),
     findAll: jest.fn(),
     findOne: jest.fn(),
     update: jest.fn(),
@@ -26,6 +20,10 @@ describe('WalletsController', () => {
     getWalletStatus: jest.fn(),
     activateWallet: jest.fn(),
     findWalletsByUserId: jest.fn(),
+  };
+
+  const mockWalletCreationOrchestrator = {
+    createWallet: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -39,14 +37,22 @@ describe('WalletsController', () => {
           useValue: mockWalletsService,
         },
         {
-          provide: APP_GUARD,
-          useClass: MockApiKeyGuard,
+          provide: WalletCreationOrchestrator,
+          useValue: mockWalletCreationOrchestrator,
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(ApiKeyGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(RateLimitGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<WalletsController>(WalletsController);
     walletsService = module.get<WalletsService>(WalletsService);
+    walletCreationOrchestrator = module.get<WalletCreationOrchestrator>(
+      WalletCreationOrchestrator,
+    );
   });
 
   afterEach(() => {
@@ -57,25 +63,40 @@ describe('WalletsController', () => {
     expect(controller).toBeDefined();
   });
 
-  it('should call create on the wallets service', async () => {
+  it('should call createWallet on the orchestrator and pass idempotency', async () => {
     const dto: CreateWalletDto = {
       userId: 'user-123',
       network: WalletNetwork.TESTNET,
+      idempotencyKey: 'idem-123',
     };
 
-    mockWalletsService.create.mockResolvedValue({ wallet: { id: 'wallet-123' }, privateKey: 'secret' });
-
-    await expect(controller.create(dto)).resolves.toEqual({
+    mockWalletCreationOrchestrator.createWallet.mockResolvedValue({
       wallet: { id: 'wallet-123' },
       privateKey: 'secret',
+      isNewWallet: true,
+      idempotencyKey: 'idem-123',
     });
-    expect(mockWalletsService.create).toHaveBeenCalledWith(dto);
+
+    await expect(
+      controller.create(dto, 'req-123'),
+    ).resolves.toEqual({
+      wallet: { id: 'wallet-123' },
+      privateKey: 'secret',
+      isNewWallet: true,
+      idempotencyKey: 'idem-123',
+    });
+    expect(mockWalletCreationOrchestrator.createWallet).toHaveBeenCalledWith(
+      { userId: 'user-123', network: WalletNetwork.TESTNET, idempotencyKey: 'idem-123' },
+      'req-123',
+    );
   });
 
   it('should call findOne with the requested wallet id', async () => {
     mockWalletsService.findOne.mockResolvedValue({ id: 'wallet-123' });
 
-    await expect(controller.findOne('wallet-123')).resolves.toEqual({ id: 'wallet-123' });
+    await expect(controller.findOne('wallet-123')).resolves.toEqual({
+      id: 'wallet-123',
+    });
     expect(mockWalletsService.findOne).toHaveBeenCalledWith('wallet-123');
   });
 
