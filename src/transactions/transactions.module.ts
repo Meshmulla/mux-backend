@@ -3,6 +3,8 @@ import { TransactionsService } from './transactions.service';
 import { TransactionsController } from './transactions.controller';
 import { TransactionQueryService } from './transaction-query.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
+import { HorizonSubmissionService } from './horizon-submission.service';
+import { TransactionRetryService } from './transaction-retry.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BalanceIndexerModule } from '../balance-indexer/balance-indexer.module';
 import { WebhookModule } from '../webhooks/webhook.module';
