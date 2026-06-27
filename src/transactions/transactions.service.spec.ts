@@ -228,6 +228,87 @@ describe('TransactionsService', () => {
 
       expect(result.hasMore).toBe(true);
     });
+
+    it('filters by assetType', async () => {
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
+
+      await service.findAll({ assetType: 'CREDIT_ALPHANUM4' });
+
+      expect(mockPrisma.transaction.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ assetType: 'CREDIT_ALPHANUM4' }),
+        }),
+      );
+    });
+
+    it('filters by assetCode', async () => {
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
+
+      await service.findAll({ assetCode: 'USDC' });
+
+      expect(mockPrisma.transaction.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ assetCode: 'USDC' }),
+        }),
+      );
+    });
+
+    it('filters by minAmount and maxAmount', async () => {
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
+
+      await service.findAll({ minAmount: '10', maxAmount: '500' });
+
+      expect(mockPrisma.transaction.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            amount: { gte: '10', lte: '500' },
+          }),
+        }),
+      );
+    });
+
+    it('filters by minAmount only', async () => {
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
+
+      await service.findAll({ minAmount: '50' });
+
+      expect(mockPrisma.transaction.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ amount: { gte: '50' } }),
+        }),
+      );
+    });
+
+    it('filters by createdAfter and createdBefore', async () => {
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
+      const after = new Date('2024-01-01T00:00:00.000Z');
+      const before = new Date('2024-12-31T23:59:59.999Z');
+
+      await service.findAll({ createdAfter: after, createdBefore: before });
+
+      expect(mockPrisma.transaction.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            createdAt: { gte: after, lte: before },
+          }),
+        }),
+      );
+    });
+
+    it('filters by createdAfter only', async () => {
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
+      const after = new Date('2024-06-01T00:00:00.000Z');
+
+      await service.findAll({ createdAfter: after });
+
+      expect(mockPrisma.transaction.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            createdAt: { gte: after },
+          }),
+        }),
+      );
+    });
   });
 
   describe('findByWallet', () => {
@@ -371,6 +452,103 @@ describe('TransactionsService', () => {
         transactionId: 'tx-1',
         walletId: existing.senderWalletId,
         txHash: 'hash-abc',
+      });
+    });
+  });
+
+  describe('domain event emission', () => {
+    it('does not throw when webhookEventEmitter is absent (fire-and-forget)', async () => {
+      const moduleWithoutEmitter: TestingModule =
+        await Test.createTestingModule({
+          providers: [
+            TransactionsService,
+            CacheService,
+            { provide: PrismaService, useValue: mockPrisma },
+            { provide: BalanceIndexerService, useValue: mockBalanceIndexer },
+          ],
+        }).compile();
+
+      const svc =
+        moduleWithoutEmitter.get<TransactionsService>(TransactionsService);
+
+      mockPrisma.wallet.findUnique
+        .mockResolvedValueOnce(senderWallet)
+        .mockResolvedValueOnce(receiverWallet);
+      mockBalanceIndexer.getBalance.mockResolvedValue({ balance: '100' });
+      mockPrisma.transaction.create.mockResolvedValue(makePrismaTransaction());
+
+      await expect(svc.create(baseDto)).resolves.toBeDefined();
+    });
+
+    it('logs a warning and does not throw when domain event emission fails', async () => {
+      const existing = makePrismaTransaction({
+        status: TransactionStatus.PENDING,
+      });
+      const submitted = {
+        ...existing,
+        status: TransactionStatus.SUBMITTED,
+        stellarHash: 'hash-fail',
+      };
+      mockPrisma.transaction.findUnique.mockResolvedValue(existing);
+      mockPrisma.transaction.update.mockResolvedValue(submitted);
+      mockWebhookEmitter.emitTransactionPending.mockRejectedValueOnce(
+        new Error('network error'),
+      );
+
+      await expect(
+        service.updateStatus('tx-1', { status: TransactionStatus.SUBMITTED }),
+      ).resolves.toBeDefined();
+    });
+
+    it('emits transaction.confirmed domain event on CONFIRMED status', async () => {
+      const existing = makePrismaTransaction({
+        status: TransactionStatus.SUBMITTED,
+      });
+      const confirmed = {
+        ...existing,
+        status: TransactionStatus.CONFIRMED,
+        stellarHash: 'hash-confirm',
+        stellarLedger: 42,
+      };
+      mockPrisma.transaction.findUnique.mockResolvedValue(existing);
+      mockPrisma.transaction.update.mockResolvedValue(confirmed);
+
+      await service.updateStatus('tx-1', {
+        status: TransactionStatus.CONFIRMED,
+      });
+      await Promise.resolve();
+
+      expect(mockWebhookEmitter.emitTransactionConfirmed).toHaveBeenCalledWith({
+        transactionId: 'tx-1',
+        walletId: existing.senderWalletId,
+        txHash: 'hash-confirm',
+        ledger: 42,
+        confirmations: 1,
+      });
+    });
+
+    it('emits transaction.failed domain event on FAILED status', async () => {
+      const existing = makePrismaTransaction({
+        status: TransactionStatus.PENDING,
+      });
+      const failed = {
+        ...existing,
+        status: TransactionStatus.FAILED,
+        statusReason: 'timeout',
+      };
+      mockPrisma.transaction.findUnique.mockResolvedValue(existing);
+      mockPrisma.transaction.update.mockResolvedValue(failed);
+
+      await service.updateStatus('tx-1', {
+        status: TransactionStatus.FAILED,
+        statusReason: 'timeout',
+      });
+      await Promise.resolve();
+
+      expect(mockWebhookEmitter.emitTransactionFailed).toHaveBeenCalledWith({
+        transactionId: 'tx-1',
+        walletId: existing.senderWalletId,
+        reason: 'timeout',
       });
     });
   });

@@ -102,12 +102,30 @@ describe('TransactionsController', () => {
     it('should call findAll with parsed filters', async () => {
       mockTransactionsService.findAll.mockResolvedValue({ data: [], total: 0, limit: 5, offset: 0, hasMore: false });
 
-      await controller.findAll('wallet-sender', undefined, undefined, '5', '0');
+      await controller.findAll(
+        'wallet-sender',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        '5',
+        '0',
+      );
 
       expect(mockQueryService.findAll).toHaveBeenCalledWith({
         senderWalletId: 'wallet-sender',
         receiverWalletId: undefined,
         status: undefined,
+        assetType: undefined,
+        assetCode: undefined,
+        minAmount: undefined,
+        maxAmount: undefined,
+        createdAfter: undefined,
+        createdBefore: undefined,
         limit: 5,
         offset: 0,
       });
