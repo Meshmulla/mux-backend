@@ -9,6 +9,7 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -27,6 +28,8 @@ import { PaginationDto } from '../common/dto/pagination.dto';
 
 @ApiTags('webhooks')
 @Controller('webhooks')
+@UseGuards(FeatureFlagGuard)
+@FeatureFlag('webhooks_enabled')
 export class WebhookController {
   constructor(
     private readonly webhookService: WebhookService,

@@ -5,7 +5,6 @@ import { WebhookRetryService } from './webhook-retry.service';
 import { MetricsService } from '../common/metrics/metrics.service';
 import {
   WebhookEvent,
-  WebhookEventType,
   DeliveryStatus,
   EndpointStatus,
 } from './domain/webhook-events';
@@ -40,7 +39,10 @@ export class WebhookDispatcherService {
   async dispatchEvent(request: DispatchEventRequest): Promise<void> {
     const { event, projectId } = request;
 
-    this.logger.log(`Dispatching event ${event.type} (${event.id})`);
+    this.log('log', 'Dispatching webhook event', {
+      eventType: event.type,
+      eventId: event.id,
+    });
 
     this.metrics.incrementCounter('webhooks_dispatched_total', {
       event_type: event.type,
@@ -50,11 +52,16 @@ export class WebhookDispatcherService {
     const endpoints = await this.findSubscribedEndpoints(event.type, projectId);
 
     if (endpoints.length === 0) {
-      this.logger.log(`No endpoints subscribed to ${event.type}`);
+      this.log('log', 'No endpoints subscribed to event type', {
+        eventType: event.type,
+      });
       return;
     }
 
-    this.logger.log(`Found ${endpoints.length} endpoints for ${event.type}`);
+    this.log('log', 'Found subscribed endpoints', {
+      eventType: event.type,
+      endpointCount: endpoints.length,
+    });
 
     // Create delivery records for each endpoint
     for (const endpoint of endpoints) {
@@ -63,7 +70,9 @@ export class WebhookDispatcherService {
 
     // Attempt immediate delivery (async)
     this.processDeliveries().catch((err) =>
-      this.logger.error('Background delivery processing failed:', err),
+      this.log('error', 'Background delivery processing failed', {
+        error: err?.message ?? String(err),
+      }),
     );
   }
 
@@ -111,16 +120,22 @@ export class WebhookDispatcherService {
           retrying++;
         }
       } catch (error) {
-        this.logger.error(`Delivery attempt failed for ${delivery.id}:`, error);
+        this.log('error', 'Delivery attempt failed', {
+          deliveryId: delivery.id,
+          error: (error as Error)?.message ?? String(error),
+        });
         failed++;
       }
     }
 
     const duration = Date.now() - startTime;
-    this.logger.log(
-      `Processed ${deliveries.length} deliveries in ${duration}ms ` +
-        `(delivered: ${delivered}, failed: ${failed}, retrying: ${retrying})`,
-    );
+    this.log('log', 'Processed webhook deliveries', {
+      total: deliveries.length,
+      delivered,
+      failed,
+      retrying,
+      durationMs: duration,
+    });
 
     return { delivered, failed, retrying };
   }
@@ -133,7 +148,10 @@ export class WebhookDispatcherService {
 
     // Skip disabled endpoints
     if (endpoint.status !== EndpointStatus.ACTIVE) {
-      this.logger.warn(`Skipping delivery to disabled endpoint ${endpoint.id}`);
+      this.log('warn', 'Skipping delivery to disabled endpoint', {
+        endpointId: endpoint.id,
+        deliveryId: delivery.id,
+      });
       return DeliveryStatus.FAILED;
     }
 
