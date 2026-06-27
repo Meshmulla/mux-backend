@@ -27,10 +27,15 @@ import {
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 
 @ApiTags('payments')
 @Controller('payments')
-@UseGuards(ApiKeyGuard, RateLimitGuard)
+@UseGuards(ApiKeyGuard, RateLimitGuard, FeatureFlagGuard)
+@FeatureFlag('payments_api')
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 

@@ -215,6 +215,39 @@ describe('PaymentsService', () => {
     });
   });
 
+  describe('request id propagation', () => {
+    it('should call getRequestId when creating a payment', async () => {
+      walletsService.findWalletById
+        .mockResolvedValueOnce(ACTIVE_WALLET)
+        .mockResolvedValueOnce(RECEIVER_WALLET);
+      limitsService.checkLimits.mockResolvedValue(undefined);
+      prisma.payment.create.mockResolvedValue({
+        id: 1,
+        ...BASE_DTO,
+        status: PaymentStatus.PENDING,
+      });
+
+      await service.create(BASE_DTO);
+
+      expect(requestContext.getRequestId).toHaveBeenCalled();
+    });
+
+    it('should call getRequestId when updating a payment', async () => {
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.PENDING,
+      });
+      prisma.payment.update.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.CONFIRMED,
+      });
+
+      await service.update('1', { status: PaymentStatus.CONFIRMED });
+
+      expect(requestContext.getRequestId).toHaveBeenCalled();
+    });
+  });
+
   describe('filtering', () => {
     it('should apply status filter when provided', async () => {
       const payments = [{ id: 1, status: PaymentStatus.PENDING }];

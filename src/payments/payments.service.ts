@@ -40,6 +40,7 @@ export class PaymentsService {
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
+    const requestId = this.requestContext.getRequestId();
     const {
       walletId,
       receiverWalletId,
@@ -138,7 +139,13 @@ export class PaymentsService {
   }
 
   async update(id: string, updatePaymentDto: UpdatePaymentDto) {
+    const requestId = this.requestContext.getRequestId();
     const paymentId = parseInt(id, 10);
+
+    this.logger.log(
+      `Updating payment id=${paymentId} requestId=${requestId}`,
+    );
+
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
     });

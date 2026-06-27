@@ -120,11 +120,16 @@ export class LimitsService {
   }
 
   async checkLimits(walletId: string, amount: number): Promise<void> {
+    const requestId = this.requestContext.getRequestId();
     const limits = await this.getLimits(walletId);
     if (!limits) {
       this.metrics.incrementLimitChecks('allowed');
       return;
     }
+
+    this.logger.log(
+      `Checking limits walletId=${walletId} amount=${amount} requestId=${requestId}`,
+    );
 
     // Enforce per-transaction cap: a cap of 0 blocks all transactions
     if (

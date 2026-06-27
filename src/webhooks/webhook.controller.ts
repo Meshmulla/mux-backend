@@ -10,13 +10,22 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBody,
+  ApiParam,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
-import type {
-  CreateWebhookEndpointRequest,
-  UpdateWebhookEndpointRequest,
-} from './webhook.service';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
+import { CreateWebhookEndpointDto } from './dto/create-webhook-endpoint.dto';
+import { UpdateWebhookEndpointDto } from './dto/update-webhook-endpoint.dto';
+import { WebhookFilterDto } from './dto/webhook-filter.dto';
+import { PaginationDto } from '../common/dto/pagination.dto';
 
+@ApiTags('webhooks')
 @Controller('webhooks')
 export class WebhookController {
   constructor(
@@ -24,12 +33,45 @@ export class WebhookController {
     private readonly webhookDispatcher: WebhookDispatcherService,
   ) { }
 
-  /**
-   * Creates a new webhook endpoint
-   */
+  @ApiOperation({ summary: 'Register a new webhook endpoint' })
+  @ApiBody({
+    type: CreateWebhookEndpointDto,
+    examples: {
+      default: {
+        value: {
+          projectId: 'project-uuid',
+          url: 'https://example.com/webhook',
+          events: ['wallet.created', 'transaction.confirmed'],
+          description: 'My webhook endpoint',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Webhook endpoint created. Secret is only returned on creation.',
+    example: {
+      id: 'endpoint-uuid',
+      url: 'https://example.com/webhook',
+      events: ['wallet.created', 'transaction.confirmed'],
+      description: 'My webhook endpoint',
+      secret: 'whsec_abc123...',
+      status: 'ACTIVE',
+      createdAt: '2024-06-24T12:00:00.000Z',
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - invalid input',
+    example: {
+      statusCode: 400,
+      message: ['url must be a valid URL', 'events must not be empty'],
+      error: 'Bad Request',
+    },
+  })
   @Post('endpoints')
   @HttpCode(HttpStatus.CREATED)
-  async createEndpoint(@Body() request: CreateWebhookEndpointRequest) {
+  async createEndpoint(@Body() request: CreateWebhookEndpointDto) {
     const endpoint = await this.webhookService.createEndpoint(request);
 
     return {
@@ -37,15 +79,42 @@ export class WebhookController {
       url: endpoint.url,
       events: endpoint.events,
       description: endpoint.description,
-      secret: endpoint.secret, // Only returned on creation!
+      secret: endpoint.secret,
       status: endpoint.status,
       createdAt: endpoint.createdAt,
     };
   }
 
-  /**
-   * Lists webhook endpoints for a project
-   */
+  @ApiOperation({ summary: 'List webhook endpoints for a project' })
+  @ApiParam({ name: 'projectId', description: 'Project ID' })
+  @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (starting from 1)' })
+  @ApiQuery({ name: 'limit', required: false, example: 20, description: 'Items per page (max 100)' })
+  @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'DISABLED', 'FAILED'], description: 'Filter by endpoint status' })
+  @ApiQuery({ name: 'event', required: false, example: 'wallet.created', description: 'Filter by subscribed event type' })
+  @ApiResponse({
+    status: 200,
+    description: 'Paginated list of webhook endpoints',
+    example: {
+      endpoints: [
+        {
+          id: 'endpoint-uuid',
+          url: 'https://example.com/webhook',
+          events: ['wallet.created'],
+          description: 'My webhook',
+          status: 'ACTIVE',
+          consecutiveFailures: 0,
+          lastSuccessAt: null,
+          lastFailureAt: null,
+          lastFailureReason: null,
+          createdAt: '2024-06-24T12:00:00.000Z',
+          updatedAt: '2024-06-24T12:00:00.000Z',
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 20,
+    },
+  })
   @Get('endpoints/project/:projectId')
   async listEndpoints(
     @Param('projectId') projectId: string,
@@ -81,6 +150,9 @@ export class WebhookController {
         createdAt: e.createdAt,
         updatedAt: e.updatedAt,
       })),
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
     };
   }
 

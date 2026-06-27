@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookEndpoint, EndpointStatus } from './domain/webhook-events';
+import { WebhookFilterDto } from './dto/webhook-filter.dto';
 import * as crypto from 'crypto';
 
 export interface CreateWebhookEndpointRequest {
@@ -15,6 +16,20 @@ export interface UpdateWebhookEndpointRequest {
   events?: string[];
   description?: string;
   status?: string;
+}
+
+export interface PaginatedEndpointsResponse {
+  endpoints: WebhookEndpoint[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface PaginatedDeliveriesResponse {
+  deliveries: any[];
+  total: number;
+  page: number;
+  limit: number;
 }
 
 /**
@@ -63,7 +78,7 @@ export class WebhookService {
   }
 
   /**
-   * Lists webhook endpoints for a project
+   * Lists webhook endpoints for a project with optional filtering and pagination
    */
   async listEndpoints(
     projectId: string,
@@ -151,7 +166,7 @@ export class WebhookService {
   }
 
   /**
-   * Gets delivery attempts for an endpoint
+   * Gets delivery attempts for an endpoint with pagination
    */
   async getDeliveries(
     endpointId: string,
