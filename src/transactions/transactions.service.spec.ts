@@ -4,7 +4,8 @@ import { TransactionsService } from './transactions.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
-import { TransactionQueryService } from './transaction-query.service';
+import { CacheService } from '../common/cache/cache.service';
+import { TransactionMetricsService } from './transaction-metrics.service';
 import { TransactionStatus } from './domain/transaction.model';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { AssetType } from '../balance-indexer/domain/balance.model';
@@ -40,6 +41,8 @@ const mockPrisma = {
   transaction: {
     create: jest.fn(),
     findUnique: jest.fn(),
+    findMany: jest.fn(),
+    count: jest.fn(),
     update: jest.fn(),
   },
 };
@@ -55,8 +58,13 @@ const mockWebhookEmitter = {
   emitTransactionFailed: jest.fn().mockResolvedValue(undefined),
 };
 
-const mockQueryService = {
-  invalidateCache: jest.fn(),
+const mockMetrics = {
+  incrementTransactionCreated: jest.fn(),
+  incrementStatusUpdated: jest.fn(),
+  incrementIdempotencyHit: jest.fn(),
+  incrementCacheHit: jest.fn(),
+  incrementCacheMiss: jest.fn(),
+  getSnapshot: jest.fn(),
 };
 
 const senderWallet = {
@@ -89,7 +97,7 @@ describe('TransactionsService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: BalanceIndexerService, useValue: mockBalanceIndexer },
         { provide: WebhookEventEmitterService, useValue: mockWebhookEmitter },
-        { provide: TransactionQueryService, useValue: mockQueryService },
+        { provide: TransactionMetricsService, useValue: mockMetrics },
       ],
     }).compile();
 
@@ -179,6 +187,105 @@ describe('TransactionsService', () => {
     });
   });
 
+  describe('findAll', () => {
+    it('returns paginated transactions without filters', async () => {
+      const txs = [makePrismaTransaction()];
+      mockPrisma.transaction.findMany.mockResolvedValue(txs);
+      mockPrisma.transaction.count.mockResolvedValue(1);
+
+      const result = await service.findAll();
+
+      expect(mockPrisma.transaction.findMany).toHaveBeenCalledWith({
+        where: {},
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        skip: 0,
+      });
+      expect(result.data).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.limit).toBe(20);
+      expect(result.offset).toBe(0);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('uses provided limit and offset', async () => {
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
+      mockPrisma.transaction.count.mockResolvedValue(10);
+
+      const result = await service.findAll({ limit: 5, offset: 5 });
+
+      expect(result.limit).toBe(5);
+      expect(result.offset).toBe(5);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('sets hasMore=true when more results exist', async () => {
+      const txs = [makePrismaTransaction()];
+      mockPrisma.transaction.findMany.mockResolvedValue(txs);
+      mockPrisma.transaction.count.mockResolvedValue(5);
+
+      const result = await service.findAll({ limit: 1, offset: 0 });
+
+      expect(result.hasMore).toBe(true);
+    });
+  });
+
+  describe('findByWallet', () => {
+    it('returns paginated transactions for a valid wallet', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue({ id: 'wallet-1' });
+      mockPrisma.transaction.findMany.mockResolvedValue([makePrismaTransaction()]);
+      mockPrisma.transaction.count.mockResolvedValue(1);
+
+      const result = await service.findByWallet('wallet-1');
+
+      expect(result.data).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('throws NotFoundException when wallet does not exist', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue(null);
+
+      await expect(service.findByWallet('nonexistent')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('findOne', () => {
+    it('retrieves transaction from database when not cached', async () => {
+      const tx = makePrismaTransaction();
+      mockPrisma.transaction.findUnique.mockResolvedValue(tx);
+
+      const result = await service.findOne('tx-1');
+
+      expect(result.id).toBe('tx-1');
+      expect(mockPrisma.transaction.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it('retrieves transaction from cache on subsequent calls', async () => {
+      const tx = makePrismaTransaction();
+      mockPrisma.transaction.findUnique.mockResolvedValue(tx);
+
+      // First call - should hit database
+      const result1 = await service.findOne('tx-1');
+      expect(mockPrisma.transaction.findUnique).toHaveBeenCalledTimes(1);
+
+      // Second call - should hit cache
+      const result2 = await service.findOne('tx-1');
+      expect(mockPrisma.transaction.findUnique).toHaveBeenCalledTimes(1); // Still 1, not 2
+      expect(result2).toEqual(result1);
+    });
+
+    it('throws NotFoundException when transaction does not exist', async () => {
+      mockPrisma.transaction.findUnique.mockResolvedValue(null);
+
+      await expect(service.findOne('nonexistent')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
   describe('updateStatus', () => {
     it('updates status with valid transition', async () => {
       const existing = makePrismaTransaction({
@@ -218,14 +325,21 @@ describe('TransactionsService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('calls queryService.invalidateCache after a successful update', async () => {
+    it('invalidates cache when transaction is updated', async () => {
       const existing = makePrismaTransaction({
         status: TransactionStatus.PENDING,
       });
+      const tx = makePrismaTransaction();
       const updated = makePrismaTransaction({
         status: TransactionStatus.SUBMITTED,
       });
-      mockPrisma.transaction.findUnique.mockResolvedValue(existing);
+
+      // Populate cache by calling findOne
+      mockPrisma.transaction.findUnique.mockResolvedValueOnce(tx);
+      await service.findOne('tx-1');
+
+      // Update status
+      mockPrisma.transaction.findUnique.mockResolvedValueOnce(existing);
       mockPrisma.transaction.update.mockResolvedValue(updated);
 
       await service.updateStatus('tx-1', {

@@ -17,6 +17,7 @@ import {
 } from '../wallets/wallet-creation-orchestrator.service';
 import { WalletNetwork } from '../wallets/domain/wallet.model';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { AuthMetricsService } from './auth-metrics.service';
 
 export interface AuthenticationRequest {
   authId: string;
@@ -160,6 +161,7 @@ export class AuthOrchestrator {
     private readonly idempotentUserService: IdempotentUserService,
     private readonly walletCreationOrchestrator: WalletCreationOrchestrator,
     private readonly idempotencyService: IdempotencyService,
+    private readonly authMetrics: AuthMetricsService,
   ) {}
 
   /**
@@ -173,7 +175,13 @@ export class AuthOrchestrator {
     const startTime = Date.now();
 
     // Validate auth provider payload shape before processing
-    AuthPayloadValidator.validate(request);
+    try {
+      AuthPayloadValidator.validate(request);
+    } catch (validationError) {
+      const latency = Date.now() - startTime;
+      this.authMetrics.recordAttempt('failure_invalid_payload', latency);
+      throw validationError;
+    }
 
     const network = request.network || WalletNetwork.TESTNET;
 
@@ -191,6 +199,7 @@ export class AuthOrchestrator {
           this.logger.log(
             `Returning cached authentication result for idempotency key: ${request.idempotencyKey}`,
           );
+          // Replayed responses are not double-counted as new attempts
           return {
             ...cachedResponse,
             _idempotencyReplayed: true,
@@ -202,20 +211,39 @@ export class AuthOrchestrator {
       const userResult = await this.findOrCreateUser(request);
 
       // Step 1.5: Check if user is active
-      this.validateUserStatus(userResult.user);
+      try {
+        this.validateUserStatus(userResult.user);
+      } catch (statusError) {
+        const latency = Date.now() - startTime;
+        this.authMetrics.recordAttempt('failure_user_inactive', latency);
+        throw statusError;
+      }
 
       // Step 2: Ensure user has a wallet (idempotent)
-      const walletResult = await this.ensureUserHasWallet(
-        userResult.user.id,
-        network,
-        userResult.isNewUser,
-      );
+      let walletResult: Awaited<ReturnType<typeof this.ensureUserHasWallet>>;
+      try {
+        walletResult = await this.ensureUserHasWallet(
+          userResult.user.id,
+          network,
+          userResult.isNewUser,
+        );
+      } catch (walletError) {
+        const latency = Date.now() - startTime;
+        this.authMetrics.recordAttempt('failure_wallet_error', latency);
+        throw walletError;
+      }
 
       const duration = Date.now() - startTime;
       this.logger.log(
         `Authentication orchestration completed in ${duration}ms for authId: ${request.authId} ` +
           `(newUser: ${userResult.isNewUser}, newWallet: ${walletResult.isNewWallet})`,
       );
+
+      // Record success metric
+      const outcome = userResult.isNewUser
+        ? 'success_new_user'
+        : 'success_returning_user';
+      this.authMetrics.recordAttempt(outcome, duration);
 
       const result: AuthenticationResultWithMetadata = {
         user: {
@@ -262,6 +290,9 @@ export class AuthOrchestrator {
       if (error instanceof HttpException) {
         throw error;
       }
+      // Only record 'failure_unknown' if not already classified above
+      const latency = Date.now() - startTime;
+      this.authMetrics.recordAttempt('failure_unknown', latency);
       throw new Error(`Authentication failed: ${error.message}`);
     }
   }
