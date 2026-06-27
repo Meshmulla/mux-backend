@@ -3,37 +3,35 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
-  Optional,
 } from '@nestjs/common';
+
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
 import { Asset } from '../balance-indexer/domain/balance.model';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
 import {
-  Transaction,
   TransactionStatus,
-  createTransaction,
-  transitionTransactionStatus,
   canTransitionTransactionStatus,
-  TransactionAsset,
-  StellarNetworkReferences,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
+import { PaginatedTransactionsDto } from './dto/paginated-transactions.dto';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CacheService } from '../common/cache/cache.service';
+import { TransactionMetricsService } from './transaction-metrics.service';
 
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
-  private readonly TRANSACTION_CACHE_TTL = 300000; // 5 minutes
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly balanceIndexer: BalanceIndexerService,
+    @Optional()
     private readonly webhookEventEmitter: WebhookEventEmitterService,
     private readonly cache: CacheService,
+    private readonly metrics: TransactionMetricsService,
   ) {}
 
   /**
@@ -62,6 +60,7 @@ export class TransactionsService {
         this.logger.log(
           `Idempotency hit for key ${idempotencyKey}, returning existing transaction ${existing.id}`,
         );
+        this.metrics.incrementIdempotencyHit();
         return this.mapPrismaToEntity(existing);
       }
     }
@@ -122,6 +121,8 @@ export class TransactionsService {
       },
     });
 
+    this.metrics.incrementTransactionCreated(asset.type);
+
     this.webhookEventEmitter
       .emitTransactionCreated({
         transactionId: created.id,
@@ -129,26 +130,28 @@ export class TransactionsService {
         amount: created.amount,
         asset: created.assetCode ?? created.assetType,
         destination: created.receiverWalletId ?? '',
-      })
-      .catch((err) =>
-        this.logger.error(
-          `Failed to emit transaction.created webhook for ${created.id}: ${err?.message}`,
-        ),
-      );
+      }),
+    );
 
     return this.mapPrismaToEntity(created);
   }
 
   /**
-   * Find all transactions with optional filters
+   * Find all transactions with optional filters, returns paginated response
    */
   async findAll(filters?: {
     senderWalletId?: string;
     receiverWalletId?: string;
     status?: TransactionStatus;
+    assetType?: string;
+    assetCode?: string;
+    minAmount?: string;
+    maxAmount?: string;
+    createdAfter?: Date;
+    createdBefore?: Date;
     limit?: number;
     offset?: number;
-  }): Promise<TransactionEntity[]> {
+  }): Promise<PaginatedTransactionsDto> {
     const where: any = {};
 
     if (filters?.senderWalletId) {
@@ -163,14 +166,26 @@ export class TransactionsService {
       where.status = filters.status;
     }
 
-    const transactions = await this.prisma.transaction.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: filters?.limit,
-      skip: filters?.offset,
-    });
+    const limit = filters?.limit ?? 20;
+    const offset = filters?.offset ?? 0;
 
-    return transactions.map((t) => this.mapPrismaToEntity(t));
+    const [transactions, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.transaction.count({ where }),
+    ]);
+
+    return {
+      data: transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+      limit,
+      offset,
+      hasMore: offset + transactions.length < total,
+    };
   }
 
   /**
@@ -183,8 +198,10 @@ export class TransactionsService {
     const cachedTransaction = this.cache.get<TransactionEntity>(cacheKey);
     if (cachedTransaction) {
       this.logger.debug(`Cache hit for transaction ${id}`);
+      this.metrics.incrementCacheHit();
       return cachedTransaction;
     }
+    this.metrics.incrementCacheMiss();
 
     const transaction = await this.prisma.transaction.findUnique({
       where: { id },
@@ -266,18 +283,16 @@ export class TransactionsService {
       data: updateData,
     });
 
-    // Invalidate cache for this transaction
-    this.cache.delete(`transaction:${id}`);
+    // Invalidate read cache so next findOne fetches fresh data
+    this.queryService.invalidateCache(id);
+
+    this.metrics.incrementStatusUpdated(existing.status, updateDto.status);
 
     this.logger.log(
       `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,
     );
 
-    this.emitStatusWebhook(updated).catch((err) =>
-      this.logger.error(
-        `Failed to emit webhook for transaction ${id} status ${updateDto.status}: ${err?.message}`,
-      ),
-    );
+    this.emitStatusDomainEvent(updated);
 
     return this.mapPrismaToEntity(updated);
   }
@@ -294,12 +309,12 @@ export class TransactionsService {
   }
 
   /**
-   * Find transactions by wallet ID with pagination
+   * Find transactions by wallet ID with pagination metadata
    */
   async findByWallet(
     walletId: string,
     pagination?: { limit?: number; offset?: number },
-  ): Promise<TransactionEntity[]> {
+  ): Promise<PaginatedTransactionsDto> {
     const wallet = await this.prisma.wallet.findUnique({
       where: { id: walletId },
     });
@@ -308,49 +323,66 @@ export class TransactionsService {
       throw new NotFoundException(`Wallet ${walletId} not found`);
     }
 
-    const transactions = await this.prisma.transaction.findMany({
-      where: {
-        OR: [{ senderWalletId: walletId }, { receiverWalletId: walletId }],
-      },
-      orderBy: { createdAt: 'desc' },
-      take: pagination?.limit,
-      skip: pagination?.offset,
-    });
+    const limit = pagination?.limit ?? 20;
+    const offset = pagination?.offset ?? 0;
+    const where = {
+      OR: [{ senderWalletId: walletId }, { receiverWalletId: walletId }],
+    };
 
-    return transactions.map((t) => this.mapPrismaToEntity(t));
+    const [transactions, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.transaction.count({ where }),
+    ]);
+
+    return {
+      data: transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+      limit,
+      offset,
+      hasMore: offset + transactions.length < total,
+    };
   }
 
   /**
-   * Emit the appropriate webhook event for a transaction status
+   * Emit the appropriate domain event for a transaction status change.
+   * Fire-and-forget: failures are logged as warnings and never surface to callers.
    */
-  private async emitStatusWebhook(tx: any): Promise<void> {
+  private emitStatusDomainEvent(tx: any): void {
     const status = tx.status as TransactionStatus;
     if (status === TransactionStatus.SUBMITTED) {
-      await this.webhookEventEmitter.emitTransactionPending({
-        transactionId: tx.id,
-        walletId: tx.senderWalletId,
-        txHash: tx.stellarHash ?? '',
-      });
+      this.emitDomainEvent('transaction.submitted', () =>
+        this.webhookEventEmitter?.emitTransactionPending({
+          transactionId: tx.id,
+          walletId: tx.senderWalletId,
+          txHash: tx.stellarHash ?? '',
+        }),
+      );
     } else if (status === TransactionStatus.CONFIRMED) {
-      await this.webhookEventEmitter.emitTransactionConfirmed({
-        transactionId: tx.id,
-        walletId: tx.senderWalletId,
-        txHash: tx.stellarHash ?? '',
-        ledger: tx.stellarLedger ?? 0,
-        confirmations: 1,
-      });
+      this.emitDomainEvent('transaction.confirmed', () =>
+        this.webhookEventEmitter?.emitTransactionConfirmed({
+          transactionId: tx.id,
+          walletId: tx.senderWalletId,
+          txHash: tx.stellarHash ?? '',
+          ledger: tx.stellarLedger ?? 0,
+          confirmations: 1,
+        }),
+      );
     } else if (status === TransactionStatus.FAILED) {
-      await this.webhookEventEmitter.emitTransactionFailed({
-        transactionId: tx.id,
-        walletId: tx.senderWalletId,
-        reason: tx.statusReason ?? 'unknown',
-      });
+      this.emitDomainEvent('transaction.failed', () =>
+        this.webhookEventEmitter?.emitTransactionFailed({
+          transactionId: tx.id,
+          walletId: tx.senderWalletId,
+          reason: tx.statusReason ?? 'unknown',
+        }),
+      );
     }
   }
 
-  /**
-   * Map Prisma model to entity
-   */
   private mapPrismaToEntity(prismaTransaction: any): TransactionEntity {
     return {
       id: prismaTransaction.id,
