@@ -454,6 +454,7 @@ model WalletBalance {
 /// Balance sync job tracking for reliability
 model BalanceSyncJob {
   id        String   @id @default(uuid())
+  requestId String?  // Request ID for propagation and tracking
   
   /// Job metadata
   jobType   String   // "FULL_SYNC", "INCREMENTAL_SYNC", "RECONCILIATION"

@@ -139,9 +139,9 @@ export class BalanceIndexerController {
   /**
    * Triggers the scheduled sync manually
    */
-  @Post('sync-all')
+  @Post('scheduled-sync')
   @HttpCode(HttpStatus.OK)
-  async syncAll() {
+  async scheduledSync() {
     await this.balanceIndexerService.runScheduledSync();
     return { status: 'scheduled sync triggered' };
   }

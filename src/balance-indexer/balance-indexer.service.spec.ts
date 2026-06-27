@@ -6,6 +6,8 @@ import { StellarHorizonService } from './stellar-horizon.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssetType, BalanceSyncStatus } from './domain/balance.model';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
 
 const WALLET_ID = 'wallet-123';
 const PUBLIC_KEY = 'GABC123';
@@ -73,6 +75,14 @@ describe('BalanceIndexerService', () => {
     emitBalanceMismatch: jest.fn().mockResolvedValue(undefined),
   };
 
+  const mockRequestContext = {
+    getRequestId: jest.fn().mockReturnValue('test-request-id-spec'),
+  };
+
+  const mockMetrics = {
+    record: jest.fn(),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -83,6 +93,8 @@ describe('BalanceIndexerService', () => {
         { provide: StellarHorizonService, useValue: mockHorizon },
         { provide: ConfigService, useValue: mockConfig },
         { provide: WebhookEventEmitterService, useValue: mockWebhookEmitter },
+        { provide: RequestContextService, useValue: mockRequestContext },
+        { provide: BalanceIndexerMetricsService, useValue: mockMetrics },
       ],
     }).compile();
 

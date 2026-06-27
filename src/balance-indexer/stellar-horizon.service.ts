@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Server } from 'stellar-sdk';
 import { Asset, AssetType, BalanceUpdate } from './domain/balance.model';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 export interface HorizonBalance {
   asset_type: string;
@@ -15,7 +16,10 @@ export class StellarHorizonService {
   private readonly logger = new Logger(StellarHorizonService.name);
   private readonly server: Server;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly requestContext: RequestContextService,
+  ) {
     const horizonUrl = this.configService.get<string>(
       'STELLAR_HORIZON_URL',
       'https://horizon-testnet.stellar.org',
@@ -26,11 +30,44 @@ export class StellarHorizonService {
   }
 
   /**
+   * Helper to execute server actions with retry & backoff
+   */
+  private async executeWithRetry<T>(
+    operation: () => Promise<T>,
+    opName: string,
+  ): Promise<T> {
+    const maxRetries = this.configService.get<number>('HORIZON_MAX_RETRIES', 3);
+    let attempt = 0;
+    while (true) {
+      try {
+        return await operation();
+      } catch (error) {
+        attempt++;
+        if (attempt > maxRetries) {
+          throw error;
+        }
+        const delay = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 15000);
+        const requestId = this.requestContext.getRequestId();
+        const logPrefix = requestId ? `[${requestId}] ` : '';
+        this.logger.warn(
+          `${logPrefix}Horizon API ${opName} failed (attempt ${attempt}/${maxRetries}). Retrying in ${Math.round(delay)}ms. Error: ${error.message}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  /**
    * Fetches account balances from Stellar Horizon
    */
   async getAccountBalances(publicKey: string): Promise<BalanceUpdate[]> {
+    const requestId = this.requestContext.getRequestId();
+    const logPrefix = requestId ? `[${requestId}] ` : '';
     try {
-      const account = await this.server.loadAccount(publicKey);
+      const account = await this.executeWithRetry(
+        () => this.server.loadAccount(publicKey),
+        `loadAccount(${publicKey.substring(0, 8)}...)`,
+      );
 
       const balances: BalanceUpdate[] = account.balances.map((balance) => ({
         walletId: '',
@@ -41,12 +78,12 @@ export class StellarHorizonService {
       }));
 
       this.logger.log(
-        `Fetched ${balances.length} balances for account ${publicKey.substring(0, 8)}...`,
+        `${logPrefix}Fetched ${balances.length} balances for account ${publicKey.substring(0, 8)}...`,
       );
       return balances;
     } catch (error) {
       this.logger.error(
-        `Failed to fetch balances for account ${publicKey}:`,
+        `${logPrefix}Failed to fetch balances for account ${publicKey}:`,
         error,
       );
       throw new Error(`Horizon API request failed: ${error.message}`);
@@ -57,8 +94,13 @@ export class StellarHorizonService {
    * Checks if an account exists on-chain
    */
   async accountExists(publicKey: string): Promise<boolean> {
+    const requestId = this.requestContext.getRequestId();
+    const logPrefix = requestId ? `[${requestId}] ` : '';
     try {
-      await this.server.loadAccount(publicKey);
+      await this.executeWithRetry(
+        () => this.server.loadAccount(publicKey),
+        `accountExists(${publicKey.substring(0, 8)}...)`,
+      );
       return true;
     } catch (error) {
       if (
@@ -68,6 +110,10 @@ export class StellarHorizonService {
       ) {
         return false;
       }
+      this.logger.error(
+        `${logPrefix}Failed to check if account exists for ${publicKey}:`,
+        error,
+      );
       throw error;
     }
   }

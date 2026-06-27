@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { RequestContextService } from '../request-context/request-context.service';
 
 export function requestLogger(
   req: Request | any,
@@ -58,13 +59,20 @@ export function requestLogger(
         }
       });
     }
+
+    RequestContextService.run({ requestId: id }, () => {
+      try {
+        next();
+      } catch (e) {
+        logger.warn('next() threw in requestLogger: ' + (e && (e as Error).message));
+      }
+    });
   } catch (err: any) {
     logger.warn('Request logging failed: ' + (err && err.message));
-  } finally {
     try {
       next();
     } catch (e) {
-      logger.warn('next() threw in requestLogger');
+      logger.warn('next() threw in requestLogger catch block');
     }
   }
 }
