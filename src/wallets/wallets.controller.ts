@@ -7,9 +7,14 @@ import {
   Param,
   Delete,
   UseGuards,
+  Headers,
   Query,
 } from '@nestjs/common';
 import { ApiTags, ApiSecurity, ApiOperation, ApiParam } from '@nestjs/swagger';
+import {
+  WalletCreationOrchestrator,
+  type CreateWalletOrchestratorRequest,
+} from './wallet-creation-orchestrator.service';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
@@ -24,12 +29,24 @@ import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
 @Controller('wallets')
 @UseGuards(ApiKeyGuard, RateLimitGuard)
 export class WalletsController {
-  constructor(private readonly walletsService: WalletsService) {}
+  constructor(
+    private readonly walletsService: WalletsService,
+    private readonly walletCreationOrchestrator: WalletCreationOrchestrator,
+  ) {}
 
   @ApiOperation({ summary: 'Create a new wallet' })
   @Post()
-  create(@Body() createWalletDto: CreateWalletDto) {
-    return this.walletsService.create(createWalletDto);
+  create(
+    @Body() createWalletDto: CreateWalletDto,
+    @Headers('x-request-id') requestId?: string,
+  ) {
+    const createRequest: CreateWalletOrchestratorRequest = {
+      userId: createWalletDto.userId,
+      network: createWalletDto.network,
+      idempotencyKey: createWalletDto.idempotencyKey,
+    };
+
+    return this.walletCreationOrchestrator.createWallet(createRequest, requestId);
   }
 
   @ApiOperation({ summary: 'List all wallets' })

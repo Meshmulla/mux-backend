@@ -27,14 +27,22 @@ import {
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 
 @ApiTags('payments')
 @Controller('payments')
-@UseGuards(ApiKeyGuard, RateLimitGuard)
+@UseGuards(ApiKeyGuard, RateLimitGuard, FeatureFlagGuard)
+@FeatureFlag('payments_api')
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
-  @ApiOperation({ summary: 'Create a new payment' })
+  @ApiOperation({
+    summary: 'Create a new payment',
+    description: 'Create a new payment between wallets. Requires API key authentication. Rate limited to prevent abuse. Emits payment.created event on success.',
+  })
   @ApiBody({
     type: CreatePaymentDto,
     examples: {
@@ -53,7 +61,7 @@ export class PaymentsController {
   })
   @ApiResponse({
     status: 201,
-    description: 'Payment created successfully',
+    description: 'Payment created successfully. Emits payment.created domain event.',
     example: {
       id: 1,
       amount: 100.5,
@@ -97,7 +105,10 @@ export class PaymentsController {
     return this.paymentsService.create(createPaymentDto);
   }
 
-  @ApiOperation({ summary: 'List all payments with pagination and filtering' })
+  @ApiOperation({
+    summary: 'List all payments with pagination and filtering',
+    description: 'Retrieve paginated list of payments. Requires API key authentication. Supports filtering by status.',
+  })
   @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (starting from 1)' })
   @ApiQuery({ name: 'limit', required: false, example: 20, description: 'Items per page (max 100)' })
   @ApiQuery({ name: 'status', required: false, enum: ['PENDING', 'CONFIRMED', 'FAILED'], description: 'Filter by payment status' })
@@ -156,7 +167,10 @@ export class PaymentsController {
     return this.paymentsService.findAll(pagination, filters);
   }
 
-  @ApiOperation({ summary: 'Get a single payment by ID' })
+  @ApiOperation({
+    summary: 'Get a single payment by ID',
+    description: 'Retrieve a specific payment. Requires API key authentication.',
+  })
   @ApiParam({ name: 'id', description: 'Payment ID' })
   @ApiResponse({
     status: 200,
@@ -198,12 +212,27 @@ export class PaymentsController {
       error: 'Not Found',
     },
   })
+  @ApiResponse({
+    status: 429,
+    description: 'Rate limit exceeded',
+    example: {
+      statusCode: 429,
+      timestamp: '2024-06-24T12:34:56.789Z',
+      path: '/payments',
+      method: 'POST',
+      message: 'Too many requests',
+      error: 'Too Many Requests',
+    },
+  })
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.paymentsService.findOne(id);
   }
 
-  @ApiOperation({ summary: 'Update a payment' })
+  @ApiOperation({
+    summary: 'Update a payment',
+    description: 'Update payment status or description. Valid status transitions: PENDING→CONFIRMED, PENDING→FAILED. Emits payment.completed or payment.failed event on status transition. Requires API key authentication.',
+  })
   @ApiParam({ name: 'id', description: 'Payment ID' })
   @ApiBody({
     type: UpdatePaymentDto,
@@ -218,7 +247,7 @@ export class PaymentsController {
   })
   @ApiResponse({
     status: 200,
-    description: 'Payment updated successfully',
+    description: 'Payment updated successfully. Emits payment.completed or payment.failed event if status changed.',
     example: {
       id: 1,
       amount: 100.5,
@@ -273,7 +302,10 @@ export class PaymentsController {
     return this.paymentsService.update(id, updatePaymentDto);
   }
 
-  @ApiOperation({ summary: 'Delete a payment' })
+  @ApiOperation({
+    summary: 'Delete a payment',
+    description: 'Delete a payment. Requires API key authentication.',
+  })
   @ApiParam({ name: 'id', description: 'Payment ID' })
   @ApiResponse({
     status: 200,

@@ -6,6 +6,7 @@ import {
   Param,
   HttpCode,
   HttpStatus,
+  Headers,
   ConflictException,
   NotFoundException,
   UseGuards,
@@ -34,10 +35,12 @@ export class WalletCreationOrchestratorController {
   @SensitiveEndpoint()
   async createWallet(
     @Body() createWalletRequest: CreateWalletOrchestratorRequest,
+    @Headers('x-request-id') requestId?: string,
   ): Promise<WalletOrchestrationResult> {
     try {
       return await this.walletCreationOrchestrator.createWallet(
         createWalletRequest,
+        requestId,
       );
     } catch (error) {
       if (error instanceof NotFoundException) {
