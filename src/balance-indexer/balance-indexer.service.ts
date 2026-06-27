@@ -15,6 +15,7 @@ import {
   AssetType,
   BalanceSyncStatus,
   BalanceUpdate,
+  BalanceChangeEvent,
   ReconciliationResult,
 } from './domain/balance.model';
 
@@ -77,6 +78,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   private readonly syncIntervalMs: number;
   private readonly maxRetries: number;
   private syncTimer: NodeJS.Timeout | null = null;
+  private readonly processedBalanceEvents = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -235,6 +237,53 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       orderBy: { assetType: 'asc' },
     });
     return balances.map((b) => this.mapPrismaBalanceToDomain(b));
+  }
+
+  /**
+   * Indexes a Stellar balance-change event into the database.
+   * Handles idempotency (same ledger + tx hash) and out-of-order events.
+   */
+  async indexBalanceEvent(event: BalanceChangeEvent): Promise<void> {
+    const eventKey = this.balanceEventKey(event);
+    if (this.processedBalanceEvents.has(eventKey)) {
+      this.logger.debug(`Skipping duplicate balance event ${eventKey}`);
+      return;
+    }
+
+    const existing = await this.prisma.walletBalance.findUnique({
+      where: {
+        walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
+          event.walletId,
+          event.asset,
+        ),
+      },
+    });
+
+    if (
+      existing?.lastSyncedLedger != null &&
+      event.ledgerSequence < existing.lastSyncedLedger
+    ) {
+      this.logger.warn(
+        `Ignoring out-of-order balance event for wallet ${event.walletId} ` +
+          `(event ledger ${event.ledgerSequence} < indexed ${existing.lastSyncedLedger})`,
+      );
+      return;
+    }
+
+    await this.updateBalance(
+      event.walletId,
+      {
+        walletId: event.walletId,
+        asset: event.asset,
+        balance: event.balance,
+        ledgerSequence: event.ledgerSequence,
+        timestamp: event.timestamp ?? new Date(),
+        transactionHash: event.transactionHash,
+      },
+      true,
+    );
+
+    this.processedBalanceEvents.add(eventKey);
   }
 
   /**
@@ -591,6 +640,14 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
+    if (
+      !forceUpdate &&
+      existing?.lastSyncedLedger != null &&
+      ledgerSequence < existing.lastSyncedLedger
+    ) {
+      return { updated: false, mismatch: false };
+    }
+
     const mismatch = existing !== null && existing.balance !== balance;
 
     await this.prisma.walletBalance.upsert({
@@ -681,6 +738,15 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
 
   private calculateDifference(balance1: string, balance2: string): string {
     return (parseFloat(balance1) - parseFloat(balance2)).toFixed(7);
+  }
+
+  private balanceEventKey(event: BalanceChangeEvent): string {
+    const assetKey = [
+      event.asset.type,
+      event.asset.code ?? '',
+      event.asset.issuer ?? '',
+    ].join(':');
+    return `${event.walletId}:${assetKey}:${event.ledgerSequence}:${event.transactionHash}`;
   }
 
   private mapPrismaBalanceToDomain(prismaBalance: any): WalletBalance {

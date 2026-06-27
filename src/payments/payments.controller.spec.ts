@@ -4,6 +4,7 @@ import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 import { PaymentStatus } from './entities/payment.entity';
 
 describe('PaymentsController', () => {
@@ -26,6 +27,8 @@ describe('PaymentsController', () => {
       .overrideGuard(ApiKeyGuard)
       .useValue({ canActivate: () => true })
       .overrideGuard(RateLimitGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(FeatureFlagGuard)
       .useValue({ canActivate: () => true })
       .compile();
 
@@ -77,6 +80,30 @@ describe('PaymentsController', () => {
     });
   });
 
+  describe('feature flag guard', () => {
+    it('should deny access when feature flag is disabled', async () => {
+      const restrictedModule = await Test.createTestingModule({
+        controllers: [PaymentsController],
+        providers: [{ provide: PaymentsService, useValue: paymentsService }],
+      })
+        .overrideGuard(ApiKeyGuard)
+        .useValue({ canActivate: () => true })
+        .overrideGuard(RateLimitGuard)
+        .useValue({ canActivate: () => true })
+        .overrideGuard(FeatureFlagGuard)
+        .useValue({
+          canActivate: () => {
+            throw new Error('Feature not available');
+          },
+        })
+        .compile();
+
+      const restrictedController =
+        restrictedModule.get<PaymentsController>(PaymentsController);
+      expect(restrictedController).toBeDefined();
+    });
+  });
+
   describe('swagger decorators', () => {
     it('should have @ApiResponse decorators on all routes', () => {
       const routes = ['create', 'findAll', 'findOne', 'update', 'remove'];
@@ -89,6 +116,21 @@ describe('PaymentsController', () => {
         expect(descriptor).toBeDefined();
 
         const metadata = Reflect.getMetadata('swagger/apiResponse', descriptor.value);
+        expect(metadata).toBeDefined();
+      });
+    });
+
+    it('should have @ApiOperation on all routes', () => {
+      const routes = ['create', 'findAll', 'findOne', 'update', 'remove'];
+
+      routes.forEach((route) => {
+        const descriptor = Object.getOwnPropertyDescriptor(
+          PaymentsController.prototype,
+          route,
+        );
+        expect(descriptor).toBeDefined();
+
+        const metadata = Reflect.getMetadata('swagger/apiOperation', descriptor.value);
         expect(metadata).toBeDefined();
       });
     });

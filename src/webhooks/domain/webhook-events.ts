@@ -23,6 +23,11 @@ export enum WebhookEventType {
   // User events
   USER_CREATED = 'user.created',
   USER_UPDATED = 'user.updated',
+
+  // Auth / session events
+  AUTH_USER_AUTHENTICATED = 'auth.user_authenticated',
+  AUTH_NEW_USER_REGISTERED = 'auth.new_user_registered',
+  AUTH_AUTHENTICATION_FAILED = 'auth.authentication_failed',
 }
 
 export interface WebhookEvent {
