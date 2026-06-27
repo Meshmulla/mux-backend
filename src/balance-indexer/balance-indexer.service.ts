@@ -9,6 +9,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
+import { randomUUID } from 'crypto';
 import {
   WalletBalance,
   Asset,
@@ -40,36 +43,6 @@ export interface StaleBalanceResult {
 
 /**
  * Balance Indexer Service
- *
- * Architecture:
- * ┌─────────────────────────────────────────────────────────┐
- * │                  BalanceIndexerService                  │
- * │                                                         │
- * │  getBalance()          → cached read from DB            │
- * │  getAllBalances()       → cached reads from DB           │
- * │  syncWalletBalances()  → fetch Horizon → upsert DB      │
- * │  reconcileBalance()    → compare DB vs Horizon          │
- * │  reconcileAllBalances()→ full sweep across active wallets│
- * └──────────┬──────────────────────┬───────────────────────┘
- *            │                      │
- *   ┌────────▼────────┐   ┌────────▼──────────────┐
- *   │  PrismaService  │   │  StellarHorizonService │
- *   │  (PostgreSQL)   │   │  (Horizon REST API)    │
- *   └─────────────────┘   └────────────────────────┘
- *
- * Stale detection:
- *   - Balances older than BALANCE_STALE_THRESHOLD_MS (default 5 min) trigger
- *     an async background refresh on next read. The stale value is still
- *     returned immediately so the caller is never blocked.
- *
- * Mismatch handling:
- *   - On reconciliation, if indexed != on-chain the indexed value is corrected
- *     and `mismatchDetectedAt` / `reconciliationAttempts` are incremented for
- *     observability.
- *
- * Manual sync:
- *   - POST /balances/wallet/:walletId/sync  (per-wallet)
- *   - POST /balances/sync-all              (full sweep, admin)
  */
 @Injectable()
 export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
@@ -85,6 +58,8 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     private readonly stellarHorizonService: StellarHorizonService,
     private readonly configService: ConfigService,
     private readonly webhookEventEmitter: WebhookEventEmitterService,
+    private readonly requestContext: RequestContextService,
+    private readonly metrics: BalanceIndexerMetricsService,
   ) {
     this.staleThresholdMs = this.configService.get<number>(
       'BALANCE_STALE_THRESHOLD_MS',
@@ -121,23 +96,38 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
    * Scheduled worker: syncs all active wallets
    */
   async runScheduledSync(): Promise<void> {
-    this.logger.log('Running scheduled balance sync for all active wallets');
-    try {
-      const wallets = await this.prisma.wallet.findMany({
-        where: { status: 'ACTIVE' },
-      });
-      for (const wallet of wallets) {
-        await this.syncWalletBalancesWithRetry({ walletId: wallet.id }).catch(
-          (err) =>
-            this.logger.error(
-              `Scheduled sync failed for wallet ${wallet.id}:`,
-              err,
-            ),
-        );
+    const cronRequestId = `cron-${randomUUID()}`;
+    await RequestContextService.run({ requestId: cronRequestId }, async () => {
+      this.logger.log(`[${cronRequestId}] Running scheduled balance sync for all active wallets`);
+      const startTime = Date.now();
+      try {
+        const wallets = await this.prisma.wallet.findMany({
+          where: { status: 'ACTIVE' },
+        });
+        for (const wallet of wallets) {
+          await this.syncWalletBalancesWithRetry({ walletId: wallet.id }).catch(
+            (err) =>
+              this.logger.error(
+                `[${cronRequestId}] Scheduled sync failed for wallet ${wallet.id}:`,
+                err,
+              ),
+          );
+        }
+        this.metrics.record({
+          operation: 'sync_all',
+          outcome: 'success',
+          durationMs: Date.now() - startTime,
+          walletsProcessed: wallets.length,
+        });
+      } catch (err) {
+        this.logger.error(`[${cronRequestId}] Scheduled balance sync encountered an error:`, err);
+        this.metrics.record({
+          operation: 'sync_all',
+          outcome: 'failure',
+          durationMs: Date.now() - startTime,
+        });
       }
-    } catch (err) {
-      this.logger.error('Scheduled balance sync encountered an error:', err);
-    }
+    });
   }
 
   /**
@@ -147,15 +137,21 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     request: SyncBalancesRequest,
     attempt = 0,
   ): Promise<SyncBalancesResult> {
+    const requestId = this.requestContext.getRequestId() || 'N/A';
     try {
       return await this.syncWalletBalances(request);
     } catch (error) {
-      if (attempt >= this.maxRetries) {
+      const isClientError =
+        error instanceof NotFoundException ||
+        error?.status === 400 ||
+        error?.status === 404 ||
+        error?.message?.includes('not found');
+      if (isClientError || attempt >= this.maxRetries) {
         throw error;
       }
       const delay = Math.min(1000 * 2 ** attempt, 30000);
       this.logger.warn(
-        `Sync retry ${attempt + 1}/${this.maxRetries} for wallet ${request.walletId} in ${delay}ms`,
+        `[${requestId}] Sync retry ${attempt + 1}/${this.maxRetries} for wallet ${request.walletId} in ${delay}ms. Error: ${error.message}`,
       );
       await new Promise((resolve) => setTimeout(resolve, delay));
       return this.syncWalletBalancesWithRetry(request, attempt + 1);
@@ -166,35 +162,52 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
    * Detects stale balances for a wallet and marks them in the DB
    */
   async detectStaleBalances(walletId: string): Promise<StaleBalanceResult> {
-    const balances = await this.prisma.walletBalance.findMany({
-      where: { walletId },
-    });
-    const staleAssets: string[] = [];
-    let oldestStale: Date | null = null;
+    const requestId = this.requestContext.getRequestId() || 'N/A';
+    const startTime = Date.now();
+    try {
+      const balances = await this.prisma.walletBalance.findMany({
+        where: { walletId },
+      });
+      const staleAssets: string[] = [];
+      let oldestStale: Date | null = null;
 
-    for (const b of balances) {
-      if (this.isBalanceStale(b)) {
-        const label = b.assetCode
-          ? `${b.assetCode}/${b.assetType}`
-          : b.assetType;
-        staleAssets.push(label);
-        if (!oldestStale || (b.lastSyncedAt && b.lastSyncedAt < oldestStale)) {
-          oldestStale = b.lastSyncedAt ?? null;
+      for (const b of balances) {
+        if (this.isBalanceStale(b)) {
+          const label = b.assetCode
+            ? `${b.assetCode}/${b.assetType}`
+            : b.assetType;
+          staleAssets.push(label);
+          if (!oldestStale || (b.lastSyncedAt && b.lastSyncedAt < oldestStale)) {
+            oldestStale = b.lastSyncedAt ?? null;
+          }
+          await this.prisma.walletBalance.update({
+            where: { id: b.id },
+            data: { syncStatus: BalanceSyncStatus.STALE },
+          });
         }
-        await this.prisma.walletBalance.update({
-          where: { id: b.id },
-          data: { syncStatus: BalanceSyncStatus.STALE },
-        });
       }
-    }
 
-    if (staleAssets.length > 0) {
-      this.logger.warn(
-        `Stale balances detected for wallet ${walletId}: ${staleAssets.join(', ')}`,
-      );
-    }
+      if (staleAssets.length > 0) {
+        this.logger.warn(
+          `[${requestId}] Stale balances detected for wallet ${walletId}: ${staleAssets.join(', ')}`,
+        );
+      }
 
-    return { walletId, staleAssets, staleSince: oldestStale };
+      this.metrics.record({
+        operation: 'detect_stale',
+        outcome: 'success',
+        durationMs: Date.now() - startTime,
+      });
+
+      return { walletId, staleAssets, staleSince: oldestStale };
+    } catch (error) {
+      this.metrics.record({
+        operation: 'detect_stale',
+        outcome: 'failure',
+        durationMs: Date.now() - startTime,
+      });
+      throw error;
+    }
   }
 
   /**
@@ -205,6 +218,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     walletId: string,
     asset: Asset,
   ): Promise<WalletBalance | null> {
+    const requestId = this.requestContext.getRequestId() || 'N/A';
     const balance = await this.prisma.walletBalance.findUnique({
       where: {
         walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
@@ -218,10 +232,10 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
 
     if (this.isBalanceStale(balance)) {
       this.logger.warn(
-        `Balance is stale for wallet ${walletId}, asset ${asset.type}`,
+        `[${requestId}] Balance is stale for wallet ${walletId}, asset ${asset.type}`,
       );
-      this.syncWalletBalances({ walletId }).catch((err) =>
-        this.logger.error(`Background balance refresh failed:`, err),
+      this.syncWalletBalancesWithRetry({ walletId }).catch((err) =>
+        this.logger.error(`[${requestId}] Background balance refresh failed:`, err),
       );
     }
 
@@ -295,14 +309,17 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   ): Promise<SyncBalancesResult> {
     const startTime = Date.now();
     const { walletId, forceRefresh = false } = request;
+    const requestId = this.requestContext.getRequestId();
+    const logPrefix = requestId ? `[${requestId}] ` : '';
 
-    this.logger.log(`Starting balance sync for wallet ${walletId}`);
+    this.logger.log(`${logPrefix}Starting balance sync for wallet ${walletId}`);
 
     const job = await this.prisma.balanceSyncJob.create({
       data: {
         jobType: 'INCREMENTAL_SYNC',
         status: 'RUNNING',
         walletId,
+        requestId,
         startedAt: new Date(),
       },
     });
@@ -322,7 +339,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
 
       if (!accountExists) {
         this.logger.warn(
-          `Account ${wallet.publicKey} not found on-chain, setting zero balances`,
+          `${logPrefix}Account ${wallet.publicKey} not found on-chain, setting zero balances`,
         );
         const result = await this.setZeroBalances(walletId);
         await this.prisma.balanceSyncJob.update({
@@ -334,6 +351,15 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
             balancesUpdated: result.balancesUpdated,
           },
         });
+
+        this.metrics.record({
+          operation: 'sync',
+          outcome: 'success',
+          durationMs: Date.now() - startTime,
+          balancesUpdated: result.balancesUpdated,
+          mismatchesFound: 0,
+        });
+
         return result;
       }
 
@@ -355,7 +381,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
 
       const duration = Date.now() - startTime;
       this.logger.log(
-        `Balance sync completed for wallet ${walletId} in ${duration}ms ` +
+        `${logPrefix}Balance sync completed for wallet ${walletId} in ${duration}ms ` +
           `(${balancesUpdated} updated, ${mismatchesFound} mismatches)`,
       );
 
@@ -370,6 +396,14 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         },
       });
 
+      this.metrics.record({
+        operation: 'sync',
+        outcome: 'success',
+        durationMs: duration,
+        balancesUpdated,
+        mismatchesFound,
+      });
+
       return {
         walletId,
         balancesUpdated,
@@ -381,7 +415,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         lastSyncedAt: new Date(),
       };
     } catch (error) {
-      this.logger.error(`Balance sync failed for wallet ${walletId}:`, error);
+      this.logger.error(`${logPrefix}Balance sync failed for wallet ${walletId}:`, error);
 
       await this.prisma.walletBalance.updateMany({
         where: { walletId },
@@ -398,6 +432,12 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         },
       });
 
+      this.metrics.record({
+        operation: 'sync',
+        outcome: 'failure',
+        durationMs: Date.now() - startTime,
+      });
+
       throw new Error(`Balance sync failed: ${error.message}`);
     }
   }
@@ -409,94 +449,114 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     walletId: string,
     asset: Asset,
   ): Promise<ReconciliationResult> {
+    const startTime = Date.now();
+    const requestId = this.requestContext.getRequestId() || 'N/A';
+    const logPrefix = requestId ? `[${requestId}] ` : '';
+
     this.logger.log(
-      `Reconciling balance for wallet ${walletId}, asset ${asset.type}`,
+      `${logPrefix}Reconciling balance for wallet ${walletId}, asset ${asset.type}`,
     );
 
-    const indexedBalance = await this.getBalance(walletId, asset);
+    try {
+      const indexedBalance = await this.getBalance(walletId, asset);
 
-    const wallet = await this.prisma.wallet.findUnique({
-      where: { id: walletId },
-    });
+      const wallet = await this.prisma.wallet.findUnique({
+        where: { id: walletId },
+      });
 
-    if (!wallet) {
-      throw new NotFoundException(`Wallet ${walletId} not found`);
-    }
-
-    const horizonBalances = await this.stellarHorizonService.getAccountBalances(
-      wallet.publicKey,
-    );
-
-    const onChainBalance = horizonBalances.find((b) =>
-      this.assetsMatch(b.asset, asset),
-    );
-
-    const indexed = indexedBalance?.balance || '0';
-    const onChain = onChainBalance?.balance || '0';
-    const matches = indexed === onChain;
-
-    if (!matches) {
-      this.logger.warn(
-        `Balance mismatch detected for wallet ${walletId}: ` +
-          `indexed=${indexed}, onChain=${onChain}`,
-      );
-
-      if (onChainBalance) {
-        await this.updateBalance(walletId, onChainBalance, true);
+      if (!wallet) {
+        throw new NotFoundException(`Wallet ${walletId} not found`);
       }
 
-      await this.prisma.walletBalance.updateMany({
-        where: {
-          walletId,
-          assetType: asset.type,
-          assetCode: asset.code || null,
-          assetIssuer: asset.issuer || null,
-        },
-        data: {
-          mismatchDetectedAt: new Date(),
-          reconciliationAttempts: { increment: 1 },
-        },
-      });
+      const horizonBalances = await this.stellarHorizonService.getAccountBalances(
+        wallet.publicKey,
+      );
 
-      // Emit balance.mismatch webhook (fire-and-forget)
-      const assetLabel = asset.code || asset.type;
-      const difference = this.calculateDifference(indexed, onChain);
-      this.webhookEventEmitter
-        .emitBalanceMismatch({
-          walletId,
-          asset: assetLabel,
-          indexedBalance: indexed,
-          onChainBalance: onChain,
-          difference,
-        })
-        .catch((err) =>
-          this.logger.error('Failed to emit balance.mismatch webhook:', err),
+      const onChainBalance = horizonBalances.find((b) =>
+        this.assetsMatch(b.asset, asset),
+      );
+
+      const indexed = indexedBalance?.balance || '0';
+      const onChain = onChainBalance?.balance || '0';
+      const matches = indexed === onChain;
+
+      if (!matches) {
+        this.logger.warn(
+          `${logPrefix}Balance mismatch detected for wallet ${walletId}: ` +
+            `indexed=${indexed}, onChain=${onChain}`,
         );
-    } else {
-      await this.prisma.walletBalance.updateMany({
-        where: {
-          walletId,
-          assetType: asset.type,
-          assetCode: asset.code || null,
-          assetIssuer: asset.issuer || null,
-        },
-        data: {
-          mismatchDetectedAt: null,
-          lastReconciledAt: new Date(),
-        },
-      });
-    }
 
-    return {
-      walletId,
-      asset,
-      indexedBalance: indexed,
-      onChainBalance: onChain,
-      matches,
-      difference: matches
-        ? undefined
-        : this.calculateDifference(indexed, onChain),
-    };
+        if (onChainBalance) {
+          await this.updateBalance(walletId, onChainBalance, true);
+        }
+
+        await this.prisma.walletBalance.updateMany({
+          where: {
+            walletId,
+            assetType: asset.type,
+            assetCode: asset.code || null,
+            assetIssuer: asset.issuer || null,
+          },
+          data: {
+            mismatchDetectedAt: new Date(),
+            reconciliationAttempts: { increment: 1 },
+          },
+        });
+
+        // Emit balance.mismatch webhook (fire-and-forget)
+        const assetLabel = asset.code || asset.type;
+        const difference = this.calculateDifference(indexed, onChain);
+        this.webhookEventEmitter
+          .emitBalanceMismatch({
+            walletId,
+            asset: assetLabel,
+            indexedBalance: indexed,
+            onChainBalance: onChain,
+            difference,
+          })
+          .catch((err) =>
+            this.logger.error(`${logPrefix}Failed to emit balance.mismatch webhook:`, err),
+          );
+      } else {
+        await this.prisma.walletBalance.updateMany({
+          where: {
+            walletId,
+            assetType: asset.type,
+            assetCode: asset.code || null,
+            assetIssuer: asset.issuer || null,
+          },
+          data: {
+            mismatchDetectedAt: null,
+            lastReconciledAt: new Date(),
+          },
+        });
+      }
+
+      this.metrics.record({
+        operation: 'reconcile',
+        outcome: 'success',
+        durationMs: Date.now() - startTime,
+        mismatchesFound: matches ? 0 : 1,
+      });
+
+      return {
+        walletId,
+        asset,
+        indexedBalance: indexed,
+        onChainBalance: onChain,
+        matches,
+        difference: matches
+          ? undefined
+          : this.calculateDifference(indexed, onChain),
+      };
+    } catch (error) {
+      this.metrics.record({
+        operation: 'reconcile',
+        outcome: 'failure',
+        durationMs: Date.now() - startTime,
+      });
+      throw error;
+    }
   }
 
   /**
@@ -507,63 +567,99 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     walletsProcessed: number;
     mismatchesFound: number;
   }> {
-    this.logger.log('Starting full balance reconciliation');
+    const requestId = this.requestContext.getRequestId() || `rec-${randomUUID()}`;
+    return await RequestContextService.run({ requestId }, async () => {
+      const startTime = Date.now();
+      const logPrefix = `[${requestId}] `;
+      this.logger.log(`${logPrefix}Starting full balance reconciliation`);
 
-    const job = await this.prisma.balanceSyncJob.create({
-      data: {
-        jobType: 'RECONCILIATION',
-        status: 'RUNNING',
-        startedAt: new Date(),
-      },
-    });
+      const job = await this.prisma.balanceSyncJob.create({
+        data: {
+          jobType: 'RECONCILIATION',
+          status: 'RUNNING',
+          requestId,
+          startedAt: new Date(),
+        },
+      });
 
-    const wallets = await this.prisma.wallet.findMany({
-      where: { status: 'ACTIVE' },
-    });
+      const wallets = await this.prisma.wallet.findMany({
+        where: { status: 'ACTIVE' },
+      });
 
-    let walletsProcessed = 0;
-    let mismatchesFound = 0;
-    let errorsEncountered = 0;
+      let walletsProcessed = 0;
+      let mismatchesFound = 0;
+      let errorsEncountered = 0;
 
-    for (const wallet of wallets) {
       try {
-        const balances = await this.getAllBalances(wallet.id);
+        for (const wallet of wallets) {
+          try {
+            const balances = await this.getAllBalances(wallet.id);
 
-        for (const balance of balances) {
-          const asset: Asset = {
-            type: balance.assetType,
-            code: balance.assetCode || undefined,
-            issuer: balance.assetIssuer || undefined,
-          };
+            for (const balance of balances) {
+              const asset: Asset = {
+                type: balance.assetType,
+                code: balance.assetCode || undefined,
+                issuer: balance.assetIssuer || undefined,
+              };
 
-          const result = await this.reconcileBalance(wallet.id, asset);
-          if (!result.matches) mismatchesFound++;
+              const result = await this.reconcileBalance(wallet.id, asset);
+              if (!result.matches) mismatchesFound++;
+            }
+
+            walletsProcessed++;
+          } catch (error) {
+            this.logger.error(`${logPrefix}Failed to reconcile wallet ${wallet.id}:`, error);
+            errorsEncountered++;
+          }
         }
 
-        walletsProcessed++;
+        await this.prisma.balanceSyncJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'COMPLETED',
+            completedAt: new Date(),
+            walletsProcessed,
+            walletsTotal: wallets.length,
+            mismatchesFound,
+            errorsEncountered,
+          },
+        });
+
+        this.logger.log(
+          `${logPrefix}Full reconciliation completed: ${walletsProcessed} wallets, ${mismatchesFound} mismatches`,
+        );
+
+        this.metrics.record({
+          operation: 'reconcile_all',
+          outcome: 'success',
+          durationMs: Date.now() - startTime,
+          walletsProcessed,
+          mismatchesFound,
+          errorsEncountered,
+        });
+
+        return { walletsProcessed, mismatchesFound };
       } catch (error) {
-        this.logger.error(`Failed to reconcile wallet ${wallet.id}:`, error);
-        errorsEncountered++;
+        this.logger.error(`${logPrefix}Full balance reconciliation failed:`, error);
+        await this.prisma.balanceSyncJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'FAILED',
+            completedAt: new Date(),
+            duration: Date.now() - startTime,
+            errorMessage: error.message,
+          },
+        });
+
+        this.metrics.record({
+          operation: 'reconcile_all',
+          outcome: 'failure',
+          durationMs: Date.now() - startTime,
+        });
+
+        throw error;
       }
-    }
-
-    await this.prisma.balanceSyncJob.update({
-      where: { id: job.id },
-      data: {
-        status: 'COMPLETED',
-        completedAt: new Date(),
-        walletsProcessed,
-        walletsTotal: wallets.length,
-        mismatchesFound,
-        errorsEncountered,
-      },
     });
-
-    this.logger.log(
-      `Full reconciliation completed: ${walletsProcessed} wallets, ${mismatchesFound} mismatches`,
-    );
-
-    return { walletsProcessed, mismatchesFound };
   }
 
   /**
@@ -575,53 +671,89 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     balancesUpdated: number;
     mismatchesFound: number;
   }> {
-    this.logger.log('Starting full wallet balance sync');
+    const requestId = this.requestContext.getRequestId() || `syncall-${randomUUID()}`;
+    return await RequestContextService.run({ requestId }, async () => {
+      const startTime = Date.now();
+      const logPrefix = `[${requestId}] `;
+      this.logger.log(`${logPrefix}Starting full wallet balance sync`);
 
-    const job = await this.prisma.balanceSyncJob.create({
-      data: {
-        jobType: 'FULL_SYNC',
-        status: 'RUNNING',
-        startedAt: new Date(),
-      },
-    });
+      const job = await this.prisma.balanceSyncJob.create({
+        data: {
+          jobType: 'FULL_SYNC',
+          status: 'RUNNING',
+          requestId,
+          startedAt: new Date(),
+        },
+      });
 
-    const wallets = await this.prisma.wallet.findMany({
-      where: { status: 'ACTIVE' },
-    });
+      const wallets = await this.prisma.wallet.findMany({
+        where: { status: 'ACTIVE' },
+      });
 
-    let walletsProcessed = 0;
-    let balancesUpdated = 0;
-    let mismatchesFound = 0;
-    let errorsEncountered = 0;
-    const startTime = Date.now();
+      let walletsProcessed = 0;
+      let balancesUpdated = 0;
+      let mismatchesFound = 0;
+      let errorsEncountered = 0;
 
-    for (const wallet of wallets) {
       try {
-        const result = await this.syncWalletBalances({ walletId: wallet.id });
-        walletsProcessed++;
-        balancesUpdated += result.balancesUpdated;
-        mismatchesFound += result.mismatchesFound;
+        for (const wallet of wallets) {
+          try {
+            const result = await this.syncWalletBalancesWithRetry({ walletId: wallet.id });
+            walletsProcessed++;
+            balancesUpdated += result.balancesUpdated;
+            mismatchesFound += result.mismatchesFound;
+          } catch (error) {
+            this.logger.error(`${logPrefix}Failed to sync wallet ${wallet.id}:`, error);
+            errorsEncountered++;
+          }
+        }
+
+        await this.prisma.balanceSyncJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'COMPLETED',
+            completedAt: new Date(),
+            duration: Date.now() - startTime,
+            walletsProcessed,
+            walletsTotal: wallets.length,
+            balancesUpdated,
+            mismatchesFound,
+            errorsEncountered,
+          },
+        });
+
+        this.metrics.record({
+          operation: 'sync_all',
+          outcome: 'success',
+          durationMs: Date.now() - startTime,
+          walletsProcessed,
+          balancesUpdated,
+          mismatchesFound,
+          errorsEncountered,
+        });
+
+        return { walletsProcessed, balancesUpdated, mismatchesFound };
       } catch (error) {
-        this.logger.error(`Failed to sync wallet ${wallet.id}:`, error);
-        errorsEncountered++;
+        this.logger.error(`${logPrefix}Full wallet sync failed:`, error);
+        await this.prisma.balanceSyncJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'FAILED',
+            completedAt: new Date(),
+            duration: Date.now() - startTime,
+            errorMessage: error.message,
+          },
+        });
+
+        this.metrics.record({
+          operation: 'sync_all',
+          outcome: 'failure',
+          durationMs: Date.now() - startTime,
+        });
+
+        throw error;
       }
-    }
-
-    await this.prisma.balanceSyncJob.update({
-      where: { id: job.id },
-      data: {
-        status: 'COMPLETED',
-        completedAt: new Date(),
-        duration: Date.now() - startTime,
-        walletsProcessed,
-        walletsTotal: wallets.length,
-        balancesUpdated,
-        mismatchesFound,
-        errorsEncountered,
-      },
     });
-
-    return { walletsProcessed, balancesUpdated, mismatchesFound };
   }
 
   private async updateBalance(
