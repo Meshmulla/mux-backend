@@ -1,5 +1,6 @@
 import requestLogger from './request-logging.middleware';
 import { Logger } from '@nestjs/common';
+import { RequestContextService } from '../request-context/request-context.service';
 
 describe('requestLogger', () => {
   beforeEach(() => jest.restoreAllMocks());
@@ -107,5 +108,64 @@ describe('requestLogger', () => {
     requestLogger(req, res, next as any);
 
     expect(req.requestId).toBe(existingId);
+  });
+
+  it('propagates the request ID through RequestContextService so downstream code (e.g. auth/session services) can read it without the Express req object', () => {
+    const existingId = 'propagation-test-id-456';
+    const req: any = {
+      method: 'GET',
+      originalUrl: '/auth/authenticate',
+      headers: { 'x-request-id': existingId },
+      ip: '1.2.3.4',
+    };
+    const res: any = { setHeader: jest.fn(), on: jest.fn() };
+
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+
+    let observedDuringNext: string | undefined;
+    const next = jest.fn(() => {
+      observedDuringNext = RequestContextService.getCurrentRequestId();
+    });
+
+    requestLogger(req, res, next as any);
+
+    expect(next).toHaveBeenCalled();
+    expect(observedDuringNext).toBe(existingId);
+  });
+
+  it('does not leak request context between two requests handled in sequence', () => {
+    const res: any = { setHeader: jest.fn(), on: jest.fn() };
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+
+    let firstObserved: string | undefined;
+    requestLogger(
+      {
+        method: 'GET',
+        originalUrl: '/a',
+        headers: { 'x-request-id': 'request-a' },
+        ip: '1.2.3.4',
+      } as any,
+      res,
+      (() => {
+        firstObserved = RequestContextService.getCurrentRequestId();
+      }) as any,
+    );
+
+    let secondObserved: string | undefined;
+    requestLogger(
+      {
+        method: 'GET',
+        originalUrl: '/b',
+        headers: { 'x-request-id': 'request-b' },
+        ip: '1.2.3.4',
+      } as any,
+      res,
+      (() => {
+        secondObserved = RequestContextService.getCurrentRequestId();
+      }) as any,
+    );
+
+    expect(firstObserved).toBe('request-a');
+    expect(secondObserved).toBe('request-b');
   });
 });

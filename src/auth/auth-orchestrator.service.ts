@@ -18,6 +18,7 @@ import {
 import { WalletNetwork } from '../wallets/domain/wallet.model';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { AuthMetricsService } from './auth-metrics.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 export interface AuthenticationRequest {
   authId: string;
@@ -165,6 +166,16 @@ export class AuthOrchestrator {
   ) {}
 
   /**
+   * Prefix for log lines correlating them with the inbound request that
+   * triggered this auth/session operation. Falls back to 'n/a' when called
+   * outside the AsyncLocalStorage context (e.g. a unit test constructing
+   * this service directly without going through requestLogger middleware).
+   */
+  private logPrefix(): string {
+    return `[reqId=${RequestContextService.getCurrentRequestId() ?? 'n/a'}]`;
+  }
+
+  /**
    * Handles first-time or returning user authentication.
    * Creates user and wallet atomically on first authentication.
    * Supports idempotency via optional Idempotency-Key header.
@@ -186,7 +197,7 @@ export class AuthOrchestrator {
     const network = request.network || WalletNetwork.TESTNET;
 
     this.logger.log(
-      `Starting authentication orchestration for authId: ${request.authId}`,
+      `${this.logPrefix()} Starting authentication orchestration for authId: ${request.authId}`,
     );
 
     try {
@@ -197,7 +208,7 @@ export class AuthOrchestrator {
         );
         if (cachedResponse) {
           this.logger.log(
-            `Returning cached authentication result for idempotency key: ${request.idempotencyKey}`,
+            `${this.logPrefix()} Returning cached authentication result for idempotency key: ${request.idempotencyKey}`,
           );
           // Replayed responses are not double-counted as new attempts
           return {
@@ -235,7 +246,7 @@ export class AuthOrchestrator {
 
       const duration = Date.now() - startTime;
       this.logger.log(
-        `Authentication orchestration completed in ${duration}ms for authId: ${request.authId} ` +
+        `${this.logPrefix()} Authentication orchestration completed in ${duration}ms for authId: ${request.authId} ` +
           `(newUser: ${userResult.isNewUser}, newWallet: ${walletResult.isNewWallet})`,
       );
 
@@ -284,7 +295,7 @@ export class AuthOrchestrator {
       return result;
     } catch (error) {
       this.logger.error(
-        `Authentication orchestration failed for authId ${request.authId}:`,
+        `${this.logPrefix()} Authentication orchestration failed for authId ${request.authId}:`,
         error,
       );
       if (error instanceof HttpException) {
@@ -326,7 +337,9 @@ export class AuthOrchestrator {
       await this.walletCreationOrchestrator.getWalletByUser(userId, network);
 
     if (existingWallet) {
-      this.logger.log(`User ${userId} already has wallet on ${network}`);
+      this.logger.log(
+        `${this.logPrefix()} User ${userId} already has wallet on ${network}`,
+      );
       return {
         wallet: existingWallet,
         isNewWallet: false,
@@ -334,7 +347,9 @@ export class AuthOrchestrator {
     }
 
     // Create new wallet (idempotent)
-    this.logger.log(`Creating wallet for user ${userId} on ${network}`);
+    this.logger.log(
+      `${this.logPrefix()} Creating wallet for user ${userId} on ${network}`,
+    );
     const walletRequest: CreateWalletOrchestratorRequest = {
       userId,
       network,
@@ -362,7 +377,7 @@ export class AuthOrchestrator {
       return true;
     } catch (error) {
       this.logger.error(
-        `Authentication validation failed for authId ${authId}:`,
+        `${this.logPrefix()} Authentication validation failed for authId ${authId}:`,
         error,
       );
       return false;
@@ -378,7 +393,9 @@ export class AuthOrchestrator {
     const status = (user.status || UserStatus.ACTIVE) as UserStatus;
 
     if (status !== UserStatus.ACTIVE) {
-      this.logger.warn(`Authentication rejected: user status is ${status}`);
+      this.logger.warn(
+        `${this.logPrefix()} Authentication rejected: user status is ${status}`,
+      );
       throw new ForbiddenException('Account is inactive');
     }
   }

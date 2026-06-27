@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { RequestContextService } from '../request-context/request-context.service';
 
 export function requestLogger(
   req: Request | any,
@@ -8,6 +9,7 @@ export function requestLogger(
   next: NextFunction,
 ) {
   const logger = new Logger('RequestLogger');
+  let id: string | undefined;
   try {
     if (!req) {
       logger.warn('Request logging skipped: invalid request object');
@@ -19,7 +21,7 @@ export function requestLogger(
       req &&
       req.headers &&
       (req.headers['x-request-id'] || req.headers['X-Request-Id']);
-    const id =
+    id =
       typeof idHeader === 'string' && idHeader.length > 0
         ? idHeader
         : randomUUID();
@@ -62,7 +64,15 @@ export function requestLogger(
     logger.warn('Request logging failed: ' + (err && err.message));
   } finally {
     try {
-      next();
+      // Propagate the request ID through AsyncLocalStorage so downstream
+      // code (controllers, services — e.g. auth/session flows) can access
+      // it via RequestContextService without needing direct access to the
+      // Express request object.
+      if (id) {
+        RequestContextService.run({ requestId: id }, () => next());
+      } else {
+        next();
+      }
     } catch (e) {
       logger.warn('next() threw in requestLogger');
     }
