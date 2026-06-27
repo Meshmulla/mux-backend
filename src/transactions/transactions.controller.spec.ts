@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
@@ -56,7 +57,7 @@ describe('TransactionsController', () => {
 
   describe('GET /transactions/wallet/:walletId', () => {
     it('should call findByWallet with walletId and no pagination', async () => {
-      mockTransactionsService.findByWallet.mockResolvedValue([]);
+      mockTransactionsService.findByWallet.mockResolvedValue({ data: [], total: 0, limit: 20, offset: 0, hasMore: false });
 
       await controller.findByWallet('wallet-1', undefined, undefined);
 
@@ -70,7 +71,7 @@ describe('TransactionsController', () => {
     });
 
     it('should parse and pass limit and offset', async () => {
-      mockTransactionsService.findByWallet.mockResolvedValue([]);
+      mockTransactionsService.findByWallet.mockResolvedValue({ data: [], total: 0, limit: 10, offset: 20, hasMore: false });
 
       await controller.findByWallet('wallet-1', '10', '20');
 
@@ -100,7 +101,7 @@ describe('TransactionsController', () => {
 
   describe('GET /transactions', () => {
     it('should call findAll with parsed filters', async () => {
-      mockTransactionsService.findAll.mockResolvedValue([]);
+      mockTransactionsService.findAll.mockResolvedValue({ data: [], total: 0, limit: 5, offset: 0, hasMore: false });
 
       await controller.findAll('wallet-sender', undefined, undefined, '5', '0');
 
@@ -111,6 +112,10 @@ describe('TransactionsController', () => {
         limit: 5,
         offset: 0,
       });
+    });
+
+    it('throws BadRequestException for invalid limit', () => {
+      expect(() => controller.findAll(undefined, undefined, undefined, 'bad', undefined)).toThrow(BadRequestException);
     });
   });
 });

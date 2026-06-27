@@ -7,6 +7,7 @@ import {
   Param,
   Query,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
@@ -20,6 +21,25 @@ import {
 } from '../rate-limit/rate-limit.guard';
 import { FeatureFlagGuard, FeatureFlag } from '../common/feature-flags/feature-flag.guard';
 import { TransactionStatus } from './domain/transaction.model';
+
+/** Parse a pagination query param, throwing 400 on invalid input */
+function parsePaginationParam(
+  value: string | undefined,
+  name: string,
+  max = 100,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new BadRequestException(
+      `${name} must be a non-negative integer`,
+    );
+  }
+  if (name === 'limit' && n > max) {
+    throw new BadRequestException(`limit must not exceed ${max}`);
+  }
+  return n;
+}
 
 @Controller('transactions')
 @UseGuards(ApiKeyGuard, RateLimitGuard, FeatureFlagGuard)
@@ -58,8 +78,8 @@ export class TransactionsController {
       senderWalletId,
       receiverWalletId,
       status: status as TransactionStatus,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      limit: parsePaginationParam(limit, 'limit'),
+      offset: parsePaginationParam(offset, 'offset'),
     });
   }
 
@@ -70,8 +90,8 @@ export class TransactionsController {
     @Query('offset') offset?: string,
   ) {
     return this.transactionsService.findByWallet(walletId, {
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      limit: parsePaginationParam(limit, 'limit'),
+      offset: parsePaginationParam(offset, 'offset'),
     });
   }
 
