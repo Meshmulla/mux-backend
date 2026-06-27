@@ -9,6 +9,8 @@ import {
   IdempotentUserService,
   FindOrCreateUserRequest,
   FindOrCreateUserResult,
+  SessionListOptions,
+  SessionListResult,
 } from '../users/idempotent-user.service';
 import { UserStatus } from '../users/entities/user.entity';
 import {
@@ -281,12 +283,31 @@ export class AuthOrchestrator {
         );
       }
 
+      // Emit domain event (best-effort; never blocks the auth response)
+      this.emitAuthEvent(result).catch((err) =>
+        this.logger.warn(`Auth domain event emission failed: ${err.message}`),
+      );
+
       return result;
     } catch (error) {
       this.logger.error(
         `Authentication orchestration failed for authId ${request.authId}:`,
         error,
       );
+
+      // Emit failure event best-effort
+      this.webhookEventEmitter
+        .emitAuthenticationFailed({
+          authId: request.authId,
+          reason: error.message ?? 'unknown',
+          errorCode: (error as any)?.status?.toString(),
+        })
+        .catch((err) =>
+          this.logger.warn(
+            `Auth failure event emission failed: ${err.message}`,
+          ),
+        );
+
       if (error instanceof HttpException) {
         throw error;
       }
@@ -298,7 +319,32 @@ export class AuthOrchestrator {
   }
 
   /**
-   * Step 1: Find or create user using idempotent service
+   * Emits the appropriate domain event after a successful authentication.
+   */
+  private async emitAuthEvent(
+    result: AuthenticationResultWithMetadata,
+  ): Promise<void> {
+    if (result.isNewUser) {
+      await this.webhookEventEmitter.emitNewUserRegistered({
+        userId: result.user.id,
+        authId: result.user.authId,
+        authProvider: result.user.authProvider,
+        walletId: result.wallet.id,
+        walletNetwork: result.wallet.network,
+      });
+    } else {
+      await this.webhookEventEmitter.emitUserAuthenticated({
+        userId: result.user.id,
+        authId: result.user.authId,
+        authProvider: result.user.authProvider,
+        isNewWallet: result.isNewWallet,
+      });
+    }
+  }
+
+  /**
+   * Step 1: Find or create user using idempotent service.
+   * Retries on transient connectivity errors with exponential backoff.
    */
   private async findOrCreateUser(
     request: AuthenticationRequest,
@@ -310,11 +356,14 @@ export class AuthOrchestrator {
       authProvider: request.authProvider || 'UNKNOWN',
     };
 
-    return await this.idempotentUserService.findOrCreateUser(userRequest);
+    return retryWithBackoff(() =>
+      this.idempotentUserService.findOrCreateUser(userRequest),
+    );
   }
 
   /**
-   * Step 2: Ensure user has a wallet on the specified network
+   * Step 2: Ensure user has a wallet on the specified network.
+   * Retries on transient connectivity errors with exponential backoff.
    */
   private async ensureUserHasWallet(
     userId: string,
@@ -322,8 +371,9 @@ export class AuthOrchestrator {
     isNewUser: boolean,
   ) {
     // Check if wallet already exists
-    const existingWallet =
-      await this.walletCreationOrchestrator.getWalletByUser(userId, network);
+    const existingWallet = await retryWithBackoff(() =>
+      this.walletCreationOrchestrator.getWalletByUser(userId, network),
+    );
 
     if (existingWallet) {
       this.logger.log(`User ${userId} already has wallet on ${network}`);
@@ -341,13 +391,23 @@ export class AuthOrchestrator {
       idempotencyKey: `auth-wallet-${userId}-${network}`, // Idempotency key for safety
     };
 
-    const walletResult =
-      await this.walletCreationOrchestrator.createWallet(walletRequest);
+    const walletResult = await retryWithBackoff(() =>
+      this.walletCreationOrchestrator.createWallet(walletRequest),
+    );
 
     return {
       wallet: walletResult.wallet,
       isNewWallet: walletResult.isNewWallet,
     };
+  }
+
+  /**
+   * Lists recent auth sessions with optional filtering.
+   * A "session" is any user record that has logged in at least once.
+   * Supports filtering by status, authProvider, and lastLoginAt date range.
+   */
+  async listSessions(options: SessionListOptions): Promise<SessionListResult> {
+    return this.idempotentUserService.listSessions(options);
   }
 
   /**
