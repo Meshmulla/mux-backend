@@ -87,7 +87,6 @@ const baseDto = {
 
 describe('TransactionsService', () => {
   let service: TransactionsService;
-  let cacheService: CacheService;
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -95,7 +94,6 @@ describe('TransactionsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TransactionsService,
-        CacheService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: BalanceIndexerService, useValue: mockBalanceIndexer },
         { provide: WebhookEventEmitterService, useValue: mockWebhookEmitter },
@@ -104,7 +102,6 @@ describe('TransactionsService', () => {
     }).compile();
 
     service = module.get<TransactionsService>(TransactionsService);
-    cacheService = module.get<CacheService>(CacheService);
   });
 
   it('should be defined', () => {
@@ -349,11 +346,7 @@ describe('TransactionsService', () => {
         status: TransactionStatus.SUBMITTED,
       });
 
-      // Cache should be cleared, so next findOne should hit database
-      mockPrisma.transaction.findUnique.mockResolvedValueOnce(updated);
-      await service.findOne('tx-1');
-
-      expect(mockPrisma.transaction.findUnique).toHaveBeenCalledTimes(3);
+      expect(mockQueryService.invalidateCache).toHaveBeenCalledWith('tx-1');
     });
 
     it('emits transaction.pending webhook on SUBMITTED status', async () => {

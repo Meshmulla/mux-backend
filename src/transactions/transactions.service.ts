@@ -10,13 +10,8 @@ import { Asset } from '../balance-indexer/domain/balance.model';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
 import {
-  Transaction,
   TransactionStatus,
-  createTransaction,
-  transitionTransactionStatus,
   canTransitionTransactionStatus,
-  TransactionAsset,
-  StellarNetworkReferences,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
 import { PaginatedTransactionsDto } from './dto/paginated-transactions.dto';
@@ -28,7 +23,6 @@ import { TransactionMetricsService } from './transaction-metrics.service';
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
-  private readonly TRANSACTION_CACHE_TTL = 300000; // 5 minutes
 
   constructor(
     private readonly prisma: PrismaService,
@@ -285,8 +279,8 @@ export class TransactionsService {
       data: updateData,
     });
 
-    // Invalidate cache for this transaction
-    this.cache.delete(`transaction:${id}`);
+    // Invalidate read cache so next findOne fetches fresh data
+    this.queryService.invalidateCache(id);
 
     this.metrics.incrementStatusUpdated(existing.status, updateDto.status);
 
@@ -382,9 +376,6 @@ export class TransactionsService {
     }
   }
 
-  /**
-   * Map Prisma model to entity
-   */
   private mapPrismaToEntity(prismaTransaction: any): TransactionEntity {
     return {
       id: prismaTransaction.id,
