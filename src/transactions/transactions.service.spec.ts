@@ -1,13 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CacheService } from '../common/cache/cache.service';
+import { TransactionMetricsService } from './transaction-metrics.service';
 import { TransactionStatus } from './domain/transaction.model';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { AssetType } from '../balance-indexer/domain/balance.model';
@@ -60,8 +58,25 @@ const mockWebhookEmitter = {
   emitTransactionFailed: jest.fn().mockResolvedValue(undefined),
 };
 
-const senderWallet = { id: 'wallet-sender', publicKey: 'GABC', status: 'ACTIVE' };
-const receiverWallet = { id: 'wallet-receiver', publicKey: 'GDEF', status: 'ACTIVE' };
+const mockMetrics = {
+  incrementTransactionCreated: jest.fn(),
+  incrementStatusUpdated: jest.fn(),
+  incrementIdempotencyHit: jest.fn(),
+  incrementCacheHit: jest.fn(),
+  incrementCacheMiss: jest.fn(),
+  getSnapshot: jest.fn(),
+};
+
+const senderWallet = {
+  id: 'wallet-sender',
+  publicKey: 'GABC',
+  status: 'ACTIVE',
+};
+const receiverWallet = {
+  id: 'wallet-receiver',
+  publicKey: 'GDEF',
+  status: 'ACTIVE',
+};
 
 const baseDto = {
   amount: '10',
@@ -84,6 +99,7 @@ describe('TransactionsService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: BalanceIndexerService, useValue: mockBalanceIndexer },
         { provide: WebhookEventEmitterService, useValue: mockWebhookEmitter },
+        { provide: TransactionMetricsService, useValue: mockMetrics },
       ],
     }).compile();
 
@@ -143,7 +159,10 @@ describe('TransactionsService', () => {
       const existing = makePrismaTransaction({ idempotencyKey: 'idem-1' });
       mockPrisma.transaction.findUnique.mockResolvedValue(existing);
 
-      const result = await service.create({ ...baseDto, idempotencyKey: 'idem-1' });
+      const result = await service.create({
+        ...baseDto,
+        idempotencyKey: 'idem-1',
+      });
 
       expect(result.id).toBe('tx-1');
       expect(mockPrisma.wallet.findUnique).not.toHaveBeenCalled();
@@ -272,8 +291,12 @@ describe('TransactionsService', () => {
 
   describe('updateStatus', () => {
     it('updates status with valid transition', async () => {
-      const existing = makePrismaTransaction({ status: TransactionStatus.PENDING });
-      const updated = makePrismaTransaction({ status: TransactionStatus.SUBMITTED });
+      const existing = makePrismaTransaction({
+        status: TransactionStatus.PENDING,
+      });
+      const updated = makePrismaTransaction({
+        status: TransactionStatus.SUBMITTED,
+      });
       mockPrisma.transaction.findUnique.mockResolvedValue(existing);
       mockPrisma.transaction.update.mockResolvedValue(updated);
 
@@ -288,12 +311,16 @@ describe('TransactionsService', () => {
       mockPrisma.transaction.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.updateStatus('nonexistent', { status: TransactionStatus.SUBMITTED }),
+        service.updateStatus('nonexistent', {
+          status: TransactionStatus.SUBMITTED,
+        }),
       ).rejects.toThrow(NotFoundException);
     });
 
     it('throws BadRequestException for invalid status transition', async () => {
-      const existing = makePrismaTransaction({ status: TransactionStatus.CONFIRMED });
+      const existing = makePrismaTransaction({
+        status: TransactionStatus.CONFIRMED,
+      });
       mockPrisma.transaction.findUnique.mockResolvedValue(existing);
 
       await expect(
@@ -302,9 +329,13 @@ describe('TransactionsService', () => {
     });
 
     it('invalidates cache when transaction is updated', async () => {
-      const existing = makePrismaTransaction({ status: TransactionStatus.PENDING });
+      const existing = makePrismaTransaction({
+        status: TransactionStatus.PENDING,
+      });
       const tx = makePrismaTransaction();
-      const updated = makePrismaTransaction({ status: TransactionStatus.SUBMITTED });
+      const updated = makePrismaTransaction({
+        status: TransactionStatus.SUBMITTED,
+      });
 
       // Populate cache by calling findOne
       mockPrisma.transaction.findUnique.mockResolvedValueOnce(tx);
@@ -326,7 +357,9 @@ describe('TransactionsService', () => {
     });
 
     it('emits transaction.pending webhook on SUBMITTED status', async () => {
-      const existing = makePrismaTransaction({ status: TransactionStatus.PENDING });
+      const existing = makePrismaTransaction({
+        status: TransactionStatus.PENDING,
+      });
       const submitted = {
         ...existing,
         status: TransactionStatus.SUBMITTED,

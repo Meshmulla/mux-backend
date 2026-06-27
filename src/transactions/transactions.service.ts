@@ -23,6 +23,7 @@ import { PaginatedTransactionsDto } from './dto/paginated-transactions.dto';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CacheService } from '../common/cache/cache.service';
+import { TransactionMetricsService } from './transaction-metrics.service';
 
 @Injectable()
 export class TransactionsService {
@@ -34,6 +35,7 @@ export class TransactionsService {
     private readonly balanceIndexer: BalanceIndexerService,
     private readonly webhookEventEmitter: WebhookEventEmitterService,
     private readonly cache: CacheService,
+    private readonly metrics: TransactionMetricsService,
   ) {}
 
   /**
@@ -62,6 +64,7 @@ export class TransactionsService {
         this.logger.log(
           `Idempotency hit for key ${idempotencyKey}, returning existing transaction ${existing.id}`,
         );
+        this.metrics.incrementIdempotencyHit();
         return this.mapPrismaToEntity(existing);
       }
     }
@@ -121,6 +124,8 @@ export class TransactionsService {
         idempotencyKey: idempotencyKey ?? null,
       },
     });
+
+    this.metrics.incrementTransactionCreated(asset.type);
 
     this.webhookEventEmitter
       .emitTransactionCreated({
@@ -195,8 +200,10 @@ export class TransactionsService {
     const cachedTransaction = this.cache.get<TransactionEntity>(cacheKey);
     if (cachedTransaction) {
       this.logger.debug(`Cache hit for transaction ${id}`);
+      this.metrics.incrementCacheHit();
       return cachedTransaction;
     }
+    this.metrics.incrementCacheMiss();
 
     const transaction = await this.prisma.transaction.findUnique({
       where: { id },
@@ -280,6 +287,8 @@ export class TransactionsService {
 
     // Invalidate cache for this transaction
     this.cache.delete(`transaction:${id}`);
+
+    this.metrics.incrementStatusUpdated(existing.status, updateDto.status);
 
     this.logger.log(
       `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,
