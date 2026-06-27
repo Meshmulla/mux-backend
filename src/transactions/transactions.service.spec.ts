@@ -42,6 +42,7 @@ const mockPrisma = {
     create: jest.fn(),
     findUnique: jest.fn(),
     findMany: jest.fn(),
+    count: jest.fn(),
     update: jest.fn(),
   },
 };
@@ -190,32 +191,59 @@ describe('TransactionsService', () => {
   });
 
   describe('findAll', () => {
-    it('returns all transactions without filters', async () => {
+    it('returns paginated transactions without filters', async () => {
       const txs = [makePrismaTransaction()];
       mockPrisma.transaction.findMany.mockResolvedValue(txs);
+      mockPrisma.transaction.count.mockResolvedValue(1);
 
       const result = await service.findAll();
 
       expect(mockPrisma.transaction.findMany).toHaveBeenCalledWith({
         where: {},
         orderBy: { createdAt: 'desc' },
-        take: undefined,
-        skip: undefined,
+        take: 20,
+        skip: 0,
       });
-      expect(result).toHaveLength(1);
+      expect(result.data).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.limit).toBe(20);
+      expect(result.offset).toBe(0);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('uses provided limit and offset', async () => {
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
+      mockPrisma.transaction.count.mockResolvedValue(10);
+
+      const result = await service.findAll({ limit: 5, offset: 5 });
+
+      expect(result.limit).toBe(5);
+      expect(result.offset).toBe(5);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('sets hasMore=true when more results exist', async () => {
+      const txs = [makePrismaTransaction()];
+      mockPrisma.transaction.findMany.mockResolvedValue(txs);
+      mockPrisma.transaction.count.mockResolvedValue(5);
+
+      const result = await service.findAll({ limit: 1, offset: 0 });
+
+      expect(result.hasMore).toBe(true);
     });
   });
 
   describe('findByWallet', () => {
-    it('returns transactions for a valid wallet', async () => {
+    it('returns paginated transactions for a valid wallet', async () => {
       mockPrisma.wallet.findUnique.mockResolvedValue({ id: 'wallet-1' });
-      mockPrisma.transaction.findMany.mockResolvedValue([
-        makePrismaTransaction(),
-      ]);
+      mockPrisma.transaction.findMany.mockResolvedValue([makePrismaTransaction()]);
+      mockPrisma.transaction.count.mockResolvedValue(1);
 
       const result = await service.findByWallet('wallet-1');
 
-      expect(result).toHaveLength(1);
+      expect(result.data).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.hasMore).toBe(false);
     });
 
     it('throws NotFoundException when wallet does not exist', async () => {
