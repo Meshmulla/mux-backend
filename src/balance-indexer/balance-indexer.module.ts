@@ -2,12 +2,13 @@ import { Module } from '@nestjs/common';
 import { BalanceIndexerService } from './balance-indexer.service';
 import { BalanceIndexerController } from './balance-indexer.controller';
 import { StellarHorizonService } from './stellar-horizon.service';
+import { BalanceRepository } from './balance.repository';
 import { WebhookModule } from '../webhooks/webhook.module';
 
 @Module({
   imports: [WebhookModule],
   controllers: [BalanceIndexerController],
-  providers: [BalanceIndexerService, StellarHorizonService],
+  providers: [BalanceIndexerService, StellarHorizonService, BalanceRepository],
   exports: [BalanceIndexerService],
 })
 export class BalanceIndexerModule {}
