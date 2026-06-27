@@ -3,25 +3,30 @@ import { AuthOrchestrator } from './auth-orchestrator.service';
 import { AuthOrchestratorController } from './auth-orchestrator.controller';
 import { AuthRateLimitService } from './auth-rate-limit.service';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
+import { AuthMetricsService } from './auth-metrics.service';
+import { AuthMetricsController } from './auth-metrics.controller';
 import { IdempotentUserModule } from '../users/idempotent-user.module';
 import { WalletsModule } from '../wallets/wallets.module';
+import { PrismaModule } from '../prisma/prisma.module';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { WebhookModule } from '../webhooks/webhook.module';
 
 @Module({
-  imports: [IdempotentUserModule, WalletsModule, WebhookModule],
-  controllers: [AuthOrchestratorController],
+  imports: [IdempotentUserModule, WalletsModule],
+  controllers: [AuthOrchestratorController, AuthMetricsController],
   providers: [
     AuthOrchestrator,
     IdempotencyService,
     AuthRateLimitService,
     AuthRateLimitGuard,
+    AuthMetricsService,
   ],
   exports: [
     AuthOrchestrator,
     IdempotencyService,
     AuthRateLimitService,
     AuthRateLimitGuard,
+    AuthMetricsService,
   ],
 })
 export class AuthModule {}

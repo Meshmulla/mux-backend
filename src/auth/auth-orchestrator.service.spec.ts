@@ -4,7 +4,7 @@ import { AuthOrchestrator, AuthPayloadValidator } from './auth-orchestrator.serv
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WalletCreationOrchestrator } from '../wallets/wallet-creation-orchestrator.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
-import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { AuthMetricsService } from './auth-metrics.service';
 import { WalletNetwork } from '../wallets/domain/wallet.model';
 
 describe('AuthPayloadValidator', () => {
@@ -176,10 +176,11 @@ describe('AuthOrchestrator', () => {
     cacheResponse: jest.fn(),
   };
 
-  const mockWebhookEventEmitter = {
-    emitUserAuthenticated: jest.fn().mockResolvedValue(undefined),
-    emitNewUserRegistered: jest.fn().mockResolvedValue(undefined),
-    emitAuthenticationFailed: jest.fn().mockResolvedValue(undefined),
+  const mockAuthMetrics = {
+    recordAttempt: jest.fn(),
+    recordRateLimitHit: jest.fn(),
+    getSnapshot: jest.fn(),
+    reset: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -199,8 +200,8 @@ describe('AuthOrchestrator', () => {
           useValue: mockIdempotencyService,
         },
         {
-          provide: WebhookEventEmitterService,
-          useValue: mockWebhookEventEmitter,
+          provide: AuthMetricsService,
+          useValue: mockAuthMetrics,
         },
       ],
     }).compile();
