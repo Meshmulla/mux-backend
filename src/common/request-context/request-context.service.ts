@@ -35,4 +35,14 @@ export class RequestContextService {
   ): R {
     return RequestContextService.asyncLocalStorage.run(data, callback);
   }
+
+  /**
+   * Static convenience accessor for callers that don't have (or don't want)
+   * a DI-injected instance — e.g. services constructed directly in unit
+   * tests without a full Nest testing module. Reads the same store as
+   * `getRequestId()`.
+   */
+  static getCurrentRequestId(): string | undefined {
+    return RequestContextService.asyncLocalStorage.getStore()?.requestId;
+  }
 }
