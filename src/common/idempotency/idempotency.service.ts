@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaClient } from '../../generated/prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
 
 export interface IdempotencyCacheOptions {
   ttlMs?: number; // Time to live in milliseconds, defaults to 60 seconds
@@ -9,11 +9,8 @@ export interface IdempotencyCacheOptions {
 export class IdempotencyService {
   private readonly logger = new Logger(IdempotencyService.name);
   private readonly defaultTTLMs = 60000; // 60 seconds default
-  private prisma: PrismaClient;
 
-  constructor() {
-    this.prisma = new PrismaClient({} as any);
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Retrieves a cached response for an idempotency key if it exists and hasn't expired
