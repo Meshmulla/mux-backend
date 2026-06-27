@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CacheService } from '../common/cache/cache.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
 import { WebhookEndpoint, EndpointStatus } from './domain/webhook-events';
+import { WebhookFilterDto } from './dto/webhook-filter.dto';
 import * as crypto from 'crypto';
 
 export const WEBHOOK_CACHE_TTL = 60_000;
@@ -22,6 +23,20 @@ export interface UpdateWebhookEndpointRequest {
   status?: string;
 }
 
+export interface PaginatedEndpointsResponse {
+  endpoints: WebhookEndpoint[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface PaginatedDeliveriesResponse {
+  deliveries: any[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 /**
  * Webhook Management Service
  *
@@ -37,11 +52,7 @@ export interface UpdateWebhookEndpointRequest {
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly cache: CacheService,
-    private readonly requestContext: RequestContextService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   /**
    * Creates a new webhook endpoint
@@ -72,15 +83,34 @@ export class WebhookService {
   }
 
   /**
-   * Lists webhook endpoints for a project
+   * Lists webhook endpoints for a project with optional filtering and pagination
    */
-  async listEndpoints(projectId: string): Promise<WebhookEndpoint[]> {
-    const endpoints = await this.prisma.webhookEndpoint.findMany({
-      where: { projectId },
-      orderBy: { createdAt: 'desc' },
-    });
+  async listEndpoints(
+    projectId: string,
+    page: number = 1,
+    limit: number = 20,
+  ): Promise<{
+    endpoints: WebhookEndpoint[];
+    total: number;
+  }> {
+    const skip = (page - 1) * limit;
 
-    return endpoints.map((e) => this.mapPrismaEndpointToDomain(e));
+    const [endpoints, total] = await Promise.all([
+      this.prisma.webhookEndpoint.findMany({
+        where: { projectId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.webhookEndpoint.count({
+        where: { projectId },
+      }),
+    ]);
+
+    return {
+      endpoints: endpoints.map((e) => this.mapPrismaEndpointToDomain(e)),
+      total,
+    };
   }
 
   /**
@@ -152,14 +182,31 @@ export class WebhookService {
   }
 
   /**
-   * Gets delivery attempts for an endpoint
+   * Gets delivery attempts for an endpoint with pagination
    */
-  async getDeliveries(endpointId: string, limit: number = 50) {
-    return await this.prisma.webhookDelivery.findMany({
-      where: { endpointId },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
+  async getDeliveries(
+    endpointId: string,
+    page: number = 1,
+    limit: number = 50,
+  ) {
+    const skip = (page - 1) * limit;
+
+    const [deliveries, total] = await Promise.all([
+      this.prisma.webhookDelivery.findMany({
+        where: { endpointId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.webhookDelivery.count({
+        where: { endpointId },
+      }),
+    ]);
+
+    return {
+      deliveries,
+      total,
+    };
   }
 
   /**
