@@ -57,6 +57,18 @@ export class WebhookEventEmitterService {
     await this.webhookDispatcher.dispatchEvent({ event });
   }
 
+  /** Emits a wallet.rotated event after new key material is persisted. */
+  async emitWalletRotated(data: {
+    walletId: string;
+    userId: string;
+    publicKey: string;
+    network: string;
+    secretVersion: number;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.WALLET_ROTATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
   /**
    * Emits a transaction.created event
    */
@@ -178,46 +190,41 @@ export class WebhookEventEmitterService {
   }
 
   /**
-   * Emits a payment.created event
+   * Emits an auth.user_authenticated event for a returning user login
    */
-  async emitPaymentCreated(data: {
-    paymentId: string | number;
-    walletId: string;
-    receiverWalletId: string;
-    amount: string | number;
-    currency: string;
-    status: string;
+  async emitUserAuthenticated(data: {
+    userId: string;
+    authId: string;
+    authProvider: string;
+    isNewWallet: boolean;
   }): Promise<void> {
-    const event = this.createEvent(WebhookEventType.PAYMENT_CREATED, data);
+    const event = this.createEvent(WebhookEventType.AUTH_USER_AUTHENTICATED, data);
     await this.webhookDispatcher.dispatchEvent({ event });
   }
 
   /**
-   * Emits a payment.status.updated event
+   * Emits an auth.new_user_registered event for first-time authentication
    */
-  async emitPaymentStatusUpdated(data: {
-    paymentId: string | number;
+  async emitNewUserRegistered(data: {
+    userId: string;
+    authId: string;
+    authProvider: string;
     walletId: string;
-    previousStatus: string;
-    status: string;
-    reason?: string;
+    walletNetwork: string;
   }): Promise<void> {
-    const event = this.createEvent(
-      WebhookEventType.PAYMENT_STATUS_UPDATED,
-      data,
-    );
+    const event = this.createEvent(WebhookEventType.AUTH_NEW_USER_REGISTERED, data);
     await this.webhookDispatcher.dispatchEvent({ event });
   }
 
   /**
-   * Emits a limits.updated event
+   * Emits an auth.authentication_failed event
    */
-  async emitLimitsUpdated(data: {
-    walletId: string;
-    dailyLimit: number;
-    perTransactionLimit: number;
+  async emitAuthenticationFailed(data: {
+    authId: string;
+    reason: string;
+    errorCode?: string;
   }): Promise<void> {
-    const event = this.createEvent(WebhookEventType.LIMITS_UPDATED, data);
+    const event = this.createEvent(WebhookEventType.AUTH_AUTHENTICATION_FAILED, data);
     await this.webhookDispatcher.dispatchEvent({ event });
   }
 

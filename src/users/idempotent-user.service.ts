@@ -32,6 +32,22 @@ export interface FindOrCreateUserResult {
   isNewUser: boolean;
 }
 
+export interface SessionListOptions {
+  page?: number;
+  limit?: number;
+  status?: string;
+  authProvider?: string;
+  dateFrom?: Date;
+  dateTo?: Date;
+}
+
+export interface SessionListResult {
+  data: User[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 @Injectable()
 export class IdempotentUserService {
   private readonly logger = new Logger(IdempotentUserService.name);
@@ -128,6 +144,42 @@ export class IdempotentUserService {
 
       throw new Error(`User creation failed for authId: ${authId}`);
     }
+  }
+
+  /**
+   * Lists authenticated sessions (users with lastLoginAt) with optional filters.
+   * Filters: status, authProvider, dateFrom/dateTo against lastLoginAt.
+   * Results are ordered by lastLoginAt descending, with pagination.
+   */
+  async listSessions(options: SessionListOptions = {}): Promise<SessionListResult> {
+    const { page = 1, status, authProvider, dateFrom, dateTo } = options;
+    const limit = Math.min(options.limit ?? 20, 100);
+
+    const where: Record<string, any> = { deletedAt: null };
+    if (status) where.status = status;
+    if (authProvider) where.authProvider = authProvider;
+    if (dateFrom || dateTo) {
+      where.lastLoginAt = {};
+      if (dateFrom) where.lastLoginAt.gte = dateFrom;
+      if (dateTo) where.lastLoginAt.lte = dateTo;
+    }
+
+    const [users, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        orderBy: { lastLoginAt: 'desc' },
+        take: limit,
+        skip: (page - 1) * limit,
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+
+    return {
+      data: users.map((u) => this.mapPrismaUserToDomain(u)),
+      total,
+      page,
+      limit,
+    };
   }
 
   /**
