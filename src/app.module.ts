@@ -31,6 +31,7 @@ import { HealthModule } from './health/health.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      validate: validateEnvironment,
     }),
     EventEmitterModule.forRoot(),
     MetricsModule,
