@@ -47,7 +47,7 @@ export interface PaginatedDeliveriesResponse {
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   /**
    * Creates a new webhook endpoint
@@ -82,35 +82,29 @@ export class WebhookService {
    */
   async listEndpoints(
     projectId: string,
-    filters: WebhookFilterDto = {},
-  ): Promise<PaginatedEndpointsResponse> {
-    const page = filters.page ?? 1;
-    const limit = filters.limit ?? 20;
+    page: number = 1,
+    limit: number = 20,
+  ): Promise<{
+    endpoints: WebhookEndpoint[];
+    total: number;
+  }> {
     const skip = (page - 1) * limit;
-
-    const where: any = { projectId };
-    if (filters.status) {
-      where.status = filters.status;
-    }
-    if (filters.event) {
-      where.events = { has: filters.event };
-    }
 
     const [endpoints, total] = await Promise.all([
       this.prisma.webhookEndpoint.findMany({
-        where,
+        where: { projectId },
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
-      this.prisma.webhookEndpoint.count({ where }),
+      this.prisma.webhookEndpoint.count({
+        where: { projectId },
+      }),
     ]);
 
     return {
       endpoints: endpoints.map((e) => this.mapPrismaEndpointToDomain(e)),
       total,
-      page,
-      limit,
     };
   }
 
@@ -177,8 +171,8 @@ export class WebhookService {
   async getDeliveries(
     endpointId: string,
     page: number = 1,
-    limit: number = 20,
-  ): Promise<PaginatedDeliveriesResponse> {
+    limit: number = 50,
+  ) {
     const skip = (page - 1) * limit;
 
     const [deliveries, total] = await Promise.all([
@@ -188,10 +182,15 @@ export class WebhookService {
         skip,
         take: limit,
       }),
-      this.prisma.webhookDelivery.count({ where: { endpointId } }),
+      this.prisma.webhookDelivery.count({
+        where: { endpointId },
+      }),
     ]);
 
-    return { deliveries, total, page, limit };
+    return {
+      deliveries,
+      total,
+    };
   }
 
   /**

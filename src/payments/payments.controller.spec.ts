@@ -119,5 +119,20 @@ describe('PaymentsController', () => {
         expect(metadata).toBeDefined();
       });
     });
+
+    it('should have @ApiOperation on all routes', () => {
+      const routes = ['create', 'findAll', 'findOne', 'update', 'remove'];
+
+      routes.forEach((route) => {
+        const descriptor = Object.getOwnPropertyDescriptor(
+          PaymentsController.prototype,
+          route,
+        );
+        expect(descriptor).toBeDefined();
+
+        const metadata = Reflect.getMetadata('swagger/apiOperation', descriptor.value);
+        expect(metadata).toBeDefined();
+      });
+    });
   });
 });

@@ -4,6 +4,7 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,7 +14,11 @@ import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 import { PaginationDto, PaginatedResponse } from '../common/dto/pagination.dto';
 import { PaymentsFilterDto } from './dto/payments-filter.dto';
-import { RequestContextService } from '../common/request-context/request-context.service';
+import { PaymentCreatedEvent } from './events/payment-created.event';
+import { PaymentCompletedEvent } from './events/payment-completed.event';
+import { PaymentFailedEvent } from './events/payment-failed.event';
+import { retryWithBackoff } from '../common/utils/retry';
+import { MetricsService } from '../metrics/metrics.service';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -30,7 +35,8 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly limitsService: LimitsService,
     private readonly walletsService: WalletsService,
-    private readonly requestContext: RequestContextService,
+    private readonly eventEmitter: EventEmitter2,
+    private readonly metrics: MetricsService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
@@ -45,19 +51,30 @@ export class PaymentsService {
       description,
     } = createPaymentDto;
 
-    this.logger.log(
-      `Creating payment walletId=${walletId} amount=${amount} requestId=${requestId}`,
+    const senderWallet = await retryWithBackoff(
+      () => this.walletsService.findWalletById(walletId),
+      3,
+      100,
+      this.logger,
     );
-
-    const senderWallet = await this.walletsService.findWalletById(walletId);
     if (senderWallet.status !== WalletStatus.ACTIVE) {
       throw new BadRequestException(
         `Sender wallet is not active (status: ${senderWallet.status})`,
       );
     }
 
-    await this.walletsService.findWalletById(receiverWalletId);
-    await this.limitsService.checkLimits(walletId, amount);
+    await retryWithBackoff(
+      () => this.walletsService.findWalletById(receiverWalletId),
+      3,
+      100,
+      this.logger,
+    );
+    await retryWithBackoff(
+      () => this.limitsService.checkLimits(walletId, amount),
+      3,
+      100,
+      this.logger,
+    );
 
     const payment = await this.prisma.payment.create({
       data: {
@@ -71,8 +88,17 @@ export class PaymentsService {
       },
     });
 
-    this.logger.log(
-      `Payment created id=${payment.id} requestId=${requestId}`,
+    this.metrics.incrementPaymentsCreated();
+
+    this.eventEmitter.emit(
+      'payment.created',
+      new PaymentCreatedEvent(
+        payment.id,
+        payment.amount,
+        payment.currency,
+        payment.userId,
+        new Date(),
+      ),
     );
 
     return payment;
@@ -136,10 +162,37 @@ export class PaymentsService {
       }
     }
 
-    return this.prisma.payment.update({
+    const updatedPayment = await this.prisma.payment.update({
       where: { id: paymentId },
       data: updatePaymentDto,
     });
+
+    if (updatePaymentDto.status === PaymentStatus.CONFIRMED) {
+      this.eventEmitter.emit(
+        'payment.completed',
+        new PaymentCompletedEvent(
+          updatedPayment.id,
+          updatedPayment.amount,
+          updatedPayment.currency,
+          updatedPayment.userId,
+          new Date(),
+        ),
+      );
+    } else if (updatePaymentDto.status === PaymentStatus.FAILED) {
+      this.metrics.incrementPaymentsFailed('user_action');
+      this.eventEmitter.emit(
+        'payment.failed',
+        new PaymentFailedEvent(
+          updatedPayment.id,
+          updatedPayment.amount,
+          updatedPayment.currency,
+          updatedPayment.userId,
+          new Date(),
+        ),
+      );
+    }
+
+    return updatedPayment;
   }
 
   remove(id: string) {
