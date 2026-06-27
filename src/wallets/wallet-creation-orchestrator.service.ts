@@ -42,6 +42,8 @@ export interface OrchestratorMetrics {
   network: WalletNetwork;
   outcome: OrchestrationOutcome;
   durationMs: number;
+  /** The incoming request ID when available. */
+  requestId?: string;
   /** Phase timings in milliseconds, only present for new wallet creation. */
   phases?: Partial<Record<OrchestrationPhase, number>>;
   /** Set when outcome is 'failed'. */
@@ -203,11 +205,12 @@ export class WalletCreationOrchestrator {
    */
   async createWallet(
     request: CreateWalletOrchestratorRequest,
+    requestId?: string,
   ): Promise<WalletOrchestrationResult> {
     const startTime = Date.now();
     let committedWallet: Wallet | undefined;
     this.logger.log(
-      `Starting wallet creation orchestration for user ${request.userId} on ${request.network}`,
+      `Starting wallet creation orchestration for user ${request.userId} on ${request.network}${requestIdLabel}`,
     );
 
     try {
@@ -231,6 +234,7 @@ export class WalletCreationOrchestrator {
               network: request.network,
               outcome: 'idempotent',
               durationMs: Date.now() - startTime,
+              requestId,
             });
             return existingResult;
           }
@@ -246,6 +250,7 @@ export class WalletCreationOrchestrator {
             network: request.network,
             outcome: 'existing',
             durationMs: Date.now() - startTime,
+            requestId,
           });
           return {
             wallet: context.existingWallet,
@@ -292,6 +297,7 @@ export class WalletCreationOrchestrator {
           outcome: 'created',
           durationMs: Date.now() - startTime,
           phases: newWallet.phaseTimings,
+          requestId,
         });
 
         // This is set only on the original transaction path, never for an
@@ -332,10 +338,11 @@ export class WalletCreationOrchestrator {
         outcome: 'failed',
         durationMs: Date.now() - startTime,
         failedPhase,
+        requestId,
       });
 
       this.logger.error(
-        `Wallet creation orchestration failed for user ${request.userId}:`,
+        `Wallet creation orchestration failed for user ${request.userId} requestId=${requestId || 'N/A'}:`,
         error,
       );
 
@@ -365,6 +372,9 @@ export class WalletCreationOrchestrator {
       `network=${metrics.network}`,
       `durationMs=${metrics.durationMs}`,
     ];
+    if (metrics.requestId) {
+      parts.push(`requestId=${metrics.requestId}`);
+    }
     if (metrics.failedPhase) parts.push(`failedPhase=${metrics.failedPhase}`);
     if (metrics.phases) {
       for (const [phase, ms] of Object.entries(metrics.phases)) {

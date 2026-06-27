@@ -190,6 +190,45 @@ export class WebhookEventEmitterService {
   }
 
   /**
+   * Emits an auth.user_authenticated event for a returning user login
+   */
+  async emitUserAuthenticated(data: {
+    userId: string;
+    authId: string;
+    authProvider: string;
+    isNewWallet: boolean;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.AUTH_USER_AUTHENTICATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits an auth.new_user_registered event for first-time authentication
+   */
+  async emitNewUserRegistered(data: {
+    userId: string;
+    authId: string;
+    authProvider: string;
+    walletId: string;
+    walletNetwork: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.AUTH_NEW_USER_REGISTERED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits an auth.authentication_failed event
+   */
+  async emitAuthenticationFailed(data: {
+    authId: string;
+    reason: string;
+    errorCode?: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.AUTH_AUTHENTICATION_FAILED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
    * Creates a webhook event with standard structure
    */
   private createEvent(

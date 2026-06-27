@@ -1,13 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { LimitsService, LimitExceededException } from './limits.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { CacheService } from '../common/cache/cache.service';
+import { MetricsService } from '../metrics/metrics.service';
+import { LimitUpdatedEvent } from './events/limit-updated.event';
+import { LimitExceededEvent } from './events/limit-exceeded.event';
 
 describe('LimitsService', () => {
   let service: LimitsService;
   let prisma: any;
-  let cacheService: { get: jest.Mock; set: jest.Mock; delete: jest.Mock };
+  let eventEmitter: any;
+  let metrics: any;
 
   const walletId = 'wallet-uuid-1';
 
@@ -22,6 +26,11 @@ describe('LimitsService', () => {
         findMany: jest.fn(),
       },
     };
+    eventEmitter = { emit: jest.fn() };
+    metrics = {
+      incrementLimitExceeded: jest.fn(),
+      incrementLimitChecks: jest.fn(),
+    };
 
     cacheService = { get: jest.fn(), set: jest.fn(), delete: jest.fn() };
 
@@ -29,12 +38,15 @@ describe('LimitsService', () => {
       providers: [
         LimitsService,
         { provide: PrismaService, useValue: prisma },
-        { provide: CacheService, useValue: cacheService },
+        { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: MetricsService, useValue: metrics },
       ],
     }).compile();
 
     service = module.get<LimitsService>(LimitsService);
   });
+
+  afterEach(() => jest.clearAllMocks());
 
   it('should be defined', () => {
     expect(service).toBeDefined();
@@ -124,6 +136,124 @@ describe('LimitsService', () => {
       await expect(service.removeLimits(walletId)).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('domain events', () => {
+    describe('limit.exceeded', () => {
+      it('should emit limit.exceeded when per-transaction limit is exceeded', async () => {
+        prisma.walletLimit.findUnique.mockResolvedValue({
+          perTransactionLimit: 50,
+          dailyLimit: 1000,
+        });
+
+        try {
+          await service.checkLimits(walletId, 100);
+        } catch (e) {
+          // Expected to throw
+        }
+
+        expect(eventEmitter.emit).toHaveBeenCalledWith(
+          'limit.exceeded',
+          expect.any(LimitExceededEvent),
+        );
+        const emittedEvent = eventEmitter.emit.mock.calls[0][1];
+        expect(emittedEvent.userId).toBe(walletId);
+        expect(emittedEvent.limitType).toBe('perTransaction');
+        expect(emittedEvent.limit).toBe(50);
+        expect(emittedEvent.attempted).toBe(100);
+      });
+
+      it('should emit limit.exceeded when daily limit is exceeded', async () => {
+        prisma.walletLimit.findUnique.mockResolvedValue({
+          perTransactionLimit: 200,
+          dailyLimit: 100,
+        });
+        prisma.transaction.findMany.mockResolvedValue([{ amount: '50' }]);
+
+        try {
+          await service.checkLimits(walletId, 60);
+        } catch (e) {
+          // Expected to throw
+        }
+
+        expect(eventEmitter.emit).toHaveBeenCalledWith(
+          'limit.exceeded',
+          expect.any(LimitExceededEvent),
+        );
+        const emittedEvent = eventEmitter.emit.mock.calls[0][1];
+        expect(emittedEvent.userId).toBe(walletId);
+        expect(emittedEvent.limitType).toBe('daily');
+        expect(emittedEvent.limit).toBe(100);
+        expect(emittedEvent.attempted).toBe(110);
+      });
+    });
+
+    describe('limit.updated', () => {
+      it('should emit limit.updated events when creating new limits', async () => {
+        prisma.walletLimit.findUnique.mockResolvedValue(null);
+        prisma.walletLimit.upsert.mockResolvedValue({
+          walletId,
+          dailyLimit: 100,
+          perTransactionLimit: 10,
+        });
+
+        await service.setLimits(walletId, 100, 10);
+
+        expect(eventEmitter.emit).toHaveBeenCalledTimes(2);
+        expect(eventEmitter.emit).toHaveBeenCalledWith(
+          'limit.updated',
+          expect.any(LimitUpdatedEvent),
+        );
+      });
+
+      it('should emit limit.updated when modifying daily limit', async () => {
+        prisma.walletLimit.findUnique.mockResolvedValue({
+          walletId,
+          dailyLimit: 100,
+          perTransactionLimit: 10,
+        });
+        prisma.walletLimit.upsert.mockResolvedValue({
+          walletId,
+          dailyLimit: 200,
+          perTransactionLimit: 10,
+        });
+
+        await service.setLimits(walletId, 200, 10);
+
+        expect(eventEmitter.emit).toHaveBeenCalledWith(
+          'limit.updated',
+          expect.any(LimitUpdatedEvent),
+        );
+        const emittedEvent = eventEmitter.emit.mock.calls[0][1];
+        expect(emittedEvent.limitType).toBe('daily');
+        expect(emittedEvent.oldValue).toBe(100);
+        expect(emittedEvent.newValue).toBe(200);
+      });
+
+      it('should emit limit.updated when modifying per-transaction limit', async () => {
+        prisma.walletLimit.findUnique.mockResolvedValue({
+          walletId,
+          dailyLimit: 100,
+          perTransactionLimit: 10,
+        });
+        prisma.walletLimit.upsert.mockResolvedValue({
+          walletId,
+          dailyLimit: 100,
+          perTransactionLimit: 20,
+        });
+
+        await service.setLimits(walletId, 100, 20);
+
+        expect(eventEmitter.emit).toHaveBeenCalledWith(
+          'limit.updated',
+          expect.any(LimitUpdatedEvent),
+        );
+        const emittedEvent = eventEmitter.emit.mock.calls[0][1];
+        expect(emittedEvent.limitType).toBe('perTransaction');
+        expect(emittedEvent.oldValue).toBe(10);
+        expect(emittedEvent.newValue).toBe(20);
+      });
     });
   });
 });

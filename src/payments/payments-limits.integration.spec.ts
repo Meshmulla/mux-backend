@@ -6,7 +6,7 @@ import { WalletsService } from '../wallets/wallets.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentStatus } from './entities/payment.entity';
 import { WalletStatus } from '../wallets/domain/wallet.model';
-import { PAYMENT_LIMITS_PORT } from './ports/payment-limits.port';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 describe('Payments and Limits Integration', () => {
   let paymentsService: PaymentsService;
@@ -31,6 +31,10 @@ describe('Payments and Limits Integration', () => {
     findWalletById: jest.fn(),
   };
 
+  const mockRequestContext = {
+    getRequestId: jest.fn().mockReturnValue('integration-req-id'),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -41,6 +45,7 @@ describe('Payments and Limits Integration', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: PAYMENT_LIMITS_PORT, useExisting: LimitsService },
         { provide: WalletsService, useValue: mockWalletsService },
+        { provide: RequestContextService, useValue: mockRequestContext },
       ],
     }).compile();
 

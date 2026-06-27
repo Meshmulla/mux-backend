@@ -1,11 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PaymentsService } from './payments.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletsService } from '../wallets/wallets.service';
-import { PAYMENT_LIMITS_PORT } from './ports/payment-limits.port';
+import { MetricsService } from '../metrics/metrics.service';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
+import { PaymentCreatedEvent } from './events/payment-created.event';
+import { PaymentCompletedEvent } from './events/payment-completed.event';
+import { PaymentFailedEvent } from './events/payment-failed.event';
 
 const ACTIVE_WALLET = { id: 'wallet-uuid-sender', status: WalletStatus.ACTIVE };
 const RECEIVER_WALLET = {
@@ -28,6 +32,8 @@ describe('PaymentsService', () => {
   let prisma: any;
   let paymentLimitsPort: any;
   let walletsService: any;
+  let eventEmitter: any;
+  let metrics: any;
 
   beforeEach(async () => {
     prisma = {
@@ -41,6 +47,12 @@ describe('PaymentsService', () => {
     };
     paymentLimitsPort = { checkLimits: jest.fn() };
     walletsService = { findWalletById: jest.fn() };
+    eventEmitter = { emit: jest.fn() };
+    metrics = {
+      incrementPaymentsCreated: jest.fn(),
+      incrementPaymentsFailed: jest.fn(),
+      recordPaymentProcessingDuration: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -48,6 +60,8 @@ describe('PaymentsService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: PAYMENT_LIMITS_PORT, useValue: paymentLimitsPort },
         { provide: WalletsService, useValue: walletsService },
+        { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: MetricsService, useValue: metrics },
       ],
     }).compile();
 
@@ -200,6 +214,39 @@ describe('PaymentsService', () => {
     });
   });
 
+  describe('request id propagation', () => {
+    it('should call getRequestId when creating a payment', async () => {
+      walletsService.findWalletById
+        .mockResolvedValueOnce(ACTIVE_WALLET)
+        .mockResolvedValueOnce(RECEIVER_WALLET);
+      limitsService.checkLimits.mockResolvedValue(undefined);
+      prisma.payment.create.mockResolvedValue({
+        id: 1,
+        ...BASE_DTO,
+        status: PaymentStatus.PENDING,
+      });
+
+      await service.create(BASE_DTO);
+
+      expect(requestContext.getRequestId).toHaveBeenCalled();
+    });
+
+    it('should call getRequestId when updating a payment', async () => {
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.PENDING,
+      });
+      prisma.payment.update.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.CONFIRMED,
+      });
+
+      await service.update('1', { status: PaymentStatus.CONFIRMED });
+
+      expect(requestContext.getRequestId).toHaveBeenCalled();
+    });
+  });
+
   describe('filtering', () => {
     it('should apply status filter when provided', async () => {
       const payments = [{ id: 1, status: PaymentStatus.PENDING }];
@@ -233,6 +280,114 @@ describe('PaymentsService', () => {
         skip: 0,
         take: 20,
       });
+    });
+  });
+
+  describe('domain events', () => {
+    it('should emit payment.created event on payment creation', async () => {
+      walletsService.findWalletById
+        .mockResolvedValueOnce(ACTIVE_WALLET)
+        .mockResolvedValueOnce(RECEIVER_WALLET);
+      limitsService.checkLimits.mockResolvedValue(undefined);
+      const payment = {
+        id: 1,
+        ...BASE_DTO,
+        status: PaymentStatus.PENDING,
+        userId: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      prisma.payment.create.mockResolvedValue(payment);
+
+      await service.create(BASE_DTO);
+
+      expect(metrics.incrementPaymentsCreated).toHaveBeenCalled();
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.created',
+        expect.any(PaymentCreatedEvent),
+      );
+      const emittedEvent = eventEmitter.emit.mock.calls[0][1];
+      expect(emittedEvent.paymentId).toBe(1);
+      expect(emittedEvent.amount).toBe(100);
+      expect(emittedEvent.currency).toBe('USD');
+      expect(emittedEvent.userId).toBe(1);
+    });
+
+    it('should emit payment.completed event on CONFIRMED status transition', async () => {
+      const payment = {
+        id: 1,
+        status: PaymentStatus.PENDING,
+        amount: 100,
+        currency: 'USD',
+        userId: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      prisma.payment.findUnique.mockResolvedValue(payment);
+      prisma.payment.update.mockResolvedValue({
+        ...payment,
+        status: PaymentStatus.CONFIRMED,
+      });
+
+      await service.update('1', { status: PaymentStatus.CONFIRMED });
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.completed',
+        expect.any(PaymentCompletedEvent),
+      );
+      const emittedEvent = eventEmitter.emit.mock.calls[0][1];
+      expect(emittedEvent.paymentId).toBe(1);
+      expect(emittedEvent.amount).toBe(100);
+    });
+
+    it('should emit payment.failed event on FAILED status transition', async () => {
+      const payment = {
+        id: 1,
+        status: PaymentStatus.PENDING,
+        amount: 100,
+        currency: 'USD',
+        userId: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      prisma.payment.findUnique.mockResolvedValue(payment);
+      prisma.payment.update.mockResolvedValue({
+        ...payment,
+        status: PaymentStatus.FAILED,
+      });
+
+      await service.update('1', { status: PaymentStatus.FAILED });
+
+      expect(metrics.incrementPaymentsFailed).toHaveBeenCalledWith('user_action');
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'payment.failed',
+        expect.any(PaymentFailedEvent),
+      );
+      const emittedEvent = eventEmitter.emit.mock.calls[0][1];
+      expect(emittedEvent.paymentId).toBe(1);
+      expect(emittedEvent.amount).toBe(100);
+    });
+
+    it('should not emit event on description-only update', async () => {
+      const payment = {
+        id: 1,
+        status: PaymentStatus.PENDING,
+        amount: 100,
+        currency: 'USD',
+        userId: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      prisma.payment.findUnique.mockResolvedValue(payment);
+      prisma.payment.update.mockResolvedValue({
+        ...payment,
+        description: 'Updated',
+      });
+      eventEmitter.emit.mockClear();
+
+      await service.update('1', { description: 'Updated' });
+
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
   });
 });
