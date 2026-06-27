@@ -10,6 +10,8 @@ import { LimitsService } from '../limits/limits.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
+import { PaginationDto, PaginatedResponse } from '../common/dto/pagination.dto';
+import { PaymentsFilterDto } from './dto/payments-filter.dto';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -60,8 +62,32 @@ export class PaymentsService {
     });
   }
 
-  findAll() {
-    return this.prisma.payment.findMany();
+  async findAll(
+    pagination: PaginationDto,
+    filters: PaymentsFilterDto,
+  ): Promise<PaginatedResponse<any>> {
+    const skip = (pagination.page - 1) * pagination.limit;
+
+    const where: any = {};
+    if (filters.status) {
+      where.status = filters.status;
+    }
+
+    const [data, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        skip,
+        take: pagination.limit,
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+
+    return {
+      data,
+      total,
+      page: pagination.page,
+      limit: pagination.limit,
+    };
   }
 
   findOne(id: string) {

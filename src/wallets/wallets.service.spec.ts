@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { WalletsService, CreateWalletRequest } from './wallets.service';
-import { WalletNetwork } from './domain/wallet.model';
+import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import {
   EncryptionService,
   DecryptionError,
@@ -9,6 +9,9 @@ import {
 import { KeyManagementService } from '../key-management/key-management.service';
 import { KeyDecryptionException } from '../key-management/exceptions/key-decryption.exception';
 import { KeyType } from '../key-management/domain/key-types';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { WalletRetryService } from './wallet-retry.service';
+import { WalletApiMetricsService } from './wallet-api-metrics.service';
 
 // Shared mock Prisma wallet methods
 const mockPrismaWallet = {
@@ -53,6 +56,14 @@ describe('WalletsService', () => {
     sign: jest.Mock;
     validateKey: jest.Mock;
   };
+  let webhookEventEmitter: {
+    emitWalletCreated: jest.Mock;
+    emitWalletActivated: jest.Mock;
+    emitWalletSuspended: jest.Mock;
+    emitWalletRotated: jest.Mock;
+  };
+  let walletRetryService: { execute: jest.Mock };
+  let walletApiMetrics: { record: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -78,6 +89,16 @@ describe('WalletsService', () => {
       sign: jest.fn(),
       validateKey: jest.fn(),
     };
+    webhookEventEmitter = {
+      emitWalletCreated: jest.fn().mockResolvedValue(undefined),
+      emitWalletActivated: jest.fn().mockResolvedValue(undefined),
+      emitWalletSuspended: jest.fn().mockResolvedValue(undefined),
+      emitWalletRotated: jest.fn().mockResolvedValue(undefined),
+    };
+    walletRetryService = {
+      execute: jest.fn((_options, operation) => operation(1)),
+    };
+    walletApiMetrics = { record: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -94,6 +115,9 @@ describe('WalletsService', () => {
           provide: KeyManagementService,
           useValue: mockKeyManagementService,
         },
+        { provide: WebhookEventEmitterService, useValue: webhookEventEmitter },
+        { provide: WalletRetryService, useValue: walletRetryService },
+        { provide: WalletApiMetricsService, useValue: walletApiMetrics },
       ],
     }).compile();
 
@@ -163,6 +187,16 @@ describe('WalletsService', () => {
         keyType: KeyType.STELLAR_ED25519,
         metadata: { userId: 'user-123', network: WalletNetwork.TESTNET },
       });
+      expect(webhookEventEmitter.emitWalletCreated).toHaveBeenCalledWith({
+        walletId: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'public-key-123',
+        network: WalletNetwork.TESTNET,
+        status: 'ACTIVE',
+      });
+      expect(walletApiMetrics.record).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: 'create', outcome: 'success' }),
+      );
     });
 
     it('should throw ConflictException if user already has a wallet on the network', async () => {
@@ -357,6 +391,13 @@ describe('WalletsService', () => {
         keyType: KeyType.STELLAR_ED25519,
         metadata: { walletId: 'wallet-123', operation: 'rotation' },
       });
+      expect(webhookEventEmitter.emitWalletRotated).toHaveBeenCalledWith({
+        walletId: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'new-public-key',
+        network: WalletNetwork.TESTNET,
+        secretVersion: 2,
+      });
     });
 
     it('should throw NotFoundException if wallet not found', async () => {
@@ -409,6 +450,49 @@ describe('WalletsService', () => {
     });
   });
 
+  describe('updateWalletStatus', () => {
+    it('emits wallet.suspended only after the status update is persisted', async () => {
+      const suspendedWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
+        encryptedSecret: 'secret',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: WalletStatus.SUSPENDED,
+        statusReason: 'manual review',
+        statusChangedAt: new Date(),
+        rotatedFromId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      mockPrismaWallet.findUnique.mockResolvedValue({
+        ...suspendedWallet,
+        status: WalletStatus.ACTIVE,
+      });
+      mockPrismaWallet.update.mockResolvedValue(suspendedWallet);
+
+      await service.updateWalletStatus(
+        'wallet-123',
+        WalletStatus.SUSPENDED,
+        'manual review',
+      );
+
+      expect(webhookEventEmitter.emitWalletSuspended).toHaveBeenCalledWith({
+        walletId: 'wallet-123',
+        userId: 'user-123',
+        reason: 'manual review',
+      });
+      expect(walletApiMetrics.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: 'status_update',
+          outcome: 'success',
+        }),
+      );
+    });
+  });
+
   // #188: Activate Wallet (PROVISIONING -> ACTIVE)
   describe('activateWallet', () => {
     it('should transition PROVISIONING to ACTIVE', async () => {
@@ -448,6 +532,11 @@ describe('WalletsService', () => {
           status: 'ACTIVE',
           statusReason: 'Wallet provisioned and activated',
         }),
+      });
+      expect(webhookEventEmitter.emitWalletActivated).toHaveBeenCalledWith({
+        walletId: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
       });
     });
 

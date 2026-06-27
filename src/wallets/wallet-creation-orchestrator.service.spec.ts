@@ -227,6 +227,38 @@ describe('WalletCreationOrchestrator', () => {
       });
     });
 
+    it('emits created and activated events after the wallet transaction commits', async () => {
+      const webhookEventEmitter = {
+        emitWalletCreated: jest.fn().mockResolvedValue(undefined),
+        emitWalletActivated: jest.fn().mockResolvedValue(undefined),
+      };
+      (orchestrator as any).webhookEventEmitter = webhookEventEmitter;
+      mockPrisma.$transaction.mockImplementation(async (callback) =>
+        callback(mockPrisma as any),
+      );
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockResolvedValue({
+        ...mockWalletRow,
+        status: WalletStatus.PROVISIONING,
+      });
+      mockPrisma.wallet.update.mockResolvedValue(mockWalletRow);
+
+      await orchestrator.createWallet(createRequest);
+
+      expect(webhookEventEmitter.emitWalletCreated).toHaveBeenCalledWith({
+        walletId: mockWalletRow.id,
+        userId: mockWalletRow.userId,
+        publicKey: mockWalletRow.publicKey,
+        network: mockWalletRow.network,
+        status: mockWalletRow.status,
+      });
+      expect(webhookEventEmitter.emitWalletActivated).toHaveBeenCalledWith({
+        walletId: mockWalletRow.id,
+        userId: mockWalletRow.userId,
+        publicKey: mockWalletRow.publicKey,
+      });
+    });
+
     it('should store an idempotency record after creating a new wallet', async () => {
       mockPrisma.$transaction.mockImplementation(async (callback: any) =>
         callback(mockPrisma),

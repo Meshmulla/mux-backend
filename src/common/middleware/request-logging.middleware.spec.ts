@@ -73,4 +73,59 @@ describe('requestLogger', () => {
     expect(next).toHaveBeenCalled();
     expect(spyWarn).toHaveBeenCalled();
   });
+
+  it('attaches request ID to request object', () => {
+    const req: any = {
+      method: 'GET',
+      originalUrl: '/test',
+      headers: {},
+      ip: '1.2.3.4',
+    };
+    const finishCallbacks: Record<string, Function[]> = { finish: [] };
+    const res: any = {
+      setHeader: jest.fn(),
+      on: (event: string, cb: Function) => {
+        finishCallbacks[event].push(cb);
+      },
+      statusCode: 200,
+    };
+    const next = jest.fn();
+
+    jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => {});
+
+    requestLogger(req, res, next as any);
+
+    expect(req.requestId).toBeDefined();
+    expect(typeof req.requestId).toBe('string');
+    expect(req.requestId.length).toBeGreaterThan(0);
+  });
+
+  it('forwards existing x-request-id header to request object', () => {
+    const existingId = 'existing-request-id-123';
+    const req: any = {
+      method: 'GET',
+      originalUrl: '/test',
+      headers: { 'x-request-id': existingId },
+      ip: '1.2.3.4',
+    };
+    const finishCallbacks: Record<string, Function[]> = { finish: [] };
+    const res: any = {
+      setHeader: jest.fn(),
+      on: (event: string, cb: Function) => {
+        finishCallbacks[event].push(cb);
+      },
+      statusCode: 200,
+    };
+    const next = jest.fn();
+
+    jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => {});
+
+    requestLogger(req, res, next as any);
+
+    expect(req.requestId).toBe(existingId);
+  });
 });

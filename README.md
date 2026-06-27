@@ -475,6 +475,9 @@ All webhook payloads are signed with HMAC-SHA256. The `X-Webhook-Signature` head
 
 ## Wallets API
 
+Endpoint semantics, idempotency, lifecycle events, dependency retries, and
+metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
+
 - `POST /wallets` - create wallet
 - `GET /wallets` - list all wallets
 - `GET /wallets/user/:userId` - list wallets by userId (#189)
@@ -515,4 +518,3 @@ Testing
 
 - Unit tests are under `src/**/*spec.ts`.
 - E2E tests are under `test/` and use Jest + Supertest.
-
