@@ -36,6 +36,7 @@ describe('PaymentsService', () => {
         findMany: jest.fn(),
         findUnique: jest.fn(),
         update: jest.fn(),
+        count: jest.fn(),
       },
     };
     limitsService = { checkLimits: jest.fn() };
@@ -131,6 +132,107 @@ describe('PaymentsService', () => {
       await expect(
         service.update('99', { status: PaymentStatus.CONFIRMED }),
       ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw BadRequestException for invalid status transition', async () => {
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.CONFIRMED,
+      });
+
+      await expect(
+        service.update('1', { status: PaymentStatus.PENDING }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('business logic validation', () => {
+    it('should check limits when creating payment', async () => {
+      walletsService.findWalletById
+        .mockResolvedValueOnce(ACTIVE_WALLET)
+        .mockResolvedValueOnce(RECEIVER_WALLET);
+      limitsService.checkLimits.mockResolvedValue(undefined);
+      prisma.payment.create.mockResolvedValue({
+        id: 1,
+        ...BASE_DTO,
+        status: PaymentStatus.PENDING,
+      });
+
+      await service.create(BASE_DTO);
+
+      expect(limitsService.checkLimits).toHaveBeenCalledWith(
+        BASE_DTO.walletId,
+        BASE_DTO.amount,
+      );
+    });
+  });
+
+  describe('pagination', () => {
+    it('should return paginated results with defaults', async () => {
+      const payments = [{ id: 1 }, { id: 2 }];
+      prisma.payment.findMany.mockResolvedValue(payments);
+      prisma.payment.count.mockResolvedValue(2);
+
+      const result = await service.findAll({ page: 1, limit: 20 }, {});
+
+      expect(result.data).toEqual(payments);
+      expect(result.total).toBe(2);
+      expect(result.page).toBe(1);
+      expect(result.limit).toBe(20);
+      expect(prisma.payment.findMany).toHaveBeenCalledWith({
+        where: {},
+        skip: 0,
+        take: 20,
+      });
+    });
+
+    it('should apply correct skip offset for page 2', async () => {
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.count.mockResolvedValue(100);
+
+      await service.findAll({ page: 2, limit: 20 }, {});
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith({
+        where: {},
+        skip: 20,
+        take: 20,
+      });
+    });
+  });
+
+  describe('filtering', () => {
+    it('should apply status filter when provided', async () => {
+      const payments = [{ id: 1, status: PaymentStatus.PENDING }];
+      prisma.payment.findMany.mockResolvedValue(payments);
+      prisma.payment.count.mockResolvedValue(1);
+
+      await service.findAll(
+        { page: 1, limit: 20 },
+        { status: PaymentStatus.PENDING },
+      );
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith({
+        where: { status: PaymentStatus.PENDING },
+        skip: 0,
+        take: 20,
+      });
+      expect(prisma.payment.count).toHaveBeenCalledWith({
+        where: { status: PaymentStatus.PENDING },
+      });
+    });
+
+    it('should not apply filter when not provided', async () => {
+      const payments = [{ id: 1 }];
+      prisma.payment.findMany.mockResolvedValue(payments);
+      prisma.payment.count.mockResolvedValue(100);
+
+      await service.findAll({ page: 1, limit: 20 }, {});
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith({
+        where: {},
+        skip: 0,
+        take: 20,
+      });
     });
   });
 });

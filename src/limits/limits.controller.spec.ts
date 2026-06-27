@@ -58,4 +58,21 @@ describe('LimitsController', () => {
     await controller.removeLimits(walletId);
     expect(limitsService.removeLimits).toHaveBeenCalledWith(walletId);
   });
+
+  describe('swagger decorators', () => {
+    it('should have @ApiResponse decorators on all routes', () => {
+      const routes = ['setLimits', 'getLimits', 'removeLimits'];
+
+      routes.forEach((route) => {
+        const descriptor = Object.getOwnPropertyDescriptor(
+          LimitsController.prototype,
+          route,
+        );
+        expect(descriptor).toBeDefined();
+
+        const metadata = Reflect.getMetadata('swagger/apiResponse', descriptor.value);
+        expect(metadata).toBeDefined();
+      });
+    });
+  });
 });

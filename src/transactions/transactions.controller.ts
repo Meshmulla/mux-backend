@@ -7,6 +7,7 @@ import {
   Param,
   Query,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -27,12 +28,31 @@ import {
   RateLimitGuard,
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
+import { FeatureFlagGuard, FeatureFlag } from '../common/feature-flags/feature-flag.guard';
 import { TransactionStatus } from './domain/transaction.model';
 
-@ApiTags('transactions')
-@ApiSecurity('api-key')
+/** Parse a pagination query param, throwing 400 on invalid input */
+function parsePaginationParam(
+  value: string | undefined,
+  name: string,
+  max = 100,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new BadRequestException(
+      `${name} must be a non-negative integer`,
+    );
+  }
+  if (name === 'limit' && n > max) {
+    throw new BadRequestException(`limit must not exceed ${max}`);
+  }
+  return n;
+}
+
 @Controller('transactions')
-@UseGuards(ApiKeyGuard, RateLimitGuard)
+@UseGuards(ApiKeyGuard, RateLimitGuard, FeatureFlagGuard)
+@FeatureFlag('transactions_enabled')
 export class TransactionsController {
   constructor(
     private readonly transactionsService: TransactionsService,
@@ -145,8 +165,8 @@ export class TransactionsController {
       senderWalletId,
       receiverWalletId,
       status: status as TransactionStatus,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      limit: parsePaginationParam(limit, 'limit'),
+      offset: parsePaginationParam(offset, 'offset'),
     });
   }
 
@@ -163,8 +183,8 @@ export class TransactionsController {
     @Query('offset') offset?: string,
   ) {
     return this.transactionsService.findByWallet(walletId, {
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      limit: parsePaginationParam(limit, 'limit'),
+      offset: parsePaginationParam(offset, 'offset'),
     });
   }
 

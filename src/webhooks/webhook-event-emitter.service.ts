@@ -57,6 +57,18 @@ export class WebhookEventEmitterService {
     await this.webhookDispatcher.dispatchEvent({ event });
   }
 
+  /** Emits a wallet.rotated event after new key material is persisted. */
+  async emitWalletRotated(data: {
+    walletId: string;
+    userId: string;
+    publicKey: string;
+    network: string;
+    secretVersion: number;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.WALLET_ROTATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
   /**
    * Emits a transaction.created event
    */
