@@ -4,7 +4,6 @@ import {
   Get,
   Body,
   Param,
-  Delete,
   Query,
   HttpCode,
   HttpStatus,
@@ -16,7 +15,6 @@ import {
   ApiParam,
   ApiQuery,
   ApiBody,
-  ApiProperty,
 } from '@nestjs/swagger';
 import {
   ApiKeyService,
