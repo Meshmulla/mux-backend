@@ -22,6 +22,8 @@ import {
   KeyOperationMetrics,
 } from './domain/key-statistics';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { KeyValidationCacheService } from './key-validation-cache/key-validation-cache.service';
 
 export interface GenerateKeyRequest {
   keyType: KeyType;
@@ -71,6 +73,8 @@ export class KeyManagementService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly auditService: KeyRotationAuditService,
+    private readonly requestContext: RequestContextService,
+    private readonly validationCache: KeyValidationCacheService,
   ) {
     // Initialize key providers
     this.providers = new Map();
@@ -234,10 +238,17 @@ export class KeyManagementService {
     encryptedKeyMaterial: string,
     keyType: KeyType,
   ): Promise<boolean> {
+    const cached = this.validationCache.get(publicKey, encryptedKeyMaterial);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     const provider = this.getProvider(keyType);
 
     try {
-      return await provider.validateKeyPair(publicKey, encryptedKeyMaterial);
+      const result = await provider.validateKeyPair(publicKey, encryptedKeyMaterial);
+      this.validationCache.set(publicKey, encryptedKeyMaterial, result);
+      return result;
     } catch (error) {
       if (error instanceof DecryptionError) {
         this.logger.error(
@@ -364,6 +375,10 @@ export class KeyManagementService {
 
       return [newWallet];
     });
+
+    // Invalidate any cached validation result for the predecessor's public key
+    // so subsequent validations hit the real decryption path.
+    this.validationCache.invalidate(predecessor.publicKey);
 
     this.auditKeyOperation({
       operation: 'ROTATE',
@@ -598,30 +613,36 @@ export class KeyManagementService {
 
   /**
    * Audits key operations (NEVER log sensitive data)
+   * Automatically propagates the current request ID from RequestContextService.
    */
   private auditKeyOperation(audit: KeyOperationAudit): void {
-    this.auditLog.push(audit);
+    const enriched: KeyOperationAudit = {
+      ...audit,
+      requestId: audit.requestId ?? this.requestContext.getRequestId(),
+    };
+
+    this.auditLog.push(enriched);
 
     // Persist to database for compliance and long-term retention
     this.auditService
       .persistAuditLog(
-        this.auditService.convertToPersistentFormat(audit, {
-          retentionDays: 365, // Keep audit logs for 1 year
+        this.auditService.convertToPersistentFormat(enriched, {
+          retentionDays: 365,
         }),
       )
       .catch((error) => {
-        // Already logged in service, just ensure it doesn't break the main flow
         this.logger.error(
           'Audit persistence failed (non-blocking):',
           error.message,
         );
       });
 
-    // In production, send to external audit system
+    const reqTag = enriched.requestId ? ` req=${enriched.requestId}` : '';
     this.logger.log(
-      `[AUDIT] ${audit.operation} - ${audit.publicKey.substring(0, 12)}... - ` +
-        `${audit.success ? 'SUCCESS' : 'FAILED'}` +
-        (audit.errorMessage ? ` - ${audit.errorMessage}` : ''),
+      `[AUDIT] ${enriched.operation} - ${enriched.publicKey.substring(0, 12)}... - ` +
+        `${enriched.success ? 'SUCCESS' : 'FAILED'}` +
+        (enriched.errorMessage ? ` - ${enriched.errorMessage}` : '') +
+        reqTag,
     );
 
     // Keep only last 1000 audit entries in memory
