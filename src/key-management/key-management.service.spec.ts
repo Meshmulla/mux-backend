@@ -8,8 +8,9 @@ import {
 } from '../encryption/encryption.service';
 import { KeyType } from './domain/key-types';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
-
 import { KeyRotationAuditService } from './key-rotation-audit.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { KeyValidationCacheService } from './key-validation-cache/key-validation-cache.service';
 
 // Prevent loading the real PrismaService (which requires the generated Prisma client)
 jest.mock('../prisma/prisma.service', () => ({
@@ -40,6 +41,19 @@ describe('KeyManagementService', () => {
     getRotationHistory: jest.fn(),
   };
 
+  const mockRequestContext = {
+    getRequestId: jest.fn().mockReturnValue(undefined),
+    setRequestId: jest.fn(),
+  };
+
+  const mockValidationCache = {
+    get: jest.fn().mockReturnValue(undefined),
+    set: jest.fn(),
+    invalidate: jest.fn(),
+    size: jest.fn().mockReturnValue(0),
+    clear: jest.fn(),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -64,6 +78,14 @@ describe('KeyManagementService', () => {
         {
           provide: KeyRotationAuditService,
           useValue: mockAuditService,
+        },
+        {
+          provide: RequestContextService,
+          useValue: mockRequestContext,
+        },
+        {
+          provide: KeyValidationCacheService,
+          useValue: mockValidationCache,
         },
       ],
     }).compile();
