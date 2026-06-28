@@ -10,7 +10,7 @@ clients must consume it immediately and must not expect it to be replayed.
 | Method | Route | Behavior |
 | --- | --- | --- |
 | `POST` | `/wallets` | Creates one active wallet per user/network pair. Duplicate user/network requests return `409`. |
-| `GET` | `/wallets` | Lists wallets. |
+| `GET` | `/wallets` | Lists wallets. Supports `userId`, `network`, `status` filters and `limit`/`offset` pagination (default `limit=20`, max `100`). Returns `{ data, total, limit, offset, hasMore }`. |
 | `GET` | `/wallets/:id` | Returns a wallet or `404`. |
 | `GET` | `/wallets/:id/status` | Returns lifecycle status without decrypting the private key. |
 | `PATCH` | `/wallets/:id` | Updates wallet lifecycle status. |

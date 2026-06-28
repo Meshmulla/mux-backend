@@ -30,6 +30,22 @@ export interface CreateWalletRequest {
   network: WalletNetwork;
 }
 
+export interface WalletListFilters {
+  userId?: string;
+  network?: WalletNetwork;
+  status?: WalletStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface WalletListResult {
+  data: Wallet[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
 export interface WalletCreationResult {
   wallet: Wallet;
   privateKey: string;
@@ -275,8 +291,42 @@ export class WalletsService {
     return wallets.map((wallet) => this.mapPrismaWalletToDomain(wallet));
   }
 
+  async findAll(filters?: WalletListFilters): Promise<WalletListResult> {
+    const where: Record<string, unknown> = {};
+
+    if (filters?.userId) {
+      where.userId = filters.userId;
+    }
+    if (filters?.network) {
+      where.network = filters.network;
+    }
+    if (filters?.status) {
+      where.status = filters.status;
+    }
+
+    const limit = filters?.limit ?? 20;
+    const offset = filters?.offset ?? 0;
+
+    const [wallets, total] = await Promise.all([
+      this.prisma.wallet.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.wallet.count({ where }),
+    ]);
+
+    return {
+      data: wallets.map((wallet) => this.mapPrismaWalletToDomain(wallet)),
+      total,
+      limit,
+      offset,
+      hasMore: offset + wallets.length < total,
+    };
+  }
+
   create(createWalletDto: any) { return this.createWallet(createWalletDto); }
-  findAll() { return this.prisma.wallet.findMany(); }
   findOne(id: string) { return this.findWalletById(id); }
   update(id: string, updateWalletDto: any) { return this.updateWalletStatus(id, updateWalletDto.status); }
   remove(id: string) { return this.prisma.wallet.delete({ where: { id } }); }

@@ -9,8 +9,15 @@ import {
   UseGuards,
   Headers,
   Query,
+  BadRequestException,
 } from '@nestjs/common';
-import { ApiTags, ApiSecurity, ApiOperation, ApiParam } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiSecurity,
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+} from '@nestjs/swagger';
 import {
   WalletCreationOrchestrator,
   type CreateWalletOrchestratorRequest,
@@ -18,11 +25,31 @@ import {
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
+import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator';
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
 import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
+
+/** Parse a pagination query param, throwing 400 on invalid input */
+function parsePaginationParam(
+  value: string | undefined,
+  name: string,
+  max = 100,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new BadRequestException(
+      `${name} must be a non-negative integer`,
+    );
+  }
+  if (name === 'limit' && n > max) {
+    throw new BadRequestException(`limit must not exceed ${max}`);
+  }
+  return n;
+}
 
 @ApiTags('wallets')
 @ApiSecurity('api-key')
@@ -49,10 +76,27 @@ export class WalletsController {
     return this.walletCreationOrchestrator.createWallet(createRequest, requestId);
   }
 
-  @ApiOperation({ summary: 'List all wallets' })
+  @ApiOperation({ summary: 'List wallets with optional filters and pagination' })
+  @ApiQuery({ name: 'userId', required: false, description: 'Filter by owning user ID' })
+  @ApiQuery({ name: 'network', required: false, enum: WalletNetwork, description: 'Filter by network' })
+  @ApiQuery({ name: 'status', required: false, enum: WalletStatus, description: 'Filter by wallet status' })
+  @ApiQuery({ name: 'limit', required: false, description: 'Max records to return (1-100, default 20)', example: 20 })
+  @ApiQuery({ name: 'offset', required: false, description: 'Number of records to skip (default 0)', example: 0 })
   @Get()
-  findAll() {
-    return this.walletsService.findAll();
+  findAll(
+    @Query('userId') userId?: string,
+    @Query('network') network?: WalletNetwork,
+    @Query('status') status?: WalletStatus,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.walletsService.findAll({
+      userId,
+      network,
+      status,
+      limit: parsePaginationParam(limit, 'limit'),
+      offset: parsePaginationParam(offset, 'offset'),
+    });
   }
 
   @RequireApiKey()
