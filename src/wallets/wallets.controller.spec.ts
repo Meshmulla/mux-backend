@@ -147,6 +147,65 @@ describe('WalletsController', () => {
     });
   });
 
+  // #325 / #326: pagination + filtering on the wallet list endpoint
+  describe('findAll', () => {
+    it('passes filters and default-parsed pagination through to the service', async () => {
+      const page = {
+        data: [{ id: 'wallet-1', userId: 'user-123', network: WalletNetwork.TESTNET }],
+        total: 1,
+        limit: 20,
+        offset: 0,
+        hasMore: false,
+      };
+      mockWalletsService.findAll.mockResolvedValue(page);
+
+      await expect(
+        controller.findAll('user-123', WalletNetwork.TESTNET, undefined, undefined, undefined),
+      ).resolves.toEqual(page);
+      expect(mockWalletsService.findAll).toHaveBeenCalledWith({
+        userId: 'user-123',
+        network: WalletNetwork.TESTNET,
+        status: undefined,
+        limit: undefined,
+        offset: undefined,
+      });
+    });
+
+    it('parses limit and offset query strings into numbers', async () => {
+      mockWalletsService.findAll.mockResolvedValue({
+        data: [],
+        total: 0,
+        limit: 5,
+        offset: 10,
+        hasMore: false,
+      });
+
+      await controller.findAll(undefined, undefined, undefined, '5', '10');
+
+      expect(mockWalletsService.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 5, offset: 10 }),
+      );
+    });
+
+    it('throws a 400 for a non-numeric limit', () => {
+      expect(() =>
+        controller.findAll(undefined, undefined, undefined, 'abc', undefined),
+      ).toThrow('limit must be a non-negative integer');
+    });
+
+    it('throws a 400 when limit exceeds the max', () => {
+      expect(() =>
+        controller.findAll(undefined, undefined, undefined, '1000', undefined),
+      ).toThrow('limit must not exceed 100');
+    });
+
+    it('throws a 400 for a negative offset', () => {
+      expect(() =>
+        controller.findAll(undefined, undefined, undefined, undefined, '-1'),
+      ).toThrow('offset must be a non-negative integer');
+    });
+  });
+
   // #189: List wallets by userId
   describe('findByUserId', () => {
     it('should return wallets for a userId', async () => {
