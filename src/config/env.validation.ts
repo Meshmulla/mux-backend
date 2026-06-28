@@ -34,6 +34,8 @@ export interface ValidatedEnv {
   RATE_LIMIT_SENSITIVE_WINDOW_MS: number;
   RATE_LIMIT_SENSITIVE_MAX_REQUESTS: number;
   API_KEY_ROTATION_GRACE_SECONDS: number;
+  KEY_MGMT_MAX_RETRIES: number;
+  KEY_MGMT_RETRY_BACKOFF_MS: number;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -257,6 +259,20 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     { min: 0 },
     violations,
   );
+  const KEY_MGMT_MAX_RETRIES = optionalInt(
+    env,
+    'KEY_MGMT_MAX_RETRIES',
+    3,
+    { min: 1, max: 10 },
+    violations,
+  );
+  const KEY_MGMT_RETRY_BACKOFF_MS = optionalInt(
+    env,
+    'KEY_MGMT_RETRY_BACKOFF_MS',
+    200,
+    { min: 0 },
+    violations,
+  );
 
   // ── Report violations ─────────────────────────────────────────────────────
   if (violations.length > 0) {
@@ -293,5 +309,7 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     RATE_LIMIT_SENSITIVE_WINDOW_MS,
     RATE_LIMIT_SENSITIVE_MAX_REQUESTS,
     API_KEY_ROTATION_GRACE_SECONDS,
+    KEY_MGMT_MAX_RETRIES,
+    KEY_MGMT_RETRY_BACKOFF_MS,
   };
 }
