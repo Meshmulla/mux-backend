@@ -124,6 +124,22 @@ export interface WalletOrchestrationResult {
   idempotencyKey?: string;
 }
 
+export interface OrchestratorListFilters {
+  userId?: string;
+  network?: WalletNetwork;
+  status?: WalletStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface OrchestratorListResult {
+  data: Wallet[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
 export interface OrchestrationContext {
   user: User;
   request: CreateWalletOrchestratorRequest;
@@ -208,6 +224,7 @@ export class WalletCreationOrchestrator {
     requestId?: string,
   ): Promise<WalletOrchestrationResult> {
     const startTime = Date.now();
+    const requestIdLabel = requestId ? ` requestId=${requestId}` : '';
     let committedWallet: Wallet | undefined;
     this.logger.log(
       `Starting wallet creation orchestration for user ${request.userId} on ${request.network}${requestIdLabel}`,
@@ -309,20 +326,21 @@ export class WalletCreationOrchestrator {
       });
 
       if (committedWallet) {
+        const wallet = committedWallet;
         this.emitDomainEvent('wallet.created', () =>
           this.webhookEventEmitter?.emitWalletCreated({
-            walletId: committedWallet.id,
-            userId: committedWallet.userId,
-            publicKey: committedWallet.publicKey,
-            network: committedWallet.network,
-            status: committedWallet.status,
+            walletId: wallet.id,
+            userId: wallet.userId,
+            publicKey: wallet.publicKey,
+            network: wallet.network,
+            status: wallet.status,
           }),
         );
         this.emitDomainEvent('wallet.activated', () =>
           this.webhookEventEmitter?.emitWalletActivated({
-            walletId: committedWallet.id,
-            userId: committedWallet.userId,
-            publicKey: committedWallet.publicKey,
+            walletId: wallet.id,
+            userId: wallet.userId,
+            publicKey: wallet.publicKey,
           }),
         );
       }
@@ -771,7 +789,7 @@ export class WalletCreationOrchestrator {
     } catch (error) {
       // Network errors during Friendbot calls should not block wallet creation
       this.logger.warn(
-        `Friendbot funding request failed for ${publicKey.substring(0, 8)}... : ${error.message}`,
+        `Friendbot funding request failed for ${publicKey.substring(0, 8)}... : ${String(error)}`,
       );
       // Non-blocking: wallet is already created in PROVISIONING state
     }
@@ -811,6 +829,40 @@ export class WalletCreationOrchestrator {
     });
 
     return wallets.map((w) => this.mapPrismaWalletToDomain(w));
+  }
+
+  /**
+   * Lists wallets with optional filtering and offset-based pagination.
+   * Results are ordered newest-first.
+   */
+  async listWallets(
+    filters?: OrchestratorListFilters,
+  ): Promise<OrchestratorListResult> {
+    const where: Record<string, unknown> = {};
+    if (filters?.userId) where.userId = filters.userId;
+    if (filters?.network) where.network = filters.network;
+    if (filters?.status) where.status = filters.status;
+
+    const limit = filters?.limit ?? 20;
+    const offset = filters?.offset ?? 0;
+
+    const [wallets, total] = await Promise.all([
+      this.prisma.wallet.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.wallet.count({ where }),
+    ]);
+
+    return {
+      data: wallets.map((w: any) => this.mapPrismaWalletToDomain(w)),
+      total,
+      limit,
+      offset,
+      hasMore: offset + wallets.length < total,
+    };
   }
 
   /**
