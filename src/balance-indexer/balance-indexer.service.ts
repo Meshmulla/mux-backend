@@ -3,12 +3,15 @@ import {
   Logger,
   NotFoundException,
   OnModuleInit,
+} from '@nestjs/common';
   OnModuleDestroy,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
+import { StellarHorizonService } from './stellar-horizon.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { BalanceRepository } from './balance.repository';
 import { RequestContextService } from '../common/request-context/request-context.service';
 import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
 import { randomUUID } from 'crypto';
@@ -43,9 +46,24 @@ export interface StaleBalanceResult {
 
 /**
  * Balance Indexer Service
+ *
+ * Responsibilities:
+ * - Index wallet balances from Stellar Horizon
+ * - Provide fast balance queries without hitting the blockchain
+ * - Detect and reconcile balance mismatches
+ * - Handle missed updates and recovery
+ *
+ * Domain events emitted:
+ * - `balance.updated`  — when a balance value changes during a sync
+ * - `balance.mismatch` — when indexed balance diverges from on-chain state
+ * - `balance.synced`   — (future) full-sync completion summary
+ *
+ * Environment variables (validated at startup):
+ * - `STELLAR_HORIZON_URL`        — Horizon API base URL (required)
+ * - `BALANCE_STALE_THRESHOLD_MS` — Staleness window in ms (default: 300 000)
  */
 @Injectable()
-export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
+export class BalanceIndexerService implements OnModuleInit {
   private readonly logger = new Logger(BalanceIndexerService.name);
   private readonly staleThresholdMs: number;
   private readonly syncIntervalMs: number;
@@ -211,8 +229,42 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Gets cached balance for a wallet and asset.
-   * Triggers a background refresh if the balance is stale.
+   * Validates required environment variables at module startup.
+   * Throws if `STELLAR_HORIZON_URL` is missing or empty so the application
+   * fails fast instead of silently falling back to an unexpected default.
+   */
+  onModuleInit(): void {
+    const horizonUrl = this.configService.get<string>('STELLAR_HORIZON_URL');
+    if (!horizonUrl || horizonUrl.trim() === '') {
+      throw new Error(
+        'STELLAR_HORIZON_URL must be set. ' +
+          'Example: https://horizon-testnet.stellar.org',
+      );
+    }
+
+    const threshold = this.configService.get<number>(
+      'BALANCE_STALE_THRESHOLD_MS',
+    );
+    if (threshold !== undefined && (isNaN(threshold) || threshold <= 0)) {
+      throw new Error(
+        'BALANCE_STALE_THRESHOLD_MS must be a positive number when set.',
+      );
+    }
+
+    this.logger.log(
+      `Balance indexer ready (horizon=${horizonUrl}, staleThresholdMs=${this.staleThresholdMs})`,
+    );
+  }
+
+  /**
+   * Returns the cached balance for a wallet + asset combination.
+   *
+   * If the record exists but is stale, a background sync is triggered
+   * asynchronously so the caller always gets a fast response.
+   *
+   * @param walletId  UUID of the wallet
+   * @param asset     Asset descriptor (type, optional code/issuer)
+   * @returns Cached `WalletBalance` or `null` if not indexed yet
    */
   async getBalance(
     walletId: string,
@@ -234,15 +286,34 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `[${requestId}] Balance is stale for wallet ${walletId}, asset ${asset.type}`,
       );
+      // Trigger async refresh — do not await so the caller isn't blocked
+      this.syncWalletBalances({ walletId }).catch((err) =>
+        this.logger.error('Background balance refresh failed:', err),
       this.syncWalletBalancesWithRetry({ walletId }).catch((err) =>
         this.logger.error(`[${requestId}] Background balance refresh failed:`, err),
       );
     }
 
-    return this.mapPrismaBalanceToDomain(balance);
+    return balance;
   }
 
   /**
+   * Returns all cached balances for a wallet, ordered by asset type.
+   *
+   * @param walletId UUID of the wallet
+   */
+  async getAllBalances(walletId: string): Promise<WalletBalance[]> {
+    return this.balanceRepo.findAll(walletId);
+  }
+
+  /**
+   * Fetches the latest balances from Stellar Horizon and upserts them into
+   * the local index.
+   *
+   * Emits `balance.updated` for every balance that changed value.
+   *
+   * @param request  `{ walletId, forceRefresh? }`
+   * @returns        Sync summary including counts and final sync status
    * Gets all cached balances for a wallet.
    */
   async getAllBalances(walletId: string): Promise<WalletBalance[]> {
@@ -325,6 +396,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     });
 
     try {
+      const wallet = await this.balanceRepo.findWallet(walletId);
       const wallet = await this.prisma.wallet.findUnique({
         where: { id: walletId },
       });
@@ -341,6 +413,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         this.logger.warn(
           `${logPrefix}Account ${wallet.publicKey} not found on-chain, setting zero balances`,
         );
+        return this.setZeroBalances(walletId);
         const result = await this.setZeroBalances(walletId);
         await this.prisma.balanceSyncJob.update({
           where: { id: job.id },
@@ -370,7 +443,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       let mismatchesFound = 0;
 
       for (const balanceUpdate of horizonBalances) {
-        const result = await this.updateBalance(
+        const result = await this.applyBalanceUpdate(
           walletId,
           balanceUpdate,
           forceRefresh,
@@ -415,6 +488,8 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         lastSyncedAt: new Date(),
       };
     } catch (error) {
+      this.logger.error(`Balance sync failed for wallet ${walletId}:`, error);
+      await this.balanceRepo.markFailed(walletId);
       this.logger.error(`${logPrefix}Balance sync failed for wallet ${walletId}:`, error);
 
       await this.prisma.walletBalance.updateMany({
@@ -443,6 +518,14 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Reconciles a specific asset balance against the live on-chain state.
+   *
+   * Emits `balance.mismatch` when a divergence is detected and automatically
+   * corrects the indexed value.
+   *
+   * @param walletId UUID of the wallet
+   * @param asset    Asset to reconcile
+   * @returns        Reconciliation outcome with indexed vs on-chain values
    * Reconciles indexed balance with on-chain state for a specific asset.
    */
   async reconcileBalance(
@@ -457,6 +540,50 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       `${logPrefix}Reconciling balance for wallet ${walletId}, asset ${asset.type}`,
     );
 
+    const indexedBalance = await this.getBalance(walletId, asset);
+
+    const wallet = await this.balanceRepo.findWallet(walletId);
+    if (!wallet) {
+      throw new NotFoundException(`Wallet ${walletId} not found`);
+    }
+
+    const horizonBalances = await this.stellarHorizonService.getAccountBalances(
+      wallet.publicKey,
+    );
+    const onChainBalance = horizonBalances.find((b) =>
+      this.assetsMatch(b.asset, asset),
+    );
+
+    const indexed = indexedBalance?.balance ?? '0';
+    const onChain = onChainBalance?.balance ?? '0';
+    const matches = indexed === onChain;
+
+    if (!matches) {
+      this.logger.warn(
+        `Balance mismatch for wallet ${walletId}: indexed=${indexed}, onChain=${onChain}`,
+      );
+
+      if (onChainBalance) {
+        await this.applyBalanceUpdate(walletId, onChainBalance, true);
+      }
+
+      await this.balanceRepo.recordMismatch(walletId, asset);
+
+      const assetLabel = asset.code ?? asset.type;
+      const difference = this.calculateDifference(indexed, onChain);
+      this.webhookEventEmitter
+        .emitBalanceMismatch({
+          walletId,
+          asset: assetLabel,
+          indexedBalance: indexed,
+          onChainBalance: onChain,
+          difference,
+        })
+        .catch((err) =>
+          this.logger.error('Failed to emit balance.mismatch event:', err),
+        );
+    } else {
+      await this.balanceRepo.clearMismatch(walletId, asset);
     try {
       const indexedBalance = await this.getBalance(walletId, asset);
 
@@ -560,6 +687,12 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Reconciles all balances across every active wallet.
+   *
+   * Intended as a scheduled maintenance operation. Errors for individual
+   * wallets are caught and logged rather than aborting the full run.
+   *
+   * @returns Summary of wallets processed and mismatches found
    * Reconciles all balances for all active wallets (maintenance operation).
    * Tracked via a BalanceSyncJob record.
    */
@@ -573,6 +706,9 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       const logPrefix = `[${requestId}] `;
       this.logger.log(`${logPrefix}Starting full balance reconciliation`);
 
+    const wallets = await this.balanceRepo.findActiveWallets();
+    let walletsProcessed = 0;
+    let mismatchesFound = 0;
       const job = await this.prisma.balanceSyncJob.create({
         data: {
           jobType: 'RECONCILIATION',
@@ -591,6 +727,17 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       let errorsEncountered = 0;
 
       try {
+        const balances = await this.getAllBalances(wallet.id);
+        for (const balance of balances) {
+          const asset: Asset = {
+            type: balance.assetType,
+            code: balance.assetCode ?? undefined,
+            issuer: balance.assetIssuer ?? undefined,
+          };
+          const result = await this.reconcileBalance(wallet.id, asset);
+          if (!result.matches) mismatchesFound++;
+        }
+        walletsProcessed++;
         for (const wallet of wallets) {
           try {
             const balances = await this.getAllBalances(wallet.id);
@@ -756,13 +903,48 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Private helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Upserts a single balance record and emits `balance.updated` when the
+   * stored value changes.
+   */
+  private async applyBalanceUpdate(
   private async updateBalance(
     walletId: string,
     balanceUpdate: BalanceUpdate,
-    forceUpdate: boolean = false,
+    _forceUpdate: boolean,
   ): Promise<{ updated: boolean; mismatch: boolean }> {
-    const { asset, balance, ledgerSequence, timestamp } = balanceUpdate;
+    const existing = await this.balanceRepo.findOne(
+      walletId,
+      balanceUpdate.asset,
+    );
+    const previousBalance = existing?.balance ?? null;
+    const mismatch = existing != null && existing.balance !== balanceUpdate.balance;
 
+    await this.balanceRepo.upsert(walletId, balanceUpdate);
+
+    // Emit balance.updated when the value actually changed
+    if (previousBalance !== null && previousBalance !== balanceUpdate.balance) {
+      const assetLabel = balanceUpdate.asset.code ?? balanceUpdate.asset.type;
+      const change = this.calculateDifference(
+        balanceUpdate.balance,
+        previousBalance,
+      );
+      this.webhookEventEmitter
+        .emitBalanceUpdated({
+          walletId,
+          asset: assetLabel,
+          previousBalance,
+          newBalance: balanceUpdate.balance,
+          change,
+        })
+        .catch((err) =>
+          this.logger.error('Failed to emit balance.updated event:', err),
+        );
+    }
     const existing = await this.prisma.walletBalance.findUnique({
       where: {
         walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
@@ -814,6 +996,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async setZeroBalances(walletId: string): Promise<SyncBalancesResult> {
+    await this.balanceRepo.upsertNativeZero(walletId);
     await this.prisma.walletBalance.upsert({
       where: {
         walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
@@ -846,11 +1029,18 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private isBalanceStale(balance: WalletBalance): boolean {
   private isBalanceStale(balance: any): boolean {
     if (!balance.lastSyncedAt) return true;
     return Date.now() - balance.lastSyncedAt.getTime() > this.staleThresholdMs;
   }
 
+  private assetsMatch(a: Asset, b: Asset): boolean {
+    return a.type === b.type && a.code === b.code && a.issuer === b.issuer;
+  }
+
+  private calculateDifference(a: string, b: string): string {
+    return (parseFloat(a) - parseFloat(b)).toFixed(7);
   private assetsMatch(asset1: Asset, asset2: Asset): boolean {
     return (
       asset1.type === asset2.type &&
