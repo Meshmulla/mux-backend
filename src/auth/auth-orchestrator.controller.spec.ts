@@ -6,6 +6,7 @@ import {
   AuthenticationResult,
 } from './auth-orchestrator.service';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC } from './public.decorator';
 
@@ -53,6 +54,7 @@ describe('AuthOrchestratorController', () => {
       ],
     })
       .overrideGuard(AuthRateLimitGuard)
+      .overrideGuard(FeatureFlagGuard)
       .useValue({ canActivate: () => true })
       .compile();
 

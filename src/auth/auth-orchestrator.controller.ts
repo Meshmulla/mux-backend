@@ -30,9 +30,15 @@ import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { Public } from './public.decorator';
 import { AuthSessionFilterDto } from './dto/auth-session-filter.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 
 @ApiTags('auth')
 @Controller('auth')
+@FeatureFlag('auth_api')
+@UseGuards(FeatureFlagGuard)
 export class AuthOrchestratorController {
   constructor(private readonly authOrchestrator: AuthOrchestrator) {}
 
