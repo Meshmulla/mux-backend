@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Controller,
   Post,
   Body,
@@ -8,7 +9,10 @@ import {
   HttpStatus,
   Param,
 } from '@nestjs/common';
-import { KeyManagementService } from './key-management.service';
+import {
+  KeyManagementService,
+  AuditLogQuery,
+} from './key-management.service';
 import type { GenerateKeyRequest, SignRequest } from './key-management.service';
 import { KeyType } from './domain/key-types';
 import { KeyStatisticsQuery } from './domain/key-statistics';
@@ -17,6 +21,31 @@ import {
   QueryAuditLogsRequest,
 } from './key-rotation-audit.service';
 import { KeyOperation } from '../generated/prisma/client';
+
+function parsePaginationParam(
+  value: string | undefined,
+  name: string,
+  max = 100,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new BadRequestException(`${name} must be a non-negative integer`);
+  }
+  if (name === 'limit' && n > max) {
+    throw new BadRequestException(`limit must not exceed ${max}`);
+  }
+  return n;
+}
+
+function parseDate(value: string | undefined, name: string): Date | undefined {
+  if (value === undefined) return undefined;
+  const d = new Date(value);
+  if (isNaN(d.getTime())) {
+    throw new BadRequestException(`${name} must be a valid ISO date string`);
+  }
+  return d;
+}
 
 /**
  * Internal controller for key management operations
@@ -38,6 +67,15 @@ export class KeyManagementController {
   @Post('generate')
   @HttpCode(HttpStatus.OK)
   async generateKey(@Body() request: GenerateKeyRequest) {
+    if (!request?.keyType) {
+      throw new BadRequestException('keyType is required');
+    }
+    if (!Object.values(KeyType).includes(request.keyType)) {
+      throw new BadRequestException(
+        `Invalid keyType: "${request.keyType}". Must be one of: ${Object.values(KeyType).join(', ')}`,
+      );
+    }
+
     const result = await this.keyManagementService.generateKey(request);
 
     return {
@@ -111,14 +149,46 @@ export class KeyManagementController {
   }
 
   /**
-   * Gets audit log (admin only)
+   * Gets in-memory audit log with optional filtering and pagination
+   *
+   * Query parameters:
+   * - operation: Filter by operation type (GENERATE, SIGN, ROTATE, etc.)
+   * - publicKey: Filter by public key
+   * - success: Filter by success status (true/false)
+   * - startDate: Start of date range (ISO string)
+   * - endDate: End of date range (ISO string)
+   * - limit: Max results (default: 100, max: 100)
+   * - offset: Pagination offset (default: 0)
    */
   @Get('audit')
-  async getAuditLog(@Query('limit') limit?: string) {
-    const auditLimit = limit ? parseInt(limit, 10) : 100;
-    const logs = this.keyManagementService.getAuditLog(auditLimit);
+  async getAuditLog(
+    @Query('operation') operation?: string,
+    @Query('publicKey') publicKey?: string,
+    @Query('success') success?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    const query: AuditLogQuery = {
+      operation,
+      publicKey,
+      success: success !== undefined ? success === 'true' : undefined,
+      startDate: parseDate(startDate, 'startDate'),
+      endDate: parseDate(endDate, 'endDate'),
+      limit: parsePaginationParam(limit, 'limit'),
+      offset: parsePaginationParam(offset, 'offset'),
+    };
 
-    return { logs };
+    const result = this.keyManagementService.getAuditLog(query);
+
+    return {
+      logs: result.data,
+      total: result.total,
+      limit: result.limit,
+      offset: result.offset,
+      hasMore: result.hasMore,
+    };
   }
 
   /**
@@ -138,8 +208,8 @@ export class KeyManagementController {
     @Query('operation') operation?: string,
   ) {
     const query: KeyStatisticsQuery = {
-      startDate: startDate ? new Date(startDate) : undefined,
-      endDate: endDate ? new Date(endDate) : undefined,
+      startDate: parseDate(startDate, 'startDate'),
+      endDate: parseDate(endDate, 'endDate'),
       operation,
     };
 
@@ -170,8 +240,8 @@ export class KeyManagementController {
     @Query('includeTimeSeries') includeTimeSeries?: string,
   ) {
     const query: KeyStatisticsQuery = {
-      startDate: startDate ? new Date(startDate) : undefined,
-      endDate: endDate ? new Date(endDate) : undefined,
+      startDate: parseDate(startDate, 'startDate'),
+      endDate: parseDate(endDate, 'endDate'),
       operation,
       includeTimeSeries: includeTimeSeries === 'true',
     };
