@@ -22,9 +22,14 @@ import {
   RateLimitGuard,
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 
 @Controller('wallets/orchestration')
-@UseGuards(ApiKeyGuard, RateLimitGuard)
+@FeatureFlag('wallet_orchestrator')
+@UseGuards(FeatureFlagGuard, ApiKeyGuard, RateLimitGuard)
 export class WalletCreationOrchestratorController {
   constructor(
     private readonly walletCreationOrchestrator: WalletCreationOrchestrator,
@@ -57,10 +62,12 @@ export class WalletCreationOrchestratorController {
   async getWalletByUser(
     @Param('userId') userId: string,
     @Param('network') network: WalletNetwork,
+    @Headers('x-request-id') requestId?: string,
   ) {
     const wallet = await this.walletCreationOrchestrator.getWalletByUser(
       userId,
       network,
+      requestId,
     );
 
     if (!wallet) {
@@ -76,11 +83,13 @@ export class WalletCreationOrchestratorController {
   async validateUserCanCreateWallet(
     @Param('userId') userId: string,
     @Param('network') network: WalletNetwork,
+    @Headers('x-request-id') requestId?: string,
   ) {
     const canCreate =
       await this.walletCreationOrchestrator.validateUserCanCreateWallet(
         userId,
         network,
+        requestId,
       );
     return { canCreate };
   }
