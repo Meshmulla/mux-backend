@@ -21,6 +21,7 @@ import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { WalletRetryService } from './wallet-retry.service';
 import { WalletApiMetricsService } from './wallet-api-metrics.service';
+import { WalletOrchestratorMetricsService } from './wallet-orchestrator-metrics.service';
 
 export type OrchestrationPhase =
   | 'user-resolution'
@@ -176,6 +177,7 @@ export class WalletCreationOrchestrator {
     @Optional() private webhookEventEmitter?: WebhookEventEmitterService,
     @Optional() private walletRetryService?: WalletRetryService,
     @Optional() private walletApiMetrics?: WalletApiMetricsService,
+    @Optional() private orchestratorMetrics?: WalletOrchestratorMetricsService,
   ) {
     this.prisma = prismaClient ?? new PrismaClient({} as any);
   }
@@ -209,6 +211,7 @@ export class WalletCreationOrchestrator {
   ): Promise<WalletOrchestrationResult> {
     const startTime = Date.now();
     let committedWallet: Wallet | undefined;
+    const requestIdLabel = requestId ? ` requestId=${requestId}` : '';
     this.logger.log(
       `Starting wallet creation orchestration for user ${request.userId} on ${request.network}${requestIdLabel}`,
     );
@@ -392,6 +395,12 @@ export class WalletCreationOrchestrator {
       outcome: metrics.outcome === 'failed' ? 'failure' : metrics.outcome,
       durationMs: metrics.durationMs,
       network: metrics.network,
+    });
+    this.orchestratorMetrics?.record({
+      outcome: metrics.outcome,
+      durationMs: metrics.durationMs,
+      network: metrics.network,
+      failedPhase: metrics.failedPhase,
     });
   }
 

@@ -8,6 +8,8 @@ import { UsersModule } from '../users/users.module';
 import { WebhookModule } from '../webhooks/webhook.module';
 import { KeyManagementModule } from '../key-management/key-management.module';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { WalletOrchestratorMetricsService } from './wallet-orchestrator-metrics.service';
+import { WalletOrchestratorEnvValidatorService } from './wallet-orchestrator-env-validator.service';
 
 @Module({
   imports: [
@@ -19,7 +21,12 @@ import { IdempotencyService } from '../common/idempotency/idempotency.service';
     WebhookModule,
   ],
   controllers: [WalletCreationOrchestratorController],
-  providers: [WalletCreationOrchestrator, IdempotencyService],
-  exports: [WalletCreationOrchestrator],
+  providers: [
+    WalletCreationOrchestrator,
+    IdempotencyService,
+    WalletOrchestratorMetricsService,
+    WalletOrchestratorEnvValidatorService,
+  ],
+  exports: [WalletCreationOrchestrator, WalletOrchestratorMetricsService],
 })
 export class WalletCreationOrchestratorModule {}
