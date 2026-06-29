@@ -5,6 +5,8 @@ import { StellarKeyProvider } from './providers/stellar-key.provider';
 import { EncryptionModule } from '../encryption/encryption.module';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
 import { PrismaModule } from '../prisma/prisma.module';
+import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 
 @Module({
   imports: [EncryptionModule, PrismaModule],
@@ -13,6 +15,8 @@ import { PrismaModule } from '../prisma/prisma.module';
     KeyManagementService,
     StellarKeyProvider,
     KeyRotationAuditService,
+    FeatureFlagService,
+    FeatureFlagGuard,
   ],
   exports: [KeyManagementService, KeyRotationAuditService],
 })
