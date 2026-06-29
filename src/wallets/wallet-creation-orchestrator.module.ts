@@ -9,6 +9,8 @@ import { WebhookModule } from '../webhooks/webhook.module';
 import { KeyManagementModule } from '../key-management/key-management.module';
 import { CacheService } from '../common/cache/cache.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 
 @Module({
   imports: [
@@ -20,7 +22,13 @@ import { IdempotencyService } from '../common/idempotency/idempotency.service';
     WebhookModule,
   ],
   controllers: [WalletCreationOrchestratorController],
-  providers: [WalletCreationOrchestrator, IdempotencyService, CacheService],
+  providers: [
+    WalletCreationOrchestrator,
+    IdempotencyService,
+    CacheService,
+    FeatureFlagService,
+    FeatureFlagGuard,
+  ],
   exports: [WalletCreationOrchestrator],
 })
 export class WalletCreationOrchestratorModule {}
