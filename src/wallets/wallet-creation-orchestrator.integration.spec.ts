@@ -192,6 +192,33 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Request ID propagation
+  // -------------------------------------------------------------------------
+
+  describe('request id propagation', () => {
+    it('should propagate requestId through createWallet log output', async () => {
+      const logSpy = jest.spyOn(orchestrator['logger'], 'log').mockImplementation(() => {});
+      idempotentUserService.findUserById.mockResolvedValue(makeUser());
+      mockTx.wallet.findFirst.mockResolvedValue(null);
+      mockTx.wallet.create.mockResolvedValue(
+        makeDbWallet({ status: WalletStatus.PROVISIONING }),
+      );
+      mockTx.wallet.update.mockResolvedValue(makeDbWallet());
+
+      await orchestrator.createWallet(
+        { userId: 'user-abc', network: WalletNetwork.TESTNET },
+        'integ-req-id-789',
+      );
+
+      const startLog = logSpy.mock.calls.find(
+        ([msg]) => typeof msg === 'string' && msg.includes('Starting wallet creation'),
+      );
+      expect(startLog).toBeDefined();
+      expect(startLog![0]).toContain('requestId=integ-req-id-789');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Existing wallet (idempotent return)
   // -------------------------------------------------------------------------
 

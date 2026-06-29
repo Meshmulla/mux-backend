@@ -909,6 +909,80 @@ describe('WalletCreationOrchestrator', () => {
   // onModuleInit
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // Request ID propagation
+  // -------------------------------------------------------------------------
+
+  describe('request id propagation', () => {
+    it('should accept and propagate requestId in createWallet', async () => {
+      const logSpy = jest
+        .spyOn(orchestrator['logger'], 'log')
+        .mockImplementation(() => {});
+      const provisioningWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123DEF456',
+        encryptedSecret: 'encrypted-private-key',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: 'PROVISIONING',
+        statusReason: null,
+        statusChangedAt: new Date(),
+        rotatedFromId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      const activeWallet = { ...provisioningWallet, status: 'ACTIVE', statusReason: 'Wallet provisioned and activated', statusChangedAt: new Date(), updatedAt: new Date() };
+
+      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma));
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
+
+      await orchestrator.createWallet(
+        { userId: 'user-123', network: WalletNetwork.TESTNET },
+        'test-req-id-456',
+      );
+
+      const startLog = logSpy.mock.calls.find(
+        ([msg]) => typeof msg === 'string' && msg.includes('Starting wallet creation'),
+      );
+      expect(startLog).toBeDefined();
+      expect(startLog![0]).toContain('requestId=test-req-id-456');
+    });
+
+    it('should accept requestId in getWalletByUser', async () => {
+      const logSpy = jest
+        .spyOn(orchestrator['logger'], 'log')
+        .mockImplementation(() => {});
+      mockPrisma.wallet.findFirst.mockResolvedValue(mockWalletRow);
+
+      await orchestrator.getWalletByUser('user-123', WalletNetwork.TESTNET, 'req-get-001');
+
+      const lookupLog = logSpy.mock.calls.find(
+        ([msg]) => typeof msg === 'string' && msg.includes('Looking up wallet'),
+      );
+      expect(lookupLog).toBeDefined();
+      expect(lookupLog![0]).toContain('requestId=req-get-001');
+    });
+
+    it('should accept requestId in validateUserCanCreateWallet', async () => {
+      const logSpy = jest
+        .spyOn(orchestrator['logger'], 'log')
+        .mockImplementation(() => {});
+      mockPrisma.wallet.findFirst.mockResolvedValue(mockWalletRow);
+
+      await orchestrator.validateUserCanCreateWallet('user-123', WalletNetwork.TESTNET, 'req-val-002');
+
+      const validateLog = logSpy.mock.calls.find(
+        ([msg]) => typeof msg === 'string' && msg.includes('Validating wallet creation'),
+      );
+      expect(validateLog).toBeDefined();
+      expect(validateLog![0]).toContain('requestId=req-val-002');
+    });
+  });
+
   describe('onModuleInit', () => {
     it('should throw error if encryption configuration is invalid', async () => {
       mockEncryptionService.validateConfiguration.mockReturnValue(false);
