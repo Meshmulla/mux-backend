@@ -720,30 +720,36 @@ export class KeyManagementService {
 
   /**
    * Audits key operations (NEVER log sensitive data)
+   * Automatically propagates the current request ID from RequestContextService.
    */
   private auditKeyOperation(audit: KeyOperationAudit): void {
-    this.auditLog.push(audit);
+    const enriched: KeyOperationAudit = {
+      ...audit,
+      requestId: audit.requestId ?? this.requestContext.getRequestId(),
+    };
+
+    this.auditLog.push(enriched);
 
     // Persist to database for compliance and long-term retention
     this.auditService
       .persistAuditLog(
-        this.auditService.convertToPersistentFormat(audit, {
-          retentionDays: 365, // Keep audit logs for 1 year
+        this.auditService.convertToPersistentFormat(enriched, {
+          retentionDays: 365,
         }),
       )
       .catch((error) => {
-        // Already logged in service, just ensure it doesn't break the main flow
         this.logger.error(
           'Audit persistence failed (non-blocking):',
           error.message,
         );
       });
 
-    // In production, send to external audit system
+    const reqTag = enriched.requestId ? ` req=${enriched.requestId}` : '';
     this.logger.log(
-      `[AUDIT] ${audit.operation} - ${audit.publicKey.substring(0, 12)}... - ` +
-        `${audit.success ? 'SUCCESS' : 'FAILED'}` +
-        (audit.errorMessage ? ` - ${audit.errorMessage}` : ''),
+      `[AUDIT] ${enriched.operation} - ${enriched.publicKey.substring(0, 12)}... - ` +
+        `${enriched.success ? 'SUCCESS' : 'FAILED'}` +
+        (enriched.errorMessage ? ` - ${enriched.errorMessage}` : '') +
+        reqTag,
     );
 
     // Keep only last 1000 audit entries in memory

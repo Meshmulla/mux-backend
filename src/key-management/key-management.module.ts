@@ -28,6 +28,6 @@ import { KeyManagementMetricsService } from './key-management-metrics.service';
       buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2500],
     }),
   ],
-  exports: [KeyManagementService, KeyRotationAuditService],
+  exports: [KeyManagementService, KeyRotationAuditService, KeyValidationCacheService],
 })
 export class KeyManagementModule {}

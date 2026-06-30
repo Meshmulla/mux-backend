@@ -29,6 +29,8 @@ import { KeyType } from './domain/key-types';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { KeyValidationCacheService } from './key-validation-cache/key-validation-cache.service';
 
 /** Builds a minimal ConfigService stub that satisfies EncryptionService. */
 function makeConfigService(
@@ -71,6 +73,14 @@ describe('KeyManagement (integration harness)', () => {
             convertToPersistentFormat: jest.fn().mockReturnValue({}),
           },
         },
+        {
+          provide: RequestContextService,
+          useValue: {
+            getRequestId: jest.fn().mockReturnValue(undefined),
+            setRequestId: jest.fn(),
+          },
+        },
+        KeyValidationCacheService,
         {
           provide: PrismaService,
           useValue: {
