@@ -226,6 +226,7 @@ export class WalletCreationOrchestrator {
     const startTime = Date.now();
     const requestIdLabel = requestId ? ` requestId=${requestId}` : '';
     let committedWallet: Wallet | undefined;
+    const requestIdLabel = requestId ? ` requestId=${requestId}` : '';
     this.logger.log(
       `Starting wallet creation orchestration for user ${request.userId} on ${request.network}${requestIdLabel}`,
     );

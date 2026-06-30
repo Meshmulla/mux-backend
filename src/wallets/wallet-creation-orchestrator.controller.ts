@@ -12,6 +12,7 @@ import {
   NotFoundException,
   BadRequestException,
   UseGuards,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -80,19 +81,39 @@ export class WalletCreationOrchestratorController {
     @Body() createWalletRequest: CreateWalletOrchestratorRequest,
     @Headers('x-request-id') requestId?: string,
   ): Promise<WalletOrchestrationResult> {
+    // Explicit input validation — the global ValidationPipe covers class-validator
+    // decorators on the DTO, but we guard against stale/null state here as well.
+    if (!createWalletRequest?.userId?.trim()) {
+      throw new BadRequestException('userId must not be empty');
+    }
+    if (!createWalletRequest?.network) {
+      throw new BadRequestException(
+        `network is required and must be one of: ${Array.from(VALID_NETWORKS).join(', ')}`,
+      );
+    }
+    assertValidNetwork(createWalletRequest.network);
+
     try {
       return await this.walletCreationOrchestrator.createWallet(
         createWalletRequest,
         requestId,
       );
     } catch (error) {
-      if (error instanceof NotFoundException) {
-        throw error;
+      // Pass through typed HTTP exceptions unchanged
+      if (error instanceof NotFoundException) throw error;
+      if (error instanceof ConflictException) throw error;
+      if (error instanceof BadRequestException) throw error;
+
+      // Map orchestration-phase errors to 500 with a stable message
+      if (error instanceof WalletOrchestrationError) {
+        throw new InternalServerErrorException(
+          `Wallet creation orchestration failed (phase: ${error.phase})`,
+        );
       }
-      if (error instanceof ConflictException) {
-        throw error;
-      }
-      throw new Error('Wallet creation orchestration failed');
+
+      throw new InternalServerErrorException(
+        'Wallet creation orchestration failed',
+      );
     }
   }
 
@@ -179,11 +200,13 @@ export class WalletCreationOrchestratorController {
   @Get('user/:userId/:network')
   async getWalletByUser(
     @Param('userId') userId: string,
-    @Param('network') network: WalletNetwork,
+    @Param('network') network: string,
   ) {
+    assertValidNetwork(network);
+
     const wallet = await this.walletCreationOrchestrator.getWalletByUser(
       userId,
-      network,
+      network as WalletNetwork,
     );
 
     if (!wallet) {
@@ -215,12 +238,14 @@ export class WalletCreationOrchestratorController {
   @Get('validate/:userId/:network')
   async validateUserCanCreateWallet(
     @Param('userId') userId: string,
-    @Param('network') network: WalletNetwork,
+    @Param('network') network: string,
   ) {
+    assertValidNetwork(network);
+
     const canCreate =
       await this.walletCreationOrchestrator.validateUserCanCreateWallet(
         userId,
-        network,
+        network as WalletNetwork,
       );
     return { canCreate };
   }

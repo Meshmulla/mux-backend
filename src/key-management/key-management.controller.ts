@@ -8,6 +8,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -26,6 +27,10 @@ import {
   QueryAuditLogsRequest,
 } from './key-rotation-audit.service';
 import { KeyOperation } from '../generated/prisma/client';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 
 function parsePaginationParam(
   value: string | undefined,
@@ -58,9 +63,14 @@ function parseDate(value: string | undefined, name: string): Date | undefined {
  * WARNING: This should be internal-only and NOT exposed to public APIs.
  * All endpoints should be protected by network policy or a separate internal
  * API key guard before reaching production.
+ *
+ * Feature-flag gate: set `FEATURE_KEY_MANAGEMENT_API=true` to enable.
+ * When the flag is absent or false every endpoint returns HTTP 403.
  */
 @ApiTags('internal/key-management')
 @Controller('internal/key-management')
+@FeatureFlag('key_management_api')
+@UseGuards(FeatureFlagGuard)
 export class KeyManagementController {
   constructor(
     private readonly keyManagementService: KeyManagementService,
