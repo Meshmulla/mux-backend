@@ -9,7 +9,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { KeyManagementMetricsService } from './key-management-metrics.service';
 
 @Module({
-  imports: [EncryptionModule, PrismaModule],
+  imports: [EncryptionModule, PrismaModule, EventEmitterModule.forRoot()],
   controllers: [KeyManagementController],
   providers: [
     KeyManagementService,

@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import { KeyManagementController } from './key-management.controller';
 import { KeyManagementService } from './key-management.service';
 import { KeyType } from './domain/key-types';
@@ -113,9 +114,23 @@ describe('KeyManagementController', () => {
     });
   });
 
+  describe('generateKey input validation', () => {
+    it('should throw BadRequestException when keyType is missing', async () => {
+      await expect(
+        controller.generateKey({ keyType: undefined as any }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when keyType is invalid', async () => {
+      await expect(
+        controller.generateKey({ keyType: 'BOGUS' as any }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
   describe('getAuditLog', () => {
-    it('should return audit logs with default limit', async () => {
-      const mockLogs = [
+    const mockResult = {
+      data: [
         {
           operation: 'GENERATE',
           keyId: 'key-1',
@@ -123,23 +138,76 @@ describe('KeyManagementController', () => {
           timestamp: new Date(),
           success: true,
         },
-      ];
+      ],
+      total: 1,
+      limit: 100,
+      offset: 0,
+      hasMore: false,
+    };
 
-      mockKeyManagementService.getAuditLog.mockReturnValue(mockLogs);
+    it('should return paginated audit logs with default params', async () => {
+      mockKeyManagementService.getAuditLog.mockReturnValue(mockResult);
 
       const result = await controller.getAuditLog();
 
-      expect(result).toEqual({ logs: mockLogs });
-      expect(service.getAuditLog).toHaveBeenCalledWith(100);
+      expect(result).toEqual({
+        logs: mockResult.data,
+        total: mockResult.total,
+        limit: mockResult.limit,
+        offset: mockResult.offset,
+        hasMore: mockResult.hasMore,
+      });
+      expect(service.getAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: undefined, offset: undefined }),
+      );
     });
 
-    it('should return audit logs with custom limit', async () => {
-      const mockLogs = [];
-      mockKeyManagementService.getAuditLog.mockReturnValue(mockLogs);
+    it('should pass limit and offset to service', async () => {
+      mockKeyManagementService.getAuditLog.mockReturnValue(mockResult);
 
-      await controller.getAuditLog('50');
+      await controller.getAuditLog(undefined, undefined, undefined, undefined, undefined, '50', '10');
 
-      expect(service.getAuditLog).toHaveBeenCalledWith(50);
+      expect(service.getAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 50, offset: 10 }),
+      );
+    });
+
+    it('should pass operation filter to service', async () => {
+      mockKeyManagementService.getAuditLog.mockReturnValue(mockResult);
+
+      await controller.getAuditLog('GENERATE');
+
+      expect(service.getAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: 'GENERATE' }),
+      );
+    });
+
+    it('should parse success filter', async () => {
+      mockKeyManagementService.getAuditLog.mockReturnValue(mockResult);
+
+      await controller.getAuditLog(undefined, undefined, 'true');
+
+      expect(service.getAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true }),
+      );
+    });
+
+    it('should throw BadRequestException for non-integer limit', async () => {
+      await expect(
+        controller.getAuditLog(undefined, undefined, undefined, undefined, undefined, 'abc'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException for limit exceeding 100', async () => {
+      await expect(
+        controller.getAuditLog(undefined, undefined, undefined, undefined, undefined, '200'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException for invalid startDate', async () => {
+      await expect(
+        controller.getAuditLog(undefined, undefined, undefined, 'not-a-date'),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
