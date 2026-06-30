@@ -9,6 +9,7 @@ import {
   HttpStatus,
   NotFoundException,
   ValidationPipe,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -18,6 +19,10 @@ import {
   ApiQuery,
   ApiBody,
 } from '@nestjs/swagger';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 import {
   BalanceIndexerService,
   SyncBalancesRequest,
@@ -47,6 +52,8 @@ import { PaginationDto } from '../common/dto/pagination.dto';
  */
 @ApiTags('balances')
 @Controller('balances')
+@UseGuards(FeatureFlagGuard)
+@FeatureFlag('BALANCE_INDEXER')
 export class BalanceIndexerController {
   constructor(private readonly balanceIndexerService: BalanceIndexerService) {}
 

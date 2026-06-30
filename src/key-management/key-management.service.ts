@@ -1,5 +1,11 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { IKeyProvider } from './interfaces/key-provider.interface';
 import { StellarKeyProvider } from './providers/stellar-key.provider';
 import {
@@ -8,6 +14,8 @@ import {
 } from '../encryption/encryption.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
+import { KeyManagementMetricsService } from './key-management-metrics.service';
+import { retryWithBackoff } from './utils/retry.util';
 import {
   GeneratedKeyPair,
   SignatureResult,
@@ -22,8 +30,10 @@ import {
   KeyOperationMetrics,
 } from './domain/key-statistics';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
-import { RequestContextService } from '../common/request-context/request-context.service';
-import { KeyValidationCacheService } from './key-validation-cache/key-validation-cache.service';
+import { KeyGeneratedEvent } from './events/key-generated.event';
+import { KeySignedEvent } from './events/key-signed.event';
+import { KeyRotatedEvent } from './events/key-rotated.event';
+import { KeyValidatedEvent } from './events/key-validated.event';
 
 export interface GenerateKeyRequest {
   keyType: KeyType;
@@ -43,6 +53,24 @@ export interface RotateKeyResult {
   successorPublicKey: string;
   /** The predecessor wallet ID (now marked ROTATING with successorId set) */
   predecessorWalletId: string;
+}
+
+export interface AuditLogQuery {
+  operation?: string;
+  publicKey?: string;
+  success?: boolean;
+  startDate?: Date;
+  endDate?: Date;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AuditLogResult {
+  data: KeyOperationAudit[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 }
 
 /**
@@ -68,14 +96,18 @@ export class KeyManagementService {
   private readonly providers: Map<KeyType, IKeyProvider>;
   private readonly auditLog: KeyOperationAudit[] = [];
 
+  private readonly maxRetries: number;
+  private readonly retryBackoffMs: number;
+
   constructor(
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly auditService: KeyRotationAuditService,
-    private readonly requestContext: RequestContextService,
-    private readonly validationCache: KeyValidationCacheService,
+    private readonly metricsService: KeyManagementMetricsService,
   ) {
+    this.maxRetries = this.configService.get<number>('KEY_MGMT_MAX_RETRIES', 3);
+    this.retryBackoffMs = this.configService.get<number>('KEY_MGMT_RETRY_BACKOFF_MS', 200);
     // Initialize key providers
     this.providers = new Map();
 
@@ -98,17 +130,33 @@ export class KeyManagementService {
   async generateKey(
     request: GenerateKeyRequest,
   ): Promise<EncryptedKeyMaterial> {
+    if (!request.keyType || !Object.values(KeyType).includes(request.keyType)) {
+      throw new BadRequestException(
+        `Invalid keyType: "${request.keyType}". Must be one of: ${Object.values(KeyType).join(', ')}`,
+      );
+    }
+
     const startTime = Date.now();
 
     try {
       const provider = this.getProvider(request.keyType);
-      // Generate the keypair
-      const keyPair = await provider.generateKeyPair(request.keyType);
+
+      const keyPair = await retryWithBackoff(
+        () => provider.generateKeyPair(request.keyType),
+        {
+          maxAttempts: this.maxRetries,
+          initialDelayMs: this.retryBackoffMs,
+        },
+      );
 
       // CRITICAL: Encrypt immediately, never store plaintext
       const encryptedData = this.encryptionService.encryptAndSerialize(
         keyPair.privateKeyMaterial,
       );
+
+      const duration = Date.now() - startTime;
+      this.metricsService.incrementKeyOperations('GENERATE', 'success');
+      this.metricsService.recordKeyOperationDuration('GENERATE', duration);
 
       // Audit log (no sensitive data)
       this.auditKeyOperation({
@@ -120,7 +168,6 @@ export class KeyManagementService {
         metadata: request.metadata,
       });
 
-      const duration = Date.now() - startTime;
       this.logger.log(
         `Generated ${request.keyType} key in ${duration}ms (publicKey: ${keyPair.publicKey.substring(0, 12)}...)`,
       );
@@ -133,6 +180,7 @@ export class KeyManagementService {
         publicKey: keyPair.publicKey,
       };
     } catch (error) {
+      this.metricsService.incrementKeyOperations('GENERATE', 'failure');
       this.auditKeyOperation({
         operation: 'GENERATE',
         keyId: 'new',
@@ -155,36 +203,50 @@ export class KeyManagementService {
    * @throws KeyDecryptionException if the encrypted key material cannot be decrypted
    */
   async sign(request: SignRequest): Promise<SignatureResult> {
+    if (!request.encryptedKeyMaterial) {
+      throw new BadRequestException('encryptedKeyMaterial is required');
+    }
+    if (!request.publicKey) {
+      throw new BadRequestException('publicKey is required');
+    }
+    if (!request.dataToSign) {
+      throw new BadRequestException('dataToSign is required');
+    }
+
     const startTime = Date.now();
 
-    // Determine key type from encrypted material structure
-    // In a real system, you'd store this metadata separately
-    const keyType = KeyType.STELLAR_ED25519; // Default for now
+    const keyType = KeyType.STELLAR_ED25519;
     const provider = this.getProvider(keyType);
 
     try {
-      // Convert string to Buffer if needed
       const dataToSign =
         typeof request.dataToSign === 'string'
           ? Buffer.from(request.dataToSign, 'utf8')
           : request.dataToSign;
 
       // Sign the data (private key is decrypted temporarily inside provider)
-      const signature = await provider.sign(
-        request.encryptedKeyMaterial,
-        dataToSign,
+      const signature = await retryWithBackoff(
+        () => provider.sign(request.encryptedKeyMaterial, dataToSign),
+        {
+          maxAttempts: this.maxRetries,
+          initialDelayMs: this.retryBackoffMs,
+          shouldRetry: (err) => !(err instanceof DecryptionError),
+        },
       );
+
+      const duration = Date.now() - startTime;
+      this.metricsService.incrementKeyOperations('SIGN', 'success');
+      this.metricsService.recordKeyOperationDuration('SIGN', duration);
 
       // Audit log (no sensitive data)
       this.auditKeyOperation({
         operation: 'SIGN',
-        keyId: 'unknown', // Would come from wallet ID in real system
+        keyId: 'unknown',
         publicKey: request.publicKey,
         timestamp: new Date(),
         success: true,
       });
 
-      const duration = Date.now() - startTime;
       this.logger.log(
         `Signed data in ${duration}ms (publicKey: ${request.publicKey.substring(0, 12)}...)`,
       );
@@ -193,6 +255,7 @@ export class KeyManagementService {
     } catch (error) {
       // Handle decrypt failures — log and convert to typed HTTP exception
       if (error instanceof DecryptionError) {
+        this.metricsService.incrementKeyOperations('SIGN', 'failure');
         this.auditKeyOperation({
           operation: 'SIGN',
           keyId: 'unknown',
@@ -214,6 +277,7 @@ export class KeyManagementService {
         );
       }
 
+      this.metricsService.incrementKeyOperations('SIGN', 'failure');
       this.auditKeyOperation({
         operation: 'SIGN',
         keyId: 'unknown',
@@ -238,17 +302,29 @@ export class KeyManagementService {
     encryptedKeyMaterial: string,
     keyType: KeyType,
   ): Promise<boolean> {
-    const cached = this.validationCache.get(publicKey, encryptedKeyMaterial);
-    if (cached !== undefined) {
-      return cached;
+    if (!publicKey) {
+      throw new BadRequestException('publicKey is required');
+    }
+    if (!encryptedKeyMaterial) {
+      throw new BadRequestException('encryptedKeyMaterial is required');
+    }
+    if (!keyType || !Object.values(KeyType).includes(keyType)) {
+      throw new BadRequestException(
+        `Invalid keyType: "${keyType}". Must be one of: ${Object.values(KeyType).join(', ')}`,
+      );
     }
 
     const provider = this.getProvider(keyType);
 
     try {
-      const result = await provider.validateKeyPair(publicKey, encryptedKeyMaterial);
-      this.validationCache.set(publicKey, encryptedKeyMaterial, result);
-      return result;
+      const valid = await provider.validateKeyPair(publicKey, encryptedKeyMaterial);
+
+      this.eventEmitter.emit(
+        'key.validated',
+        new KeyValidatedEvent(publicKey, keyType, valid, new Date()),
+      );
+
+      return valid;
     } catch (error) {
       if (error instanceof DecryptionError) {
         this.logger.error(
@@ -376,10 +452,7 @@ export class KeyManagementService {
       return [newWallet];
     });
 
-    // Invalidate any cached validation result for the predecessor's public key
-    // so subsequent validations hit the real decryption path.
-    this.validationCache.invalidate(predecessor.publicKey);
-
+    this.metricsService.incrementKeyOperations('ROTATE', 'success');
     this.auditKeyOperation({
       operation: 'ROTATE',
       keyId: predecessorWalletId,
@@ -388,6 +461,16 @@ export class KeyManagementService {
       success: true,
       metadata: { successorWalletId: successor.id },
     });
+
+    this.eventEmitter.emit(
+      'key.rotated',
+      new KeyRotatedEvent(
+        predecessorWalletId,
+        successor.id,
+        successor.publicKey,
+        new Date(),
+      ),
+    );
 
     this.logger.log(
       `Rotated key for wallet ${predecessorWalletId} -> successor ${successor.id}`,
@@ -401,10 +484,34 @@ export class KeyManagementService {
   }
 
   /**
-   * Returns audit log (for security monitoring)
+   * Returns filtered and paginated in-memory audit log
    */
-  getAuditLog(limit: number = 100): KeyOperationAudit[] {
-    return this.auditLog.slice(-limit);
+  getAuditLog(query?: AuditLogQuery): AuditLogResult {
+    const limit = query?.limit ?? 100;
+    const offset = query?.offset ?? 0;
+
+    let filtered = [...this.auditLog];
+
+    if (query?.operation) {
+      filtered = filtered.filter((log) => log.operation === query.operation);
+    }
+    if (query?.publicKey) {
+      filtered = filtered.filter((log) => log.publicKey === query.publicKey);
+    }
+    if (query?.success !== undefined) {
+      filtered = filtered.filter((log) => log.success === query.success);
+    }
+    if (query?.startDate) {
+      filtered = filtered.filter((log) => log.timestamp >= query.startDate!);
+    }
+    if (query?.endDate) {
+      filtered = filtered.filter((log) => log.timestamp <= query.endDate!);
+    }
+
+    const total = filtered.length;
+    const data = filtered.slice(offset, offset + limit);
+
+    return { data, total, limit, offset, hasMore: offset + data.length < total };
   }
 
   /**
