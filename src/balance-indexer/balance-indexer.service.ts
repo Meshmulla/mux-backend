@@ -12,6 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { BalanceRepository } from './balance.repository';
+import { BalanceCacheService } from './balance-cache.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
 import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
 import { randomUUID } from 'crypto';
@@ -78,6 +79,7 @@ export class BalanceIndexerService implements OnModuleInit {
     private readonly webhookEventEmitter: WebhookEventEmitterService,
     private readonly requestContext: RequestContextService,
     private readonly metrics: BalanceIndexerMetricsService,
+    private readonly balanceCache?: BalanceCacheService,
   ) {
     this.staleThresholdMs = this.configService.get<number>(
       'BALANCE_STALE_THRESHOLD_MS',
@@ -271,6 +273,14 @@ export class BalanceIndexerService implements OnModuleInit {
     asset: Asset,
   ): Promise<WalletBalance | null> {
     const requestId = this.requestContext.getRequestId() || 'N/A';
+
+    // Cache-aside: serve from in-memory cache when fresh
+    const cached = this.balanceCache?.get(walletId, asset);
+    if (cached) {
+      this.logger.debug(`[${requestId}] Cache hit for wallet ${walletId} asset ${asset.type}`);
+      return cached;
+    }
+
     const balance = await this.prisma.walletBalance.findUnique({
       where: {
         walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
@@ -287,11 +297,11 @@ export class BalanceIndexerService implements OnModuleInit {
         `[${requestId}] Balance is stale for wallet ${walletId}, asset ${asset.type}`,
       );
       // Trigger async refresh — do not await so the caller isn't blocked
-      this.syncWalletBalances({ walletId }).catch((err) =>
-        this.logger.error('Background balance refresh failed:', err),
       this.syncWalletBalancesWithRetry({ walletId }).catch((err) =>
         this.logger.error(`[${requestId}] Background balance refresh failed:`, err),
       );
+    } else {
+      this.balanceCache?.set(walletId, asset, balance as WalletBalance);
     }
 
     return balance;
@@ -477,6 +487,9 @@ export class BalanceIndexerService implements OnModuleInit {
         mismatchesFound,
       });
 
+      // Invalidate cache for this wallet after a successful sync
+      this.balanceCache?.invalidateAll(walletId);
+
       return {
         walletId,
         balancesUpdated,
@@ -489,7 +502,6 @@ export class BalanceIndexerService implements OnModuleInit {
       };
     } catch (error) {
       this.logger.error(`Balance sync failed for wallet ${walletId}:`, error);
-      await this.balanceRepo.markFailed(walletId);
       this.logger.error(`${logPrefix}Balance sync failed for wallet ${walletId}:`, error);
 
       await this.prisma.walletBalance.updateMany({

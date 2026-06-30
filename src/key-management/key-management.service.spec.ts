@@ -11,6 +11,7 @@ import { KeyType } from './domain/key-types';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 
 import { KeyRotationAuditService } from './key-rotation-audit.service';
+import { KeyManagementMetricsService } from './key-management-metrics.service';
 
 // Prevent loading the real PrismaService (which requires the generated Prisma client)
 jest.mock('../prisma/prisma.service', () => ({
@@ -41,13 +42,23 @@ describe('KeyManagementService', () => {
     getRotationHistory: jest.fn(),
   };
 
+  const mockMetricsService = {
+    incrementKeyOperations: jest.fn(),
+    recordKeyOperationDuration: jest.fn(),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
     const mockConfigService = {
       get: jest
         .fn()
-        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars'),
+        .mockImplementation((key: string, defaultValue?: any) => {
+          if (key === 'WALLET_ENCRYPTION_KEY') {
+            return 'test-encryption-key-12345-long-enough-32-chars';
+          }
+          return defaultValue ?? 'test-encryption-key-12345-long-enough-32-chars';
+        }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -67,8 +78,8 @@ describe('KeyManagementService', () => {
           useValue: mockAuditService,
         },
         {
-          provide: EventEmitter2,
-          useValue: { emit: jest.fn() },
+          provide: KeyManagementMetricsService,
+          useValue: mockMetricsService,
         },
       ],
     }).compile();

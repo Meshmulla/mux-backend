@@ -10,9 +10,14 @@ import {
   Param,
 } from '@nestjs/common';
 import {
-  KeyManagementService,
-  AuditLogQuery,
-} from './key-management.service';
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiQuery,
+  ApiParam,
+  ApiBody,
+} from '@nestjs/swagger';
+import { KeyManagementService } from './key-management.service';
 import type { GenerateKeyRequest, SignRequest } from './key-management.service';
 import { KeyType } from './domain/key-types';
 import { KeyStatisticsQuery } from './domain/key-statistics';
@@ -54,6 +59,7 @@ function parseDate(value: string | undefined, name: string): Date | undefined {
  * All endpoints should be protected by network policy or a separate internal
  * API key guard before reaching production.
  */
+@ApiTags('internal/key-management')
 @Controller('internal/key-management')
 export class KeyManagementController {
   constructor(
@@ -64,6 +70,9 @@ export class KeyManagementController {
   /**
    * Generates a new key (internal use only)
    */
+  @ApiOperation({ summary: 'Generate a new encrypted keypair (internal)' })
+  @ApiResponse({ status: 200, description: 'Encrypted key material returned. Private key is never exposed.' })
+  @ApiResponse({ status: 400, description: 'Invalid key type or request body' })
   @Post('generate')
   @HttpCode(HttpStatus.OK)
   async generateKey(@Body() request: GenerateKeyRequest) {
@@ -93,6 +102,9 @@ export class KeyManagementController {
    *
    * Returns 422 if the encrypted key material cannot be decrypted.
    */
+  @ApiOperation({ summary: 'Sign data using an encrypted private key (internal)' })
+  @ApiResponse({ status: 200, description: 'Signature returned. Private key is never exposed.' })
+  @ApiResponse({ status: 422, description: 'Key decryption failed — key material may be corrupt or encryption key changed' })
   @Post('sign')
   @HttpCode(HttpStatus.OK)
   async sign(@Body() request: SignRequest) {
@@ -113,6 +125,9 @@ export class KeyManagementController {
    *
    * Returns 422 if the encrypted key material cannot be decrypted.
    */
+  @ApiOperation({ summary: 'Validate that encrypted key material matches public key (internal)' })
+  @ApiResponse({ status: 200, description: '{ valid: boolean }' })
+  @ApiResponse({ status: 422, description: 'Key decryption failed' })
   @Post('validate')
   @HttpCode(HttpStatus.OK)
   async validateKey(
@@ -136,6 +151,10 @@ export class KeyManagementController {
    * Rotates the key for a wallet, creating a successor and linking it.
    * The predecessor wallet is transitioned to ROTATING and its successorId is set.
    */
+  @ApiOperation({ summary: 'Rotate key for a wallet — creates successor and marks predecessor ROTATING (internal)' })
+  @ApiResponse({ status: 200, description: 'Rotation result with predecessor and successor wallet IDs' })
+  @ApiResponse({ status: 404, description: 'Wallet not found' })
+  @ApiResponse({ status: 400, description: 'Wallet status does not permit rotation or already has successor' })
   @Post('rotate')
   @HttpCode(HttpStatus.OK)
   async rotateKey(@Body() body: { walletId: string }) {
@@ -160,6 +179,9 @@ export class KeyManagementController {
    * - limit: Max results (default: 100, max: 100)
    * - offset: Pagination offset (default: 0)
    */
+  @ApiOperation({ summary: 'Retrieve in-memory audit log (internal, admin only)' })
+  @ApiQuery({ name: 'limit', required: false, description: 'Max entries to return (default: 100)' })
+  @ApiResponse({ status: 200, description: 'Array of audit log entries' })
   @Get('audit')
   async getAuditLog(
     @Query('operation') operation?: string,
@@ -201,6 +223,11 @@ export class KeyManagementController {
    *
    * Example: GET /internal/key-management/statistics?startDate=2024-01-01&endDate=2024-12-31
    */
+  @ApiOperation({ summary: 'Get key management operation statistics (internal)' })
+  @ApiQuery({ name: 'startDate', required: false, description: 'ISO date string' })
+  @ApiQuery({ name: 'endDate', required: false, description: 'ISO date string' })
+  @ApiQuery({ name: 'operation', required: false, description: 'Filter by operation type' })
+  @ApiResponse({ status: 200, description: 'Aggregated statistics object' })
   @Get('statistics')
   async getStatistics(
     @Query('startDate') startDate?: string,
@@ -232,6 +259,9 @@ export class KeyManagementController {
    *
    * Example: GET /internal/key-management/statistics/detailed?includeTimeSeries=true
    */
+  @ApiOperation({ summary: 'Get detailed key management statistics with per-operation metrics (internal)' })
+  @ApiQuery({ name: 'includeTimeSeries', required: false, description: 'Include hourly time series (default: false)' })
+  @ApiResponse({ status: 200, description: 'Detailed statistics with operation metrics' })
   @Get('statistics/detailed')
   async getDetailedStatistics(
     @Query('startDate') startDate?: string,
@@ -269,6 +299,8 @@ export class KeyManagementController {
    *
    * Example: GET /internal/key-management/audit/persistent?operation=ROTATE&limit=50
    */
+  @ApiOperation({ summary: 'Query persistent (database-backed) audit logs with filtering (internal)' })
+  @ApiResponse({ status: 200, description: 'Paginated audit log entries from database' })
   @Get('audit/persistent')
   async getPersistentAuditLogs(
     @Query('operation') operation?: string,
@@ -304,6 +336,9 @@ export class KeyManagementController {
    *
    * GET /internal/key-management/audit/rotation-history/:keyId
    */
+  @ApiOperation({ summary: 'Get full rotation chain history for a key (internal)' })
+  @ApiParam({ name: 'keyId', description: 'Wallet or key ID to trace rotation history for' })
+  @ApiResponse({ status: 200, description: 'Ordered list of rotation audit entries' })
   @Get('audit/rotation-history/:keyId')
   async getRotationHistory(@Param('keyId') keyId: string) {
     const result = await this.auditService.getRotationHistory(keyId);
@@ -323,6 +358,10 @@ export class KeyManagementController {
    *
    * Example: GET /internal/key-management/audit/statistics?startDate=2024-01-01
    */
+  @ApiOperation({ summary: 'Get audit log statistics over a date range (internal)' })
+  @ApiQuery({ name: 'startDate', required: false })
+  @ApiQuery({ name: 'endDate', required: false })
+  @ApiResponse({ status: 200, description: 'Aggregated audit statistics' })
   @Get('audit/statistics')
   async getAuditStatistics(
     @Query('startDate') startDate?: string,
