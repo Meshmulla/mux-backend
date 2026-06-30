@@ -25,6 +25,10 @@ import { CreateWebhookEndpointDto } from './dto/create-webhook-endpoint.dto';
 import { UpdateWebhookEndpointDto } from './dto/update-webhook-endpoint.dto';
 import { WebhookFilterDto } from './dto/webhook-filter.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import {
+  FeatureFlag,
+  FeatureFlagGuard,
+} from '../common/feature-flags/feature-flag.guard';
 
 @ApiTags('webhooks')
 @Controller('webhooks')
@@ -34,7 +38,7 @@ export class WebhookController {
   constructor(
     private readonly webhookService: WebhookService,
     private readonly webhookDispatcher: WebhookDispatcherService,
-  ) { }
+  ) {}
 
   @ApiOperation({ summary: 'Register a new webhook endpoint' })
   @ApiBody({
@@ -52,7 +56,8 @@ export class WebhookController {
   })
   @ApiResponse({
     status: 201,
-    description: 'Webhook endpoint created. Secret is only returned on creation.',
+    description:
+      'Webhook endpoint created. Secret is only returned on creation.',
     example: {
       id: 'endpoint-uuid',
       url: 'https://example.com/webhook',
@@ -90,10 +95,30 @@ export class WebhookController {
 
   @ApiOperation({ summary: 'List webhook endpoints for a project' })
   @ApiParam({ name: 'projectId', description: 'Project ID' })
-  @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (starting from 1)' })
-  @ApiQuery({ name: 'limit', required: false, example: 20, description: 'Items per page (max 100)' })
-  @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'DISABLED', 'FAILED'], description: 'Filter by endpoint status' })
-  @ApiQuery({ name: 'event', required: false, example: 'wallet.created', description: 'Filter by subscribed event type' })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    example: 1,
+    description: 'Page number (starting from 1)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: 20,
+    description: 'Items per page (max 100)',
+  })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: ['ACTIVE', 'DISABLED', 'FAILED'],
+    description: 'Filter by endpoint status',
+  })
+  @ApiQuery({
+    name: 'event',
+    required: false,
+    example: 'wallet.created',
+    description: 'Filter by subscribed event type',
+  })
   @ApiResponse({
     status: 200,
     description: 'Paginated list of webhook endpoints',
@@ -125,10 +150,7 @@ export class WebhookController {
     @Query('limit') limit?: string,
   ) {
     const pageNumber = Math.max(1, parseInt(page || '1', 10));
-    const pageLimit = Math.min(
-      100,
-      Math.max(1, parseInt(limit || '20', 10)),
-    );
+    const pageLimit = Math.min(100, Math.max(1, parseInt(limit || '20', 10)));
 
     const result = await this.webhookService.listEndpoints(
       projectId,
@@ -159,150 +181,129 @@ export class WebhookController {
     };
   }
 
-    // Don't return secrets in list
+  /**
+   * Gets a specific webhook endpoint
+   */
+  @Get('endpoints/:id')
+  async getEndpoint(@Param('id') id: string) {
+    const endpoint = await this.webhookService.getEndpoint(id);
+
     return {
-  endpoints: endpoints.map((e) => ({
-    id: e.id,
-    url: e.url,
-    events: e.events,
-    description: e.description,
-    status: e.status,
-    consecutiveFailures: e.consecutiveFailures,
-    lastSuccessAt: e.lastSuccessAt,
-    lastFailureAt: e.lastFailureAt,
-    lastFailureReason: e.lastFailureReason,
-    createdAt: e.createdAt,
-    updatedAt: e.updatedAt,
-  })),
-};
+      id: endpoint.id,
+      url: endpoint.url,
+      events: endpoint.events,
+      description: endpoint.description,
+      status: endpoint.status,
+      consecutiveFailures: endpoint.consecutiveFailures,
+      lastSuccessAt: endpoint.lastSuccessAt,
+      lastFailureAt: endpoint.lastFailureAt,
+      lastFailureReason: endpoint.lastFailureReason,
+      createdAt: endpoint.createdAt,
+      updatedAt: endpoint.updatedAt,
+      // Note: Secret not returned in GET
+    };
   }
 
-/**
- * Gets a specific webhook endpoint
- */
-@Get('endpoints/:id')
-async getEndpoint(@Param('id') id: string) {
-  const endpoint = await this.webhookService.getEndpoint(id);
+  /**
+   * Updates a webhook endpoint
+   */
+  @Put('endpoints/:id')
+  @HttpCode(HttpStatus.OK)
+  async updateEndpoint(
+    @Param('id') id: string,
+    @Body() updates: UpdateWebhookEndpointDto,
+  ) {
+    const endpoint = await this.webhookService.updateEndpoint(id, updates);
 
-  return {
-    id: endpoint.id,
-    url: endpoint.url,
-    events: endpoint.events,
-    description: endpoint.description,
-    status: endpoint.status,
-    consecutiveFailures: endpoint.consecutiveFailures,
-    lastSuccessAt: endpoint.lastSuccessAt,
-    lastFailureAt: endpoint.lastFailureAt,
-    lastFailureReason: endpoint.lastFailureReason,
-    createdAt: endpoint.createdAt,
-    updatedAt: endpoint.updatedAt,
-    // Note: Secret not returned in GET
-  };
-}
+    return {
+      id: endpoint.id,
+      url: endpoint.url,
+      events: endpoint.events,
+      description: endpoint.description,
+      status: endpoint.status,
+      updatedAt: endpoint.updatedAt,
+    };
+  }
 
-/**
- * Updates a webhook endpoint
- */
-@Put('endpoints/:id')
-@HttpCode(HttpStatus.OK)
-async updateEndpoint(
-  @Param('id') id: string,
-  @Body() updates: UpdateWebhookEndpointRequest,
-) {
-  const endpoint = await this.webhookService.updateEndpoint(id, updates);
+  /**
+   * Deletes a webhook endpoint
+   */
+  @Delete('endpoints/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteEndpoint(@Param('id') id: string) {
+    await this.webhookService.deleteEndpoint(id);
+  }
 
-  return {
-    id: endpoint.id,
-    url: endpoint.url,
-    events: endpoint.events,
-    description: endpoint.description,
-    status: endpoint.status,
-    updatedAt: endpoint.updatedAt,
-  };
-}
+  /**
+   * Rotates the webhook signing secret
+   */
+  @Post('endpoints/:id/rotate-secret')
+  @HttpCode(HttpStatus.OK)
+  async rotateSecret(@Param('id') id: string) {
+    const result = await this.webhookService.rotateSecret(id);
 
-/**
- * Deletes a webhook endpoint
- */
-@Delete('endpoints/:id')
-@HttpCode(HttpStatus.NO_CONTENT)
-async deleteEndpoint(@Param('id') id: string) {
-  await this.webhookService.deleteEndpoint(id);
-}
+    return {
+      secret: result.secret, // Only time new secret is returned!
+      rotatedAt: new Date(),
+    };
+  }
 
-/**
- * Rotates the webhook signing secret
- */
-@Post('endpoints/:id/rotate-secret')
-@HttpCode(HttpStatus.OK)
-async rotateSecret(@Param('id') id: string) {
-  const result = await this.webhookService.rotateSecret(id);
+  /**
+   * Gets delivery history for an endpoint
+   */
+  @Get('endpoints/:id/deliveries')
+  async getDeliveries(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const pageNumber = Math.max(1, parseInt(page || '1', 10));
 
-  return {
-    secret: result.secret, // Only time new secret is returned!
-    rotatedAt: new Date(),
-  };
-}
+    const pageLimit = Math.min(100, Math.max(1, parseInt(limit || '50', 10)));
 
-/**
- * Gets delivery history for an endpoint
- */
-@Get('endpoints/:id/deliveries')
-async getDeliveries(
-  @Param('id') id: string,
-  @Query('page') page ?: string,
-  @Query('limit') limit ?: string,
-) {
-  const pageNumber = Math.max(1, parseInt(page || '1', 10));
+    const result = await this.webhookService.getDeliveries(
+      id,
+      pageNumber,
+      pageLimit,
+    );
 
-  const pageLimit = Math.min(
-    100,
-    Math.max(1, parseInt(limit || '50', 10)),
-  );
+    return {
+      endpointId: id,
+      page: pageNumber,
+      limit: pageLimit,
+      total: result.total,
+      deliveries: result.deliveries.map((d) => ({
+        id: d.id,
+        eventId: d.eventId,
+        eventType: d.eventType,
+        status: d.status,
+        attempts: d.attempts,
+        maxAttempts: d.maxAttempts,
+        responseStatus: d.responseStatus,
+        responseTime: d.responseTime,
+        nextRetryAt: d.nextRetryAt,
+        firstAttemptAt: d.firstAttemptAt,
+        lastAttemptAt: d.lastAttemptAt,
+        deliveredAt: d.deliveredAt,
+        errorMessage: d.errorMessage,
+        createdAt: d.createdAt,
+      })),
+    };
+  }
 
-  const result = await this.webhookService.getDeliveries(
-    id,
-    pageNumber,
-    pageLimit,
-  );
+  /**
+   * Manually triggers webhook delivery processing (admin only)
+   */
+  @Post('process-deliveries')
+  @HttpCode(HttpStatus.OK)
+  async processDeliveries() {
+    const result = await this.webhookDispatcher.processDeliveries();
 
-  return {
-    endpointId: id,
-    page: pageNumber,
-    limit: pageLimit,
-    total: result.total,
-    deliveries: result.deliveries.map((d) => ({
-      id: d.id,
-      eventId: d.eventId,
-      eventType: d.eventType,
-      status: d.status,
-      attempts: d.attempts,
-      maxAttempts: d.maxAttempts,
-      responseStatus: d.responseStatus,
-      responseTime: d.responseTime,
-      nextRetryAt: d.nextRetryAt,
-      firstAttemptAt: d.firstAttemptAt,
-      lastAttemptAt: d.lastAttemptAt,
-      deliveredAt: d.deliveredAt,
-      errorMessage: d.errorMessage,
-      createdAt: d.createdAt,
-    })),
-  };
-}
-
-/**
- * Manually triggers webhook delivery processing (admin only)
- */
-@Post('process-deliveries')
-@HttpCode(HttpStatus.OK)
-async processDeliveries() {
-  const result = await this.webhookDispatcher.processDeliveries();
-
-  return {
-    processed: result.delivered + result.failed + result.retrying,
-    delivered: result.delivered,
-    failed: result.failed,
-    retrying: result.retrying,
-  };
-}
+    return {
+      processed: result.delivered + result.failed + result.retrying,
+      delivered: result.delivered,
+      failed: result.failed,
+      retrying: result.retrying,
+    };
+  }
 }
