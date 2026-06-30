@@ -6,6 +6,9 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
+  BadRequestException,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -19,6 +22,24 @@ import { RecoveryService } from './recovery.service';
 import { CreateRecoveryDto } from './dto/create-recovery.dto';
 import { UpdateRecoveryDto } from './dto/update-recovery.dto';
 import { RecoveryStatus } from './domain/recovery.model';
+
+function parsePaginationParam(
+  value: string | undefined,
+  name: string,
+  max = 100,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new BadRequestException(
+      `${name} must be a non-negative integer`,
+    );
+  }
+  if (name === 'limit' && n > max) {
+    throw new BadRequestException(`limit must not exceed ${max}`);
+  }
+  return n;
+}
 
 @ApiTags('recovery')
 @Controller('recovery')
@@ -150,9 +171,37 @@ export class RecoveryController {
       },
     },
   })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - invalid status enum value',
+    schema: {
+      example: {
+        statusCode: 400,
+        message: 'status must be a valid RecoveryStatus value: PENDING, IN_REVIEW, APPROVED, REJECTED, COMPLETED, CANCELLED',
+        error: 'Bad Request',
+      },
+    },
+  })
   @Get()
-  findAll() {
-    return this.recoveryService.findAll();
+  findAll(
+    @Query('walletId') walletId?: string,
+    @Query('requester') requester?: string,
+    @Query('status') status?: RecoveryStatus,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    if (status !== undefined && !Object.values(RecoveryStatus).includes(status as RecoveryStatus)) {
+      throw new BadRequestException(
+        `status must be a valid RecoveryStatus value: ${Object.values(RecoveryStatus).join(', ')}`,
+      );
+    }
+    return this.recoveryService.findAll({
+      walletId,
+      requester,
+      status: status as RecoveryStatus,
+      limit: parsePaginationParam(limit, 'limit'),
+      offset: parsePaginationParam(offset, 'offset'),
+    });
   }
 
   @ApiOperation({
@@ -180,6 +229,17 @@ export class RecoveryController {
     },
   })
   @ApiResponse({
+    status: 400,
+    description: 'Bad request - invalid UUID',
+    schema: {
+      example: {
+        statusCode: 400,
+        message: 'Validation failed (uuid is expected)',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
     status: 404,
     description: 'Recovery request not found',
     schema: {
@@ -191,7 +251,7 @@ export class RecoveryController {
     },
   })
   @Get(':id')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.recoveryService.findOne(id);
   }
 
@@ -243,11 +303,11 @@ export class RecoveryController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Bad request - invalid status transition',
+    description: 'Bad request - invalid UUID or invalid status transition',
     schema: {
       example: {
         statusCode: 400,
-        message: 'Invalid recovery status transition: COMPLETED -> PENDING',
+        message: 'Validation failed (uuid is expected)',
         error: 'Bad Request',
       },
     },
@@ -265,7 +325,7 @@ export class RecoveryController {
   })
   @Patch(':id')
   update(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() updateRecoveryDto: UpdateRecoveryDto,
   ) {
     return this.recoveryService.update(id, updateRecoveryDto);
@@ -288,6 +348,17 @@ export class RecoveryController {
     },
   })
   @ApiResponse({
+    status: 400,
+    description: 'Bad request - invalid UUID',
+    schema: {
+      example: {
+        statusCode: 400,
+        message: 'Validation failed (uuid is expected)',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
     status: 404,
     description: 'Recovery request not found',
     schema: {
@@ -299,7 +370,8 @@ export class RecoveryController {
     },
   })
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.recoveryService.remove(id);
+  async remove(@Param('id', ParseUUIDPipe) id: string) {
+    await this.recoveryService.remove(id);
+    return { message: 'Recovery request deleted successfully' };
   }
 }
