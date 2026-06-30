@@ -18,9 +18,12 @@ import { EncryptionService } from '../encryption/encryption.service';
 import { KeyManagementService } from '../key-management/key-management.service';
 import { KeyType } from '../key-management/domain/key-types';
 import { IdempotentUserService } from '../users/idempotent-user.service';
+import { CacheService } from '../common/cache/cache.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { WalletRetryService } from './wallet-retry.service';
 import { WalletApiMetricsService } from './wallet-api-metrics.service';
+import { WalletOrchestratorMetricsService } from './wallet-orchestrator-metrics.service';
 
 export type OrchestrationPhase =
   | 'user-resolution'
@@ -124,6 +127,22 @@ export interface WalletOrchestrationResult {
   idempotencyKey?: string;
 }
 
+export interface OrchestratorListFilters {
+  userId?: string;
+  network?: WalletNetwork;
+  status?: WalletStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface OrchestratorListResult {
+  data: Wallet[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
 export interface OrchestrationContext {
   user: User;
   request: CreateWalletOrchestratorRequest;
@@ -173,9 +192,11 @@ export class WalletCreationOrchestrator {
     private idempotentUserService: IdempotentUserService,
     private keyManagementService: KeyManagementService,
     prismaClient?: PrismaClient,
+    @Optional() private cacheService?: CacheService,
     @Optional() private webhookEventEmitter?: WebhookEventEmitterService,
     @Optional() private walletRetryService?: WalletRetryService,
     @Optional() private walletApiMetrics?: WalletApiMetricsService,
+    @Optional() private orchestratorMetrics?: WalletOrchestratorMetricsService,
   ) {
     this.prisma = prismaClient ?? new PrismaClient({} as any);
   }
@@ -207,9 +228,12 @@ export class WalletCreationOrchestrator {
     request: CreateWalletOrchestratorRequest,
     requestId?: string,
   ): Promise<WalletOrchestrationResult> {
+    const resolvedRequestId = requestId || RequestContextService.getCurrentRequestId();
+    const requestIdLabel = resolvedRequestId ? ` (requestId=${resolvedRequestId})` : '';
     const startTime = Date.now();
     const requestIdLabel = requestId ? ` requestId=${requestId}` : '';
     let committedWallet: Wallet | undefined;
+    const requestIdLabel = requestId ? ` requestId=${requestId}` : '';
     this.logger.log(
       `Starting wallet creation orchestration for user ${request.userId} on ${request.network}${requestIdLabel}`,
     );
@@ -235,7 +259,7 @@ export class WalletCreationOrchestrator {
               network: request.network,
               outcome: 'idempotent',
               durationMs: Date.now() - startTime,
-              requestId,
+              requestId: resolvedRequestId,
             });
             return existingResult;
           }
@@ -251,7 +275,7 @@ export class WalletCreationOrchestrator {
             network: request.network,
             outcome: 'existing',
             durationMs: Date.now() - startTime,
-            requestId,
+            requestId: resolvedRequestId,
           });
           return {
             wallet: context.existingWallet,
@@ -298,7 +322,7 @@ export class WalletCreationOrchestrator {
           outcome: 'created',
           durationMs: Date.now() - startTime,
           phases: newWallet.phaseTimings,
-          requestId,
+          requestId: resolvedRequestId,
         });
 
         // This is set only on the original transaction path, never for an
@@ -310,20 +334,21 @@ export class WalletCreationOrchestrator {
       });
 
       if (committedWallet) {
+        const wallet = committedWallet;
         this.emitDomainEvent('wallet.created', () =>
           this.webhookEventEmitter?.emitWalletCreated({
-            walletId: committedWallet.id,
-            userId: committedWallet.userId,
-            publicKey: committedWallet.publicKey,
-            network: committedWallet.network,
-            status: committedWallet.status,
+            walletId: wallet.id,
+            userId: wallet.userId,
+            publicKey: wallet.publicKey,
+            network: wallet.network,
+            status: wallet.status,
           }),
         );
         this.emitDomainEvent('wallet.activated', () =>
           this.webhookEventEmitter?.emitWalletActivated({
-            walletId: committedWallet.id,
-            userId: committedWallet.userId,
-            publicKey: committedWallet.publicKey,
+            walletId: wallet.id,
+            userId: wallet.userId,
+            publicKey: wallet.publicKey,
           }),
         );
       }
@@ -339,11 +364,11 @@ export class WalletCreationOrchestrator {
         outcome: 'failed',
         durationMs: Date.now() - startTime,
         failedPhase,
-        requestId,
+        requestId: resolvedRequestId,
       });
 
       this.logger.error(
-        `Wallet creation orchestration failed for user ${request.userId} requestId=${requestId || 'N/A'}:`,
+        `Wallet creation orchestration failed for user ${request.userId} requestId=${resolvedRequestId || 'N/A'}:`,
         error,
       );
 
@@ -393,6 +418,12 @@ export class WalletCreationOrchestrator {
       outcome: metrics.outcome === 'failed' ? 'failure' : metrics.outcome,
       durationMs: metrics.durationMs,
       network: metrics.network,
+    });
+    this.orchestratorMetrics?.record({
+      outcome: metrics.outcome,
+      durationMs: metrics.durationMs,
+      network: metrics.network,
+      failedPhase: metrics.failedPhase,
     });
   }
 
@@ -467,10 +498,20 @@ export class WalletCreationOrchestrator {
     network: WalletNetwork,
     tx: any,
   ): Promise<Wallet | undefined> {
+    const cacheKey = this.buildWalletCacheKey(userId, network);
+    const cached = this.cacheService?.get<Wallet>(cacheKey);
+    if (cached) {
+      this.logger.log(`Cache hit for existing wallet check: ${cacheKey}`);
+      return cached;
+    }
+
     const existingWallet = await tx.wallet.findFirst({
       where: { userId, network },
     });
 
+    if (existingWallet) {
+      this.cacheService?.set(cacheKey, this.mapPrismaWalletToDomain(existingWallet));
+    }
     return existingWallet
       ? this.mapPrismaWalletToDomain(existingWallet)
       : undefined;
@@ -713,12 +754,29 @@ export class WalletCreationOrchestrator {
   async getWalletByUser(
     userId: string,
     network: WalletNetwork,
+    requestId?: string,
   ): Promise<Wallet | null> {
+    const resolvedRequestId = requestId || RequestContextService.getCurrentRequestId();
+    this.logger.log(
+      `Looking up wallet for user ${userId} on ${network}${resolvedRequestId ? ` (requestId=${resolvedRequestId})` : ''}`,
+    );
+
+    const cacheKey = this.buildWalletCacheKey(userId, network);
+    const cached = this.cacheService?.get<Wallet>(cacheKey);
+    if (cached) {
+      this.logger.log(`Cache hit for wallet lookup: ${cacheKey}`);
+      return cached;
+    }
+
     const wallet = await this.prisma.wallet.findFirst({
       where: { userId, network },
     });
 
-    return wallet ? this.mapPrismaWalletToDomain(wallet) : null;
+    const result = wallet ? this.mapPrismaWalletToDomain(wallet) : null;
+    if (result) {
+      this.cacheService?.set(cacheKey, result);
+    }
+    return result;
   }
 
   /**
@@ -727,8 +785,13 @@ export class WalletCreationOrchestrator {
   async validateUserCanCreateWallet(
     userId: string,
     network: WalletNetwork,
+    requestId?: string,
   ): Promise<boolean> {
-    const existingWallet = await this.getWalletByUser(userId, network);
+    const resolvedRequestId = requestId || RequestContextService.getCurrentRequestId();
+    this.logger.log(
+      `Validating wallet creation for user ${userId} on ${network}${resolvedRequestId ? ` (requestId=${resolvedRequestId})` : ''}`,
+    );
+    const existingWallet = await this.getWalletByUser(userId, network, resolvedRequestId);
     return existingWallet === null;
   }
 
@@ -772,7 +835,7 @@ export class WalletCreationOrchestrator {
     } catch (error) {
       // Network errors during Friendbot calls should not block wallet creation
       this.logger.warn(
-        `Friendbot funding request failed for ${publicKey.substring(0, 8)}... : ${error.message}`,
+        `Friendbot funding request failed for ${publicKey.substring(0, 8)}... : ${String(error)}`,
       );
       // Non-blocking: wallet is already created in PROVISIONING state
     }
@@ -812,6 +875,40 @@ export class WalletCreationOrchestrator {
     });
 
     return wallets.map((w) => this.mapPrismaWalletToDomain(w));
+  }
+
+  /**
+   * Lists wallets with optional filtering and offset-based pagination.
+   * Results are ordered newest-first.
+   */
+  async listWallets(
+    filters?: OrchestratorListFilters,
+  ): Promise<OrchestratorListResult> {
+    const where: Record<string, unknown> = {};
+    if (filters?.userId) where.userId = filters.userId;
+    if (filters?.network) where.network = filters.network;
+    if (filters?.status) where.status = filters.status;
+
+    const limit = filters?.limit ?? 20;
+    const offset = filters?.offset ?? 0;
+
+    const [wallets, total] = await Promise.all([
+      this.prisma.wallet.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.wallet.count({ where }),
+    ]);
+
+    return {
+      data: wallets.map((w: any) => this.mapPrismaWalletToDomain(w)),
+      total,
+      limit,
+      offset,
+      hasMore: offset + wallets.length < total,
+    };
   }
 
   /**
@@ -865,6 +962,22 @@ export class WalletCreationOrchestrator {
     };
     if (!this.walletRetryService) return request();
     return this.walletRetryService.execute({ operation: 'testnet_funding' }, request);
+  }
+
+  /**
+   * Builds a consistent cache key for wallet lookups.
+   */
+  private buildWalletCacheKey(userId: string, network: WalletNetwork): string {
+    return `wallet:user:${userId}:${network}`;
+  }
+
+  /**
+   * Invalidates the wallet cache entry for a given user and network.
+   */
+  private invalidateWalletCache(userId: string, network: WalletNetwork): void {
+    const cacheKey = this.buildWalletCacheKey(userId, network);
+    this.cacheService?.delete(cacheKey);
+    this.logger.log(`Invalidated cache key: ${cacheKey}`);
   }
 
   /** A failed webhook dispatch is observable but cannot roll back a wallet. */

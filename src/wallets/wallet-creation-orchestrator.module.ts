@@ -7,9 +7,10 @@ import { WalletsModule } from './wallets.module';
 import { UsersModule } from '../users/users.module';
 import { WebhookModule } from '../webhooks/webhook.module';
 import { KeyManagementModule } from '../key-management/key-management.module';
+import { CacheService } from '../common/cache/cache.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
-import { WalletRetryService } from './wallet-retry.service';
-import { WalletApiMetricsService } from './wallet-api-metrics.service';
+import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 
 @Module({
   imports: [
@@ -24,8 +25,9 @@ import { WalletApiMetricsService } from './wallet-api-metrics.service';
   providers: [
     WalletCreationOrchestrator,
     IdempotencyService,
-    WalletRetryService,
-    WalletApiMetricsService,
+    CacheService,
+    FeatureFlagService,
+    FeatureFlagGuard,
   ],
   exports: [WalletCreationOrchestrator],
 })
