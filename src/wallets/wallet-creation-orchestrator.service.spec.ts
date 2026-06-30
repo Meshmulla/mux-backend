@@ -40,6 +40,12 @@ jest.mock('../generated/prisma/client', () => ({
 // Need to import for TypeScript type (jest.mock hoists the import)
 import { PrismaClient } from '../generated/prisma/client';
 
+const mockCacheService = {
+  get: jest.fn(),
+  set: jest.fn(),
+  delete: jest.fn(),
+};
+
 // Mock Encryption Service
 const mockEncryptionService = {
   encryptAndSerialize: jest.fn(),
@@ -104,7 +110,13 @@ describe('WalletCreationOrchestrator', () => {
       mockIdempotentUserService as any,
       mockKeyManagementService as any,
       mockPrisma as any,
+      mockCacheService as any,
     );
+
+    // Clear cache mocks for each test
+    mockCacheService.get.mockClear();
+    mockCacheService.set.mockClear();
+    mockCacheService.delete.mockClear();
 
     // Setup default mock returns
     mockEncryptionService.validateConfiguration.mockReturnValue(true);
@@ -910,6 +922,125 @@ describe('WalletCreationOrchestrator', () => {
   // -------------------------------------------------------------------------
   // onModuleInit
   // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // Cache layer
+  // -------------------------------------------------------------------------
+
+  describe('cache layer', () => {
+    it('should cache wallet lookup result in getWalletByUser', async () => {
+      mockPrisma.wallet.findFirst.mockResolvedValue(mockWalletRow);
+
+      await orchestrator.getWalletByUser('user-123', WalletNetwork.TESTNET);
+
+      expect(mockCacheService.set).toHaveBeenCalledWith(
+        'wallet:user:user-123:TESTNET',
+        expect.objectContaining({ id: 'wallet-123' }),
+      );
+    });
+
+    it('should not cache null result in getWalletByUser', async () => {
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+
+      await orchestrator.getWalletByUser('user-123', WalletNetwork.TESTNET);
+
+      expect(mockCacheService.set).not.toHaveBeenCalled();
+    });
+
+    it('should return cached wallet without querying DB', async () => {
+      const cachedWallet = { ...mockWalletRow, id: 'cached-wallet' };
+      mockCacheService.get.mockReturnValue(cachedWallet);
+
+      const result = await orchestrator.getWalletByUser('user-123', WalletNetwork.TESTNET);
+
+      expect(mockPrisma.wallet.findFirst).not.toHaveBeenCalled();
+      expect(result).toEqual(cachedWallet);
+    });
+
+    it('should query DB when cache misses', async () => {
+      mockCacheService.get.mockReturnValue(null);
+      mockPrisma.wallet.findFirst.mockResolvedValue(mockWalletRow);
+
+      const result = await orchestrator.getWalletByUser('user-123', WalletNetwork.TESTNET);
+
+      expect(mockPrisma.wallet.findFirst).toHaveBeenCalled();
+      expect(result!.id).toBe('wallet-123');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Request ID propagation
+  // -------------------------------------------------------------------------
+
+  describe('request id propagation', () => {
+    it('should accept and propagate requestId in createWallet', async () => {
+      const logSpy = jest
+        .spyOn(orchestrator['logger'], 'log')
+        .mockImplementation(() => {});
+      const provisioningWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123DEF456',
+        encryptedSecret: 'encrypted-private-key',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: 'PROVISIONING',
+        statusReason: null,
+        statusChangedAt: new Date(),
+        rotatedFromId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      const activeWallet = { ...provisioningWallet, status: 'ACTIVE', statusReason: 'Wallet provisioned and activated', statusChangedAt: new Date(), updatedAt: new Date() };
+
+      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma));
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
+
+      await orchestrator.createWallet(
+        { userId: 'user-123', network: WalletNetwork.TESTNET },
+        'test-req-id-456',
+      );
+
+      const startLog = logSpy.mock.calls.find(
+        ([msg]) => typeof msg === 'string' && msg.includes('Starting wallet creation'),
+      );
+      expect(startLog).toBeDefined();
+      expect(startLog![0]).toContain('requestId=test-req-id-456');
+    });
+
+    it('should accept requestId in getWalletByUser', async () => {
+      const logSpy = jest
+        .spyOn(orchestrator['logger'], 'log')
+        .mockImplementation(() => {});
+      mockPrisma.wallet.findFirst.mockResolvedValue(mockWalletRow);
+
+      await orchestrator.getWalletByUser('user-123', WalletNetwork.TESTNET, 'req-get-001');
+
+      const lookupLog = logSpy.mock.calls.find(
+        ([msg]) => typeof msg === 'string' && msg.includes('Looking up wallet'),
+      );
+      expect(lookupLog).toBeDefined();
+      expect(lookupLog![0]).toContain('requestId=req-get-001');
+    });
+
+    it('should accept requestId in validateUserCanCreateWallet', async () => {
+      const logSpy = jest
+        .spyOn(orchestrator['logger'], 'log')
+        .mockImplementation(() => {});
+      mockPrisma.wallet.findFirst.mockResolvedValue(mockWalletRow);
+
+      await orchestrator.validateUserCanCreateWallet('user-123', WalletNetwork.TESTNET, 'req-val-002');
+
+      const validateLog = logSpy.mock.calls.find(
+        ([msg]) => typeof msg === 'string' && msg.includes('Validating wallet creation'),
+      );
+      expect(validateLog).toBeDefined();
+      expect(validateLog![0]).toContain('requestId=req-val-002');
+    });
+  });
 
   describe('onModuleInit', () => {
     it('should throw error if encryption configuration is invalid', async () => {

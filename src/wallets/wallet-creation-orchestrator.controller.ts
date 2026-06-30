@@ -34,6 +34,10 @@ import {
   RateLimitGuard,
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 
 function parsePaginationParam(
   value: string | undefined,
@@ -54,7 +58,8 @@ function parsePaginationParam(
 @ApiTags('wallets-orchestration')
 @ApiSecurity('api-key')
 @Controller('wallets/orchestration')
-@UseGuards(ApiKeyGuard, RateLimitGuard)
+@FeatureFlag('wallet_orchestrator')
+@UseGuards(FeatureFlagGuard, ApiKeyGuard, RateLimitGuard)
 export class WalletCreationOrchestratorController {
   constructor(
     private readonly walletCreationOrchestrator: WalletCreationOrchestrator,

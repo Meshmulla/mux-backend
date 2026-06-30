@@ -23,6 +23,7 @@ import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { CacheService } from '../common/cache/cache.service';
 import { KeyManagementService } from '../key-management/key-management.service';
 import { PrismaClient } from '../generated/prisma/client';
 
@@ -113,6 +114,12 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
       cacheResponse: jest.fn().mockResolvedValue(undefined),
     };
 
+    const mockCacheService = {
+      get: jest.fn(),
+      set: jest.fn(),
+      delete: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WalletCreationOrchestrator,
@@ -120,6 +127,7 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: IdempotentUserService, useValue: idempotentUserService },
         { provide: IdempotencyService, useValue: idempotencyService },
+        { provide: CacheService, useValue: mockCacheService },
         {
           provide: KeyManagementService,
           useValue: {
@@ -189,6 +197,33 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
           encryptedSecret: 'encrypted-key',
         }),
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Request ID propagation
+  // -------------------------------------------------------------------------
+
+  describe('request id propagation', () => {
+    it('should propagate requestId through createWallet log output', async () => {
+      const logSpy = jest.spyOn(orchestrator['logger'], 'log').mockImplementation(() => {});
+      idempotentUserService.findUserById.mockResolvedValue(makeUser());
+      mockTx.wallet.findFirst.mockResolvedValue(null);
+      mockTx.wallet.create.mockResolvedValue(
+        makeDbWallet({ status: WalletStatus.PROVISIONING }),
+      );
+      mockTx.wallet.update.mockResolvedValue(makeDbWallet());
+
+      await orchestrator.createWallet(
+        { userId: 'user-abc', network: WalletNetwork.TESTNET },
+        'integ-req-id-789',
+      );
+
+      const startLog = logSpy.mock.calls.find(
+        ([msg]) => typeof msg === 'string' && msg.includes('Starting wallet creation'),
+      );
+      expect(startLog).toBeDefined();
+      expect(startLog![0]).toContain('requestId=integ-req-id-789');
     });
   });
 
@@ -433,6 +468,22 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
           idempotencyKey: 'idem-disk-full',
         }),
       ).resolves.toMatchObject({ isNewWallet: true });
+    });
+
+    it('returns cached result without DB query', async () => {
+      const cached = makeDbWallet({ id: 'cached-wallet' });
+      (orchestrator as any).cacheService = {
+        get: jest.fn().mockReturnValue(cached),
+        set: jest.fn(),
+      };
+
+      const result = await orchestrator.getWalletByUser(
+        'user-abc',
+        WalletNetwork.TESTNET,
+      );
+
+      expect(result!.id).toBe('cached-wallet');
+      expect(mockPrisma.wallet.findFirst).not.toHaveBeenCalled();
     });
   });
 
