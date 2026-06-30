@@ -137,6 +137,18 @@ export class RecoveryController {
     description: 'Number of records to skip (default 0)',
     example: 0,
   })
+  @ApiQuery({
+    name: 'createdAtFrom',
+    required: false,
+    description: 'Filter records created on or after this ISO date',
+    example: '2026-01-01T00:00:00.000Z',
+  })
+  @ApiQuery({
+    name: 'createdAtTo',
+    required: false,
+    description: 'Filter records created on or before this ISO date',
+    example: '2026-12-31T23:59:59.999Z',
+  })
   @ApiResponse({
     status: 200,
     description: 'Paginated list of recovery requests',
@@ -189,18 +201,38 @@ export class RecoveryController {
     @Query('status') status?: RecoveryStatus,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('createdAtFrom') createdAtFrom?: string,
+    @Query('createdAtTo') createdAtTo?: string,
   ) {
     if (status !== undefined && !Object.values(RecoveryStatus).includes(status as RecoveryStatus)) {
       throw new BadRequestException(
         `status must be a valid RecoveryStatus value: ${Object.values(RecoveryStatus).join(', ')}`,
       );
     }
+
+    const createdAtFilter: { gte?: Date; lte?: Date } = {};
+    if (createdAtFrom !== undefined) {
+      const d = new Date(createdAtFrom);
+      if (isNaN(d.getTime())) {
+        throw new BadRequestException('createdAtFrom must be a valid ISO date string');
+      }
+      createdAtFilter.gte = d;
+    }
+    if (createdAtTo !== undefined) {
+      const d = new Date(createdAtTo);
+      if (isNaN(d.getTime())) {
+        throw new BadRequestException('createdAtTo must be a valid ISO date string');
+      }
+      createdAtFilter.lte = d;
+    }
+
     return this.recoveryService.findAll({
       walletId,
       requester,
       status: status as RecoveryStatus,
       limit: parsePaginationParam(limit, 'limit'),
       offset: parsePaginationParam(offset, 'offset'),
+      createdAt: Object.keys(createdAtFilter).length > 0 ? createdAtFilter : undefined,
     });
   }
 

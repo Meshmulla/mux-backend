@@ -62,6 +62,7 @@ export class RecoveryService {
     status?: RecoveryStatus;
     limit?: number;
     offset?: number;
+    createdAt?: { gte?: Date; lte?: Date };
   }): Promise<PaginatedRecoveryDto> {
     const where: any = {};
 
@@ -75,6 +76,10 @@ export class RecoveryService {
 
     if (filters?.status) {
       where.status = filters.status;
+    }
+
+    if (filters?.createdAt) {
+      where.createdAt = filters.createdAt;
     }
 
     const limit = filters?.limit ?? 20;

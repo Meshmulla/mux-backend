@@ -176,6 +176,41 @@ describe('RecoveryService', () => {
 
       expect(result.hasMore).toEqual(true);
     });
+
+    it('should apply createdAt date range filter', async () => {
+      prisma.recoveryRequest.findMany.mockResolvedValue([mockRecovery]);
+      prisma.recoveryRequest.count.mockResolvedValue(1);
+
+      const from = new Date('2026-01-01T00:00:00.000Z');
+      const to = new Date('2026-12-31T23:59:59.999Z');
+
+      await service.findAll({ createdAt: { gte: from, lte: to } });
+
+      expect(prisma.recoveryRequest.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            createdAt: { gte: from, lte: to },
+          }),
+        }),
+      );
+    });
+
+    it('should apply createdAt gte filter only', async () => {
+      prisma.recoveryRequest.findMany.mockResolvedValue([mockRecovery]);
+      prisma.recoveryRequest.count.mockResolvedValue(1);
+
+      const from = new Date('2026-06-01T00:00:00.000Z');
+
+      await service.findAll({ createdAt: { gte: from } });
+
+      expect(prisma.recoveryRequest.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            createdAt: { gte: from },
+          }),
+        }),
+      );
+    });
   });
 
   describe('findOne', () => {
