@@ -31,6 +31,10 @@ import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
 import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
+import {
+  FeatureFlag,
+  FeatureFlagGuard,
+} from '../common/feature-flags/feature-flag.guard';
 
 /** Parse a pagination query param, throwing 400 on invalid input */
 function parsePaginationParam(
@@ -41,9 +45,7 @@ function parsePaginationParam(
   if (value === undefined) return undefined;
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0) {
-    throw new BadRequestException(
-      `${name} must be a non-negative integer`,
-    );
+    throw new BadRequestException(`${name} must be a non-negative integer`);
   }
   if (name === 'limit' && n > max) {
     throw new BadRequestException(`limit must not exceed ${max}`);
@@ -54,7 +56,8 @@ function parsePaginationParam(
 @ApiTags('wallets')
 @ApiSecurity('api-key')
 @Controller('wallets')
-@UseGuards(ApiKeyGuard, RateLimitGuard)
+@UseGuards(FeatureFlagGuard, ApiKeyGuard, RateLimitGuard)
+@FeatureFlag('wallets_enabled')
 export class WalletsController {
   constructor(
     private readonly walletsService: WalletsService,
@@ -73,15 +76,44 @@ export class WalletsController {
       idempotencyKey: createWalletDto.idempotencyKey,
     };
 
-    return this.walletCreationOrchestrator.createWallet(createRequest, requestId);
+    return this.walletCreationOrchestrator.createWallet(
+      createRequest,
+      requestId,
+    );
   }
 
-  @ApiOperation({ summary: 'List wallets with optional filters and pagination' })
-  @ApiQuery({ name: 'userId', required: false, description: 'Filter by owning user ID' })
-  @ApiQuery({ name: 'network', required: false, enum: WalletNetwork, description: 'Filter by network' })
-  @ApiQuery({ name: 'status', required: false, enum: WalletStatus, description: 'Filter by wallet status' })
-  @ApiQuery({ name: 'limit', required: false, description: 'Max records to return (1-100, default 20)', example: 20 })
-  @ApiQuery({ name: 'offset', required: false, description: 'Number of records to skip (default 0)', example: 0 })
+  @ApiOperation({
+    summary: 'List wallets with optional filters and pagination',
+  })
+  @ApiQuery({
+    name: 'userId',
+    required: false,
+    description: 'Filter by owning user ID',
+  })
+  @ApiQuery({
+    name: 'network',
+    required: false,
+    enum: WalletNetwork,
+    description: 'Filter by network',
+  })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: WalletStatus,
+    description: 'Filter by wallet status',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    description: 'Max records to return (1-100, default 20)',
+    example: 20,
+  })
+  @ApiQuery({
+    name: 'offset',
+    required: false,
+    description: 'Number of records to skip (default 0)',
+    example: 0,
+  })
   @Get()
   findAll(
     @Query('userId') userId?: string,
