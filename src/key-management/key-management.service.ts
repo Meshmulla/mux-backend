@@ -8,6 +8,8 @@ import {
 } from '../encryption/encryption.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
+import { KeyManagementMetricsService } from './key-management-metrics.service';
+import { retryWithBackoff } from './utils/retry.util';
 import {
   GeneratedKeyPair,
   SignatureResult,
@@ -66,12 +68,18 @@ export class KeyManagementService {
   private readonly providers: Map<KeyType, IKeyProvider>;
   private readonly auditLog: KeyOperationAudit[] = [];
 
+  private readonly maxRetries: number;
+  private readonly retryBackoffMs: number;
+
   constructor(
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly auditService: KeyRotationAuditService,
+    private readonly metricsService: KeyManagementMetricsService,
   ) {
+    this.maxRetries = this.configService.get<number>('KEY_MGMT_MAX_RETRIES', 3);
+    this.retryBackoffMs = this.configService.get<number>('KEY_MGMT_RETRY_BACKOFF_MS', 200);
     // Initialize key providers
     this.providers = new Map();
 
@@ -98,13 +106,23 @@ export class KeyManagementService {
 
     try {
       const provider = this.getProvider(request.keyType);
-      // Generate the keypair
-      const keyPair = await provider.generateKeyPair(request.keyType);
+
+      const keyPair = await retryWithBackoff(
+        () => provider.generateKeyPair(request.keyType),
+        {
+          maxAttempts: this.maxRetries,
+          initialDelayMs: this.retryBackoffMs,
+        },
+      );
 
       // CRITICAL: Encrypt immediately, never store plaintext
       const encryptedData = this.encryptionService.encryptAndSerialize(
         keyPair.privateKeyMaterial,
       );
+
+      const duration = Date.now() - startTime;
+      this.metricsService.incrementKeyOperations('GENERATE', 'success');
+      this.metricsService.recordKeyOperationDuration('GENERATE', duration);
 
       // Audit log (no sensitive data)
       this.auditKeyOperation({
@@ -116,7 +134,6 @@ export class KeyManagementService {
         metadata: request.metadata,
       });
 
-      const duration = Date.now() - startTime;
       this.logger.log(
         `Generated ${request.keyType} key in ${duration}ms (publicKey: ${keyPair.publicKey.substring(0, 12)}...)`,
       );
@@ -129,6 +146,7 @@ export class KeyManagementService {
         publicKey: keyPair.publicKey,
       };
     } catch (error) {
+      this.metricsService.incrementKeyOperations('GENERATE', 'failure');
       this.auditKeyOperation({
         operation: 'GENERATE',
         keyId: 'new',
@@ -166,10 +184,18 @@ export class KeyManagementService {
           : request.dataToSign;
 
       // Sign the data (private key is decrypted temporarily inside provider)
-      const signature = await provider.sign(
-        request.encryptedKeyMaterial,
-        dataToSign,
+      const signature = await retryWithBackoff(
+        () => provider.sign(request.encryptedKeyMaterial, dataToSign),
+        {
+          maxAttempts: this.maxRetries,
+          initialDelayMs: this.retryBackoffMs,
+          shouldRetry: (err) => !(err instanceof DecryptionError),
+        },
       );
+
+      const duration = Date.now() - startTime;
+      this.metricsService.incrementKeyOperations('SIGN', 'success');
+      this.metricsService.recordKeyOperationDuration('SIGN', duration);
 
       // Audit log (no sensitive data)
       this.auditKeyOperation({
@@ -180,7 +206,6 @@ export class KeyManagementService {
         success: true,
       });
 
-      const duration = Date.now() - startTime;
       this.logger.log(
         `Signed data in ${duration}ms (publicKey: ${request.publicKey.substring(0, 12)}...)`,
       );
@@ -189,6 +214,7 @@ export class KeyManagementService {
     } catch (error) {
       // Handle decrypt failures — log and convert to typed HTTP exception
       if (error instanceof DecryptionError) {
+        this.metricsService.incrementKeyOperations('SIGN', 'failure');
         this.auditKeyOperation({
           operation: 'SIGN',
           keyId: 'unknown',
@@ -210,6 +236,7 @@ export class KeyManagementService {
         );
       }
 
+      this.metricsService.incrementKeyOperations('SIGN', 'failure');
       this.auditKeyOperation({
         operation: 'SIGN',
         keyId: 'unknown',
@@ -365,6 +392,7 @@ export class KeyManagementService {
       return [newWallet];
     });
 
+    this.metricsService.incrementKeyOperations('ROTATE', 'success');
     this.auditKeyOperation({
       operation: 'ROTATE',
       keyId: predecessorWalletId,
