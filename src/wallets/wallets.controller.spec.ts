@@ -6,6 +6,7 @@ import { CreateWalletDto } from './dto/create-wallet.dto';
 import { WalletNetwork } from './domain/wallet.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 
 describe('WalletsController', () => {
   let controller: WalletsController;
@@ -42,6 +43,8 @@ describe('WalletsController', () => {
         },
       ],
     })
+      .overrideGuard(FeatureFlagGuard)
+      .useValue({ canActivate: () => true })
       .overrideGuard(ApiKeyGuard)
       .useValue({ canActivate: () => true })
       .overrideGuard(RateLimitGuard)
@@ -77,16 +80,18 @@ describe('WalletsController', () => {
       idempotencyKey: 'idem-123',
     });
 
-    await expect(
-      controller.create(dto, 'req-123'),
-    ).resolves.toEqual({
+    await expect(controller.create(dto, 'req-123')).resolves.toEqual({
       wallet: { id: 'wallet-123' },
       privateKey: 'secret',
       isNewWallet: true,
       idempotencyKey: 'idem-123',
     });
     expect(mockWalletCreationOrchestrator.createWallet).toHaveBeenCalledWith(
-      { userId: 'user-123', network: WalletNetwork.TESTNET, idempotencyKey: 'idem-123' },
+      {
+        userId: 'user-123',
+        network: WalletNetwork.TESTNET,
+        idempotencyKey: 'idem-123',
+      },
       'req-123',
     );
   });
@@ -151,7 +156,13 @@ describe('WalletsController', () => {
   describe('findAll', () => {
     it('passes filters and default-parsed pagination through to the service', async () => {
       const page = {
-        data: [{ id: 'wallet-1', userId: 'user-123', network: WalletNetwork.TESTNET }],
+        data: [
+          {
+            id: 'wallet-1',
+            userId: 'user-123',
+            network: WalletNetwork.TESTNET,
+          },
+        ],
         total: 1,
         limit: 20,
         offset: 0,
@@ -160,7 +171,13 @@ describe('WalletsController', () => {
       mockWalletsService.findAll.mockResolvedValue(page);
 
       await expect(
-        controller.findAll('user-123', WalletNetwork.TESTNET, undefined, undefined, undefined),
+        controller.findAll(
+          'user-123',
+          WalletNetwork.TESTNET,
+          undefined,
+          undefined,
+          undefined,
+        ),
       ).resolves.toEqual(page);
       expect(mockWalletsService.findAll).toHaveBeenCalledWith({
         userId: 'user-123',
