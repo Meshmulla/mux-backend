@@ -56,7 +56,8 @@ export class WebhookController {
   })
   @ApiResponse({
     status: 201,
-    description: 'Webhook endpoint created. Secret is only returned on creation.',
+    description:
+      'Webhook endpoint created. Secret is only returned on creation.',
     example: {
       id: 'endpoint-uuid',
       url: 'https://example.com/webhook',
