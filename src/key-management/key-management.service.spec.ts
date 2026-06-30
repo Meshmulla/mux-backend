@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { KeyManagementService } from './key-management.service';
 import {
   EncryptionService,
@@ -8,8 +9,8 @@ import {
 } from '../encryption/encryption.service';
 import { KeyType } from './domain/key-types';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
-
 import { KeyRotationAuditService } from './key-rotation-audit.service';
+import { KeyManagementMetricsService } from './key-management-metrics.service';
 
 // Prevent loading the real PrismaService (which requires the generated Prisma client)
 jest.mock('../prisma/prisma.service', () => ({
@@ -40,13 +41,23 @@ describe('KeyManagementService', () => {
     getRotationHistory: jest.fn(),
   };
 
+  const mockMetricsService = {
+    incrementKeyOperations: jest.fn(),
+    recordKeyOperationDuration: jest.fn(),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
     const mockConfigService = {
       get: jest
         .fn()
-        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars'),
+        .mockImplementation((key: string, defaultValue?: any) => {
+          if (key === 'WALLET_ENCRYPTION_KEY') {
+            return 'test-encryption-key-12345-long-enough-32-chars';
+          }
+          return defaultValue ?? 'test-encryption-key-12345-long-enough-32-chars';
+        }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -64,6 +75,10 @@ describe('KeyManagementService', () => {
         {
           provide: KeyRotationAuditService,
           useValue: mockAuditService,
+        },
+        {
+          provide: KeyManagementMetricsService,
+          useValue: mockMetricsService,
         },
       ],
     }).compile();
@@ -111,9 +126,9 @@ describe('KeyManagementService', () => {
     it('should audit key generation', async () => {
       await service.generateKey({ keyType: KeyType.STELLAR_ED25519 });
 
-      const auditLog = service.getAuditLog();
-      expect(auditLog.length).toBeGreaterThan(0);
-      expect(auditLog[auditLog.length - 1]).toMatchObject({
+      const { data } = service.getAuditLog();
+      expect(data.length).toBeGreaterThan(0);
+      expect(data[data.length - 1]).toMatchObject({
         operation: 'GENERATE',
         success: true,
       });
@@ -130,13 +145,25 @@ describe('KeyManagementService', () => {
         service.generateKey({ keyType: KeyType.STELLAR_ED25519 }),
       ).rejects.toThrow('Key generation failed');
 
-      const auditLog = service.getAuditLog();
-      const failureEntry = auditLog[auditLog.length - 1];
+      const { data } = service.getAuditLog();
+      const failureEntry = data[data.length - 1];
       expect(failureEntry).toMatchObject({
         operation: 'GENERATE',
         success: false,
       });
       expect(failureEntry.errorMessage).toBeDefined();
+    });
+
+    it('should throw BadRequestException for missing keyType', async () => {
+      await expect(
+        service.generateKey({ keyType: undefined as any }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException for invalid keyType', async () => {
+      await expect(
+        service.generateKey({ keyType: 'INVALID_TYPE' as any }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
@@ -176,8 +203,8 @@ describe('KeyManagementService', () => {
         publicKey: keyMaterial.publicKey,
       });
 
-      const auditLog = service.getAuditLog();
-      const signAudit = auditLog.find((log) => log.operation === 'SIGN');
+      const { data } = service.getAuditLog();
+      const signAudit = data.find((log) => log.operation === 'SIGN');
 
       expect(signAudit).toBeDefined();
       expect(signAudit?.success).toBe(true);
@@ -263,8 +290,8 @@ describe('KeyManagementService', () => {
         // expected
       }
 
-      const auditLog = service.getAuditLog();
-      const failEntry = [...auditLog]
+      const { data } = service.getAuditLog();
+      const failEntry = [...data]
         .reverse()
         .find((e) => e.operation === 'SIGN' && !e.success);
 
@@ -630,8 +657,8 @@ describe('KeyManagementService', () => {
 
       await service.rotateKey(predecessorId);
 
-      const auditLog = service.getAuditLog();
-      const rotateAudit = auditLog.find((log) => log.operation === 'ROTATE');
+      const { data } = service.getAuditLog();
+      const rotateAudit = data.find((log) => log.operation === 'ROTATE');
 
       expect(rotateAudit).toBeDefined();
       expect(rotateAudit?.success).toBe(true);
@@ -660,6 +687,112 @@ describe('KeyManagementService', () => {
 
       expect(capturedCreateData.secretVersion).toBe(
         activePredecessor.secretVersion + 1,
+      );
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // getAuditLog — filtering and pagination
+  // ─────────────────────────────────────────────────────────────────────────────
+  describe('getAuditLog', () => {
+    beforeEach(async () => {
+      service.resetStatistics();
+      await service.generateKey({ keyType: KeyType.STELLAR_ED25519 });
+      await service.generateKey({ keyType: KeyType.STELLAR_ED25519 });
+    });
+
+    it('should return paginated result with total and hasMore', () => {
+      const result = service.getAuditLog({ limit: 1, offset: 0 });
+      expect(result.data.length).toBe(1);
+      expect(result.total).toBeGreaterThan(1);
+      expect(result.hasMore).toBe(true);
+      expect(result.limit).toBe(1);
+      expect(result.offset).toBe(0);
+    });
+
+    it('should return hasMore false on last page', () => {
+      const result = service.getAuditLog({ limit: 100, offset: 0 });
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('should filter by operation', () => {
+      const result = service.getAuditLog({ operation: 'GENERATE' });
+      expect(result.data.every((log) => log.operation === 'GENERATE')).toBe(true);
+    });
+
+    it('should filter by success', () => {
+      const result = service.getAuditLog({ success: true });
+      expect(result.data.every((log) => log.success === true)).toBe(true);
+    });
+
+    it('should respect offset', () => {
+      const all = service.getAuditLog();
+      const offset1 = service.getAuditLog({ offset: 1 });
+      expect(offset1.data[0]).toEqual(all.data[1]);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // domain events
+  // ─────────────────────────────────────────────────────────────────────────────
+  describe('domain events', () => {
+    let eventEmitter: EventEmitter2;
+
+    beforeEach(() => {
+      eventEmitter = service['eventEmitter'] as EventEmitter2;
+      jest.spyOn(eventEmitter, 'emit');
+    });
+
+    it('should emit key.generated after successful key generation', async () => {
+      await service.generateKey({ keyType: KeyType.STELLAR_ED25519 });
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'key.generated',
+        expect.objectContaining({ keyType: KeyType.STELLAR_ED25519 }),
+      );
+    });
+
+    it('should emit key.signed after successful sign', async () => {
+      const key = await service.generateKey({ keyType: KeyType.STELLAR_ED25519 });
+      await service.sign({
+        encryptedKeyMaterial: key.encryptedData,
+        dataToSign: Buffer.from('data'),
+        publicKey: key.publicKey,
+      });
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'key.signed',
+        expect.objectContaining({ publicKey: key.publicKey }),
+      );
+    });
+
+    it('should emit key.rotated after successful rotation', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue({
+        id: 'pred-1',
+        userId: 'user-1',
+        status: 'ACTIVE',
+        successorId: null,
+        secretVersion: 1,
+        network: 'TESTNET',
+        publicKey: 'GPRED',
+      });
+
+      await service.rotateKey('pred-1');
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'key.rotated',
+        expect.objectContaining({ predecessorWalletId: 'pred-1' }),
+      );
+    });
+
+    it('should emit key.validated after validateKey', async () => {
+      const key = await service.generateKey({ keyType: KeyType.STELLAR_ED25519 });
+      await service.validateKey(
+        key.publicKey,
+        key.encryptedData,
+        KeyType.STELLAR_ED25519,
+      );
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'key.validated',
+        expect.objectContaining({ publicKey: key.publicKey }),
       );
     });
   });

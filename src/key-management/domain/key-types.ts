@@ -57,4 +57,6 @@ export interface KeyOperationAudit {
   metadata?: Record<string, any>;
   success: boolean;
   errorMessage?: string;
+  /** Propagated from the inbound HTTP request via RequestContextService. */
+  requestId?: string;
 }

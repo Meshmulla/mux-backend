@@ -14,6 +14,7 @@
  */
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { NotFoundException } from '@nestjs/common';
 import {
   WalletCreationOrchestrator,
   CreateWalletOrchestratorRequest,
@@ -22,6 +23,7 @@ import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { CacheService } from '../common/cache/cache.service';
 import { KeyManagementService } from '../key-management/key-management.service';
 import { PrismaClient } from '../generated/prisma/client';
 
@@ -112,6 +114,12 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
       cacheResponse: jest.fn().mockResolvedValue(undefined),
     };
 
+    const mockCacheService = {
+      get: jest.fn(),
+      set: jest.fn(),
+      delete: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WalletCreationOrchestrator,
@@ -119,6 +127,7 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: IdempotentUserService, useValue: idempotentUserService },
         { provide: IdempotencyService, useValue: idempotencyService },
+        { provide: CacheService, useValue: mockCacheService },
         {
           provide: KeyManagementService,
           useValue: {
@@ -188,6 +197,33 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
           encryptedSecret: 'encrypted-key',
         }),
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Request ID propagation
+  // -------------------------------------------------------------------------
+
+  describe('request id propagation', () => {
+    it('should propagate requestId through createWallet log output', async () => {
+      const logSpy = jest.spyOn(orchestrator['logger'], 'log').mockImplementation(() => {});
+      idempotentUserService.findUserById.mockResolvedValue(makeUser());
+      mockTx.wallet.findFirst.mockResolvedValue(null);
+      mockTx.wallet.create.mockResolvedValue(
+        makeDbWallet({ status: WalletStatus.PROVISIONING }),
+      );
+      mockTx.wallet.update.mockResolvedValue(makeDbWallet());
+
+      await orchestrator.createWallet(
+        { userId: 'user-abc', network: WalletNetwork.TESTNET },
+        'integ-req-id-789',
+      );
+
+      const startLog = logSpy.mock.calls.find(
+        ([msg]) => typeof msg === 'string' && msg.includes('Starting wallet creation'),
+      );
+      expect(startLog).toBeDefined();
+      expect(startLog![0]).toContain('requestId=integ-req-id-789');
     });
   });
 
@@ -299,61 +335,218 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // getWalletByUser
-  // -------------------------------------------------------------------------
+  // ─────────────────────────────────────────────────────────────────────────
+  // Stale / invalid state handling
+  // ─────────────────────────────────────────────────────────────────────────
 
-  describe('getWalletByUser', () => {
-    it('returns wallet when found', async () => {
-      mockPrisma.wallet.findFirst.mockResolvedValue(makeDbWallet());
+  describe('stale and invalid state handling', () => {
+    it('treats an expired idempotency record as absent and creates a new wallet', async () => {
+      // Record exists but expiresAt is in the past
+      const staleRecord = {
+        key: 'idem-stale',
+        expiresAt: new Date(Date.now() - 1000), // already expired
+        response: {
+          userId: 'user-abc',
+          network: WalletNetwork.TESTNET,
+          wallet: makeDbWallet(),
+          isNewWallet: true,
+          idempotencyKey: 'idem-stale',
+        },
+      };
+
+      idempotentUserService.findUserById.mockResolvedValue(makeUser());
+      mockTx.idempotencyRecord.findUnique.mockResolvedValue(staleRecord);
+      mockTx.idempotencyRecord.delete = jest.fn().mockResolvedValue({});
+      mockTx.wallet.findFirst.mockResolvedValue(null);
+      mockTx.wallet.create.mockResolvedValue(
+        makeDbWallet({ status: WalletStatus.PROVISIONING }),
+      );
+      mockTx.wallet.update.mockResolvedValue(makeDbWallet());
+
+      const result = await orchestrator.createWallet({
+        userId: 'user-abc',
+        network: WalletNetwork.TESTNET,
+        idempotencyKey: 'idem-stale',
+      });
+
+      // Should have created a brand-new wallet, not replayed stale data
+      expect(result.isNewWallet).toBe(true);
+      expect(mockTx.wallet.create).toHaveBeenCalled();
+      expect(mockTx.idempotencyRecord.delete).toHaveBeenCalledWith({
+        where: { key: 'idem-stale' },
+      });
+    });
+
+    it('throws ConflictException when idempotency key is reused for a different userId', async () => {
+      const conflictRecord = {
+        key: 'idem-conflict',
+        expiresAt: new Date(Date.now() + 60_000),
+        response: {
+          userId: 'different-user',
+          network: WalletNetwork.TESTNET,
+          wallet: makeDbWallet(),
+          isNewWallet: true,
+        },
+      };
+
+      idempotentUserService.findUserById.mockResolvedValue(makeUser());
+      mockTx.idempotencyRecord.findUnique.mockResolvedValue(conflictRecord);
+
+      await expect(
+        orchestrator.createWallet({
+          userId: 'user-abc', // different from cached userId
+          network: WalletNetwork.TESTNET,
+          idempotencyKey: 'idem-conflict',
+        }),
+      ).rejects.toThrow(/[Ii]dempotency/);
+    });
+
+    it('throws ConflictException when idempotency key is reused for a different network', async () => {
+      const conflictRecord = {
+        key: 'idem-net-conflict',
+        expiresAt: new Date(Date.now() + 60_000),
+        response: {
+          userId: 'user-abc',
+          network: WalletNetwork.MAINNET, // different network
+          wallet: makeDbWallet({ network: WalletNetwork.MAINNET }),
+          isNewWallet: true,
+        },
+      };
+
+      idempotentUserService.findUserById.mockResolvedValue(makeUser());
+      mockTx.idempotencyRecord.findUnique.mockResolvedValue(conflictRecord);
+
+      await expect(
+        orchestrator.createWallet({
+          userId: 'user-abc',
+          network: WalletNetwork.TESTNET, // different from cached network
+          idempotencyKey: 'idem-net-conflict',
+        }),
+      ).rejects.toThrow(/[Ii]dempotency/);
+    });
+
+    it('silently handles P2002 on idempotency record create (concurrent write)', async () => {
+      idempotentUserService.findUserById.mockResolvedValue(makeUser());
+      mockTx.idempotencyRecord.findUnique.mockResolvedValue(null);
+      mockTx.wallet.findFirst.mockResolvedValue(null);
+      mockTx.wallet.create.mockResolvedValue(
+        makeDbWallet({ status: WalletStatus.PROVISIONING }),
+      );
+      mockTx.wallet.update.mockResolvedValue(makeDbWallet());
+      // Simulate a concurrent write (unique constraint violation)
+      mockTx.idempotencyRecord.create.mockRejectedValue(
+        Object.assign(new Error('Unique constraint'), { code: 'P2002' }),
+      );
+
+      // Should NOT throw — P2002 on idempotency record is non-fatal
+      await expect(
+        orchestrator.createWallet({
+          userId: 'user-abc',
+          network: WalletNetwork.TESTNET,
+          idempotencyKey: 'idem-concurrent',
+        }),
+      ).resolves.toMatchObject({ isNewWallet: true });
+    });
+
+    it('does not propagate a failed idempotency store when it is non-P2002', async () => {
+      idempotentUserService.findUserById.mockResolvedValue(makeUser());
+      mockTx.idempotencyRecord.findUnique.mockResolvedValue(null);
+      mockTx.wallet.findFirst.mockResolvedValue(null);
+      mockTx.wallet.create.mockResolvedValue(
+        makeDbWallet({ status: WalletStatus.PROVISIONING }),
+      );
+      mockTx.wallet.update.mockResolvedValue(makeDbWallet());
+      // Non-P2002 storage error — should still be swallowed (non-fatal)
+      mockTx.idempotencyRecord.create.mockRejectedValue(
+        new Error('Disk full'),
+      );
+
+      await expect(
+        orchestrator.createWallet({
+          userId: 'user-abc',
+          network: WalletNetwork.TESTNET,
+          idempotencyKey: 'idem-disk-full',
+        }),
+      ).resolves.toMatchObject({ isNewWallet: true });
+    });
+
+    it('returns cached result without DB query', async () => {
+      const cached = makeDbWallet({ id: 'cached-wallet' });
+      (orchestrator as any).cacheService = {
+        get: jest.fn().mockReturnValue(cached),
+        set: jest.fn(),
+      };
 
       const result = await orchestrator.getWalletByUser(
         'user-abc',
         WalletNetwork.TESTNET,
       );
 
-      expect(result).not.toBeNull();
-      expect(result!.id).toBe('wallet-abc');
-      expect(result!.network).toBe(WalletNetwork.TESTNET);
-    });
-
-    it('returns null when wallet does not exist', async () => {
-      mockPrisma.wallet.findFirst.mockResolvedValue(null);
-
-      const result = await orchestrator.getWalletByUser(
-        'user-abc',
-        WalletNetwork.MAINNET,
-      );
-
-      expect(result).toBeNull();
+      expect(result!.id).toBe('cached-wallet');
+      expect(mockPrisma.wallet.findFirst).not.toHaveBeenCalled();
     });
   });
 
-  // -------------------------------------------------------------------------
-  // validateUserCanCreateWallet
-  // -------------------------------------------------------------------------
+  // ─────────────────────────────────────────────────────────────────────────
+  // getWalletStatus
+  // ─────────────────────────────────────────────────────────────────────────
 
-  describe('validateUserCanCreateWallet', () => {
-    it('returns true when user has no wallet on the network', async () => {
-      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+  describe('getWalletStatus', () => {
+    it('returns wallet status fields for an existing wallet', async () => {
+      mockPrisma.wallet = {
+        ...mockPrisma.wallet,
+        findUnique: jest.fn().mockResolvedValue(makeDbWallet()),
+      };
 
-      await expect(
-        orchestrator.validateUserCanCreateWallet(
-          'user-abc',
-          WalletNetwork.TESTNET,
-        ),
-      ).resolves.toBe(true);
+      const status = await orchestrator.getWalletStatus('wallet-abc');
+
+      expect(status.id).toBe('wallet-abc');
+      expect(status.status).toBe(WalletStatus.ACTIVE);
+      expect(status.network).toBe(WalletNetwork.TESTNET);
+      expect(status.publicKey).toBeDefined();
     });
 
-    it('returns false when user already has a wallet on the network', async () => {
-      mockPrisma.wallet.findFirst.mockResolvedValue(makeDbWallet());
+    it('throws NotFoundException for an unknown walletId', async () => {
+      mockPrisma.wallet = {
+        ...mockPrisma.wallet,
+        findUnique: jest.fn().mockResolvedValue(null),
+      };
 
       await expect(
-        orchestrator.validateUserCanCreateWallet(
-          'user-abc',
-          WalletNetwork.TESTNET,
-        ),
-      ).resolves.toBe(false);
+        orchestrator.getWalletStatus('unknown-wallet'),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // findWalletsByUserId
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('findWalletsByUserId', () => {
+    it('returns all wallets for a user', async () => {
+      mockPrisma.wallet = {
+        ...mockPrisma.wallet,
+        findMany: jest.fn().mockResolvedValue([
+          makeDbWallet(),
+          makeDbWallet({ id: 'wallet-2', network: WalletNetwork.MAINNET }),
+        ]),
+      };
+
+      const wallets = await orchestrator.findWalletsByUserId('user-abc');
+
+      expect(wallets).toHaveLength(2);
+      expect(wallets[0].userId).toBe('user-abc');
+    });
+
+    it('returns empty array when user has no wallets', async () => {
+      mockPrisma.wallet = {
+        ...mockPrisma.wallet,
+        findMany: jest.fn().mockResolvedValue([]),
+      };
+
+      const wallets = await orchestrator.findWalletsByUserId('user-no-wallets');
+
+      expect(wallets).toEqual([]);
     });
   });
 });

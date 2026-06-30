@@ -54,6 +54,7 @@ describe('AuthOrchestratorController', () => {
       ],
     })
       .overrideGuard(AuthRateLimitGuard)
+      .useValue({ canActivate: () => true })
       .overrideGuard(FeatureFlagGuard)
       .useValue({ canActivate: () => true })
       .compile();
