@@ -3,6 +3,7 @@ import {
   WalletOrchestrationError,
   OrchestratorMetrics,
   CreateWalletOrchestratorRequest,
+  OrchestratorListFilters,
 } from './wallet-creation-orchestrator.service';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
@@ -21,6 +22,7 @@ const mockPrisma = {
     delete: jest.fn(),
     findMany: jest.fn(),
     deleteMany: jest.fn(),
+    count: jest.fn(),
   },
   idempotencyRecord: {
     findUnique: jest.fn(),
@@ -1195,6 +1197,170 @@ describe('WalletCreationOrchestrator', () => {
       // Should be approximately 5 minutes (within 1 second tolerance)
       expect(ageMs).toBeGreaterThanOrEqual(4 * 60 * 1000);
       expect(ageMs).toBeLessThan(6 * 60 * 1000);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // listWallets — #415 pagination, #416 filtering
+  // -------------------------------------------------------------------------
+
+  describe('listWallets', () => {
+    const baseWallet = {
+      id: 'wallet-1',
+      userId: 'user-123',
+      publicKey: 'GABC123',
+      encryptedSecret: 'enc',
+      encryptionVersion: 1,
+      secretVersion: 1,
+      keyVersion: 1,
+      network: WalletNetwork.TESTNET,
+      status: WalletStatus.ACTIVE,
+      statusReason: null,
+      statusChangedAt: new Date(),
+      rotatedFromId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    beforeEach(() => {
+      mockPrisma.wallet.findMany.mockResolvedValue([]);
+      mockPrisma.wallet.count.mockResolvedValue(0);
+    });
+
+    it('defaults to limit=20 and offset=0 when no filters are provided', async () => {
+      await orchestrator.listWallets();
+
+      expect(mockPrisma.wallet.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 20, skip: 0 }),
+      );
+    });
+
+    it('forwards a custom limit and offset to Prisma', async () => {
+      await orchestrator.listWallets({ limit: 5, offset: 10 });
+
+      expect(mockPrisma.wallet.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 5, skip: 10 }),
+      );
+    });
+
+    it('applies a userId filter', async () => {
+      await orchestrator.listWallets({ userId: 'user-abc' });
+
+      expect(mockPrisma.wallet.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ userId: 'user-abc' }) }),
+      );
+      expect(mockPrisma.wallet.count).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ userId: 'user-abc' }) }),
+      );
+    });
+
+    it('applies a network filter', async () => {
+      await orchestrator.listWallets({ network: WalletNetwork.MAINNET });
+
+      expect(mockPrisma.wallet.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ network: WalletNetwork.MAINNET }) }),
+      );
+    });
+
+    it('applies a status filter', async () => {
+      await orchestrator.listWallets({ status: WalletStatus.SUSPENDED });
+
+      expect(mockPrisma.wallet.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ status: WalletStatus.SUSPENDED }) }),
+      );
+    });
+
+    it('applies multiple filters together', async () => {
+      await orchestrator.listWallets({
+        userId: 'user-123',
+        network: WalletNetwork.TESTNET,
+        status: WalletStatus.ACTIVE,
+      });
+
+      expect(mockPrisma.wallet.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            userId: 'user-123',
+            network: WalletNetwork.TESTNET,
+            status: WalletStatus.ACTIVE,
+          },
+        }),
+      );
+    });
+
+    it('omits undefined filter fields from the where clause', async () => {
+      await orchestrator.listWallets({ userId: 'user-123' });
+
+      const { where } = mockPrisma.wallet.findMany.mock.calls[0][0];
+      expect(where).not.toHaveProperty('network');
+      expect(where).not.toHaveProperty('status');
+    });
+
+    it('orders results by createdAt descending', async () => {
+      await orchestrator.listWallets();
+
+      expect(mockPrisma.wallet.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { createdAt: 'desc' } }),
+      );
+    });
+
+    it('returns the correct paginated shape', async () => {
+      mockPrisma.wallet.findMany.mockResolvedValue([baseWallet]);
+      mockPrisma.wallet.count.mockResolvedValue(3);
+
+      const result = await orchestrator.listWallets({ limit: 1, offset: 0 });
+
+      expect(result.data).toHaveLength(1);
+      expect(result.total).toBe(3);
+      expect(result.limit).toBe(1);
+      expect(result.offset).toBe(0);
+      expect(result.hasMore).toBe(true);
+    });
+
+    it('sets hasMore=false when the last page is reached', async () => {
+      mockPrisma.wallet.findMany.mockResolvedValue([baseWallet]);
+      mockPrisma.wallet.count.mockResolvedValue(1);
+
+      const result = await orchestrator.listWallets({ limit: 20, offset: 0 });
+
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('sets hasMore=false on an empty result set', async () => {
+      mockPrisma.wallet.findMany.mockResolvedValue([]);
+      mockPrisma.wallet.count.mockResolvedValue(0);
+
+      const result = await orchestrator.listWallets();
+
+      expect(result.hasMore).toBe(false);
+      expect(result.data).toEqual([]);
+    });
+
+    it('maps Prisma rows to domain Wallet objects', async () => {
+      mockPrisma.wallet.findMany.mockResolvedValue([baseWallet]);
+      mockPrisma.wallet.count.mockResolvedValue(1);
+
+      const result = await orchestrator.listWallets();
+
+      expect(result.data[0]).toEqual(
+        expect.objectContaining({
+          id: baseWallet.id,
+          userId: baseWallet.userId,
+          publicKey: baseWallet.publicKey,
+          network: baseWallet.network,
+          status: baseWallet.status,
+        }),
+      );
+    });
+
+    it('runs findMany and count in parallel (both called once)', async () => {
+      mockPrisma.wallet.findMany.mockResolvedValue([]);
+      mockPrisma.wallet.count.mockResolvedValue(0);
+
+      await orchestrator.listWallets({ userId: 'u1' });
+
+      expect(mockPrisma.wallet.findMany).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.wallet.count).toHaveBeenCalledTimes(1);
     });
   });
 });
