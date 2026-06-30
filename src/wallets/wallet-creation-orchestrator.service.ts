@@ -208,6 +208,7 @@ export class WalletCreationOrchestrator {
     requestId?: string,
   ): Promise<WalletOrchestrationResult> {
     const startTime = Date.now();
+    const requestIdLabel = requestId ? ` requestId=${requestId}` : '';
     let committedWallet: Wallet | undefined;
     this.logger.log(
       `Starting wallet creation orchestration for user ${request.userId} on ${request.network}${requestIdLabel}`,

@@ -1066,4 +1066,196 @@ describe('WalletCreationOrchestrator', () => {
       expect(ageMs).toBeLessThan(6 * 60 * 1000);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Retry with backoff integration (#418)
+  // -------------------------------------------------------------------------
+
+  describe('retry with backoff', () => {
+    const transientError = Object.assign(new Error('connection reset'), {
+      code: 'ECONNRESET',
+    });
+
+    const provisioningWallet = {
+      id: 'wallet-123',
+      userId: 'user-123',
+      publicKey: 'GABC123DEF456',
+      encryptedSecret: 'encrypted-private-key',
+      encryptionVersion: 1,
+      secretVersion: 1,
+      network: WalletNetwork.TESTNET,
+      status: 'PROVISIONING',
+      statusReason: null,
+      statusChangedAt: new Date(),
+      rotatedFromId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const activeWallet = {
+      ...provisioningWallet,
+      status: 'ACTIVE',
+      statusReason: 'Wallet provisioned and activated',
+    };
+
+    /** Creates an orchestrator wired with a real WalletRetryService (wait stubbed). */
+    function makeOrchestratorWithRetry() {
+      const { WalletRetryService } = jest.requireActual('./wallet-retry.service') as typeof import('./wallet-retry.service');
+      const retryConfig = { get: (_k: string, fallback: number) => fallback };
+      const retryService = new WalletRetryService(retryConfig as any);
+      // Stub internal wait so tests run instantly
+      jest.spyOn(retryService as any, 'wait').mockResolvedValue(undefined);
+
+      return {
+        retryService,
+        orchestrator: new WalletCreationOrchestrator(
+          mockEncryptionService as any,
+          mockConfigService as any,
+          mockIdempotentUserService as any,
+          mockKeyManagementService as any,
+          mockPrisma as any,
+          undefined,
+          retryService,
+        ),
+      };
+    }
+
+    it('retries key generation on transient failures and eventually succeeds', async () => {
+      const { orchestrator: retryOrchestrator } = makeOrchestratorWithRetry();
+
+      mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+        cb(mockPrisma),
+      );
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
+
+      // Key generation fails twice (transient), succeeds on the third attempt
+      mockKeyManagementService.generateKey
+        .mockRejectedValueOnce(transientError)
+        .mockRejectedValueOnce(transientError)
+        .mockResolvedValueOnce({
+          publicKey: 'GABC123DEF456',
+          encryptedData: 'encrypted-private-key',
+          encryptionVersion: 1,
+        });
+
+      const result = await retryOrchestrator.createWallet({
+        userId: 'user-123',
+        network: WalletNetwork.TESTNET,
+      });
+
+      expect(result.isNewWallet).toBe(true);
+      expect(mockKeyManagementService.generateKey).toHaveBeenCalledTimes(3);
+    });
+
+    it('throws WalletOrchestrationError(key-generation) when key generation exhausts all retries', async () => {
+      const { orchestrator: retryOrchestrator } = makeOrchestratorWithRetry();
+
+      mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+        cb(mockPrisma),
+      );
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+
+      mockKeyManagementService.generateKey.mockRejectedValue(transientError);
+
+      const err = await retryOrchestrator
+        .createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET })
+        .catch((e) => e);
+
+      expect(err).toBeInstanceOf(WalletOrchestrationError);
+      expect(err.phase).toBe('key-generation');
+      // generateKey called maxAttempts (3) times
+      expect(mockKeyManagementService.generateKey).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry non-transient key generation failures (400)', async () => {
+      const { orchestrator: retryOrchestrator } = makeOrchestratorWithRetry();
+
+      mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+        cb(mockPrisma),
+      );
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+
+      const nonTransient = Object.assign(new Error('bad request'), {
+        status: 400,
+      });
+      mockKeyManagementService.generateKey.mockRejectedValue(nonTransient);
+
+      const err = await retryOrchestrator
+        .createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET })
+        .catch((e) => e);
+
+      expect(err).toBeInstanceOf(WalletOrchestrationError);
+      expect(err.phase).toBe('key-generation');
+      // No retries — called exactly once
+      expect(mockKeyManagementService.generateKey).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries Friendbot on transient HTTP failures and wallet creation still succeeds', async () => {
+      const { orchestrator: retryOrchestrator } = makeOrchestratorWithRetry();
+
+      mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+        cb(mockPrisma),
+      );
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
+
+      // Friendbot responds with 503 twice, then succeeds
+      mockFetch
+        .mockResolvedValueOnce({ ok: false, status: 503, text: async () => 'unavailable' })
+        .mockResolvedValueOnce({ ok: false, status: 503, text: async () => 'unavailable' })
+        .mockResolvedValueOnce({ ok: true });
+
+      const result = await retryOrchestrator.createWallet({
+        userId: 'user-123',
+        network: WalletNetwork.TESTNET,
+      });
+
+      expect(result.isNewWallet).toBe(true);
+      expect(result.wallet.status).toBe(WalletStatus.ACTIVE);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('wallet creation completes even when Friendbot exhausts all retries', async () => {
+      const { orchestrator: retryOrchestrator } = makeOrchestratorWithRetry();
+
+      mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+        cb(mockPrisma),
+      );
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
+
+      // Friendbot always returns 503
+      mockFetch.mockResolvedValue({ ok: false, status: 503, text: async () => 'down' });
+
+      const result = await retryOrchestrator.createWallet({
+        userId: 'user-123',
+        network: WalletNetwork.TESTNET,
+      });
+
+      // Wallet is still created and activated — Friendbot is non-blocking
+      expect(result.isNewWallet).toBe(true);
+      expect(result.wallet.status).toBe(WalletStatus.ACTIVE);
+    });
+
+    it('falls back to direct key generation when retry service is absent', async () => {
+      // Default orchestrator created in beforeEach has no retry service
+      mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+        cb(mockPrisma),
+      );
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
+
+      const result = await orchestrator.createWallet({
+        userId: 'user-123',
+        network: WalletNetwork.TESTNET,
+      });
+
+      expect(result.isNewWallet).toBe(true);
+      expect(mockKeyManagementService.generateKey).toHaveBeenCalledTimes(1);
+    });
+  });
 });
