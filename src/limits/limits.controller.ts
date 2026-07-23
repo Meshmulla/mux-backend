@@ -18,6 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { LimitsService } from './limits.service';
 import { SetLimitsDto } from './dto/set-limits.dto';
+import { LimitsResponseDto } from './dto/limits-response.dto';
 import {
   FeatureFlagGuard,
   FeatureFlag,
@@ -90,16 +91,18 @@ export class LimitsController {
 
   @ApiOperation({
     summary: 'Get wallet limits',
-    description: 'Retrieve current daily and per-transaction limits for a wallet. Requires API key authentication.',
+    description: 'Retrieve current daily and per-transaction limits for a wallet, including remaining daily limit. Requires API key authentication.',
   })
   @ApiParam({ name: 'walletId', description: 'Wallet ID (UUID)' })
   @ApiResponse({
     status: 200,
     description: 'Wallet limits retrieved successfully',
+    type: LimitsResponseDto,
     example: {
       walletId: '123e4567-e89b-12d3-a456-426614174000',
       dailyLimit: 5000,
       perTransactionLimit: 1000,
+      remainingDailyLimit: 2500,
     },
   })
   @ApiResponse({
