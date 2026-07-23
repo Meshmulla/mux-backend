@@ -32,6 +32,7 @@ model Payment {
   id          Int           @id @default(autoincrement())
   amount      Float
   currency    String
+  assetCode   String?       // ISO 4217 or custom asset identifier
   status      PaymentStatus @default(PENDING)
   description String?
 

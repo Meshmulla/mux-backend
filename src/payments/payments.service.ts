@@ -53,6 +53,7 @@ export class PaymentsService {
       toId,
       amount,
       currency,
+      assetCode,
       description,
     } = createPaymentDto;
 
@@ -87,6 +88,7 @@ export class PaymentsService {
         toId,
         amount,
         currency,
+        assetCode,
         description,
         userId: fromId,
         status: PaymentStatus.PENDING,
