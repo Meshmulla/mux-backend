@@ -21,7 +21,6 @@ import {
 import { TransactionsService } from './transactions.service';
 import { TransactionQueryService } from './transaction-query.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
-import { TransactionPollingService } from './transaction-polling.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
 import { BuildTransactionDto } from './dto/build-transaction.dto';
@@ -63,7 +62,6 @@ export class TransactionsController {
     private readonly transactionsService: TransactionsService,
     private readonly queryService: TransactionQueryService,
     private readonly stellarBuildService: StellarTransactionBuildService,
-    private readonly pollingService: TransactionPollingService,
   ) {}
 
   /**
@@ -259,34 +257,5 @@ export class TransactionsController {
     @Body() updateStatusDto: UpdateTransactionStatusDto,
   ) {
     return this.transactionsService.updateStatus(id, updateStatusDto);
-  }
-
-  @ApiOperation({
-    summary: 'Poll pending transactions for confirmation',
-    description:
-      'Check status of submitted transactions from Horizon and update their status. Internal endpoint for cron jobs or background workers.',
-  })
-  @ApiQuery({
-    name: 'limit',
-    required: false,
-    description: 'Maximum number of transactions to poll (default 100)',
-    example: 100,
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Poll completed',
-    schema: {
-      example: {
-        processed: 10,
-        confirmed: 7,
-        failed: 2,
-        errors: [],
-      },
-    },
-  })
-  @Post('internal/poll-pending')
-  pollPendingTransactions(@Query('limit') limit?: string) {
-    const parsedLimit = limit ? Math.min(parseInt(limit, 10), 1000) : 100;
-    return this.pollingService.pollPendingTransactions(parsedLimit);
   }
 }

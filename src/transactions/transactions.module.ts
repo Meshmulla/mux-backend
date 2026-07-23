@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { TransactionsController } from './transactions.controller';
+import { TransactionsInternalController } from './transactions-internal.controller';
 import { TransactionQueryService } from './transaction-query.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
 import { HorizonSubmissionService } from './horizon-submission.service';
@@ -16,7 +17,7 @@ import { TransactionEnvValidatorService } from './transaction-env-validator.serv
 
 @Module({
   imports: [PrismaModule, BalanceIndexerModule, WebhookModule],
-  controllers: [TransactionsController],
+  controllers: [TransactionsController, TransactionsInternalController],
   providers: [
     TransactionsService,
     StellarTransactionBuildService,
