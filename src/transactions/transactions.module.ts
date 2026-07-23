@@ -5,6 +5,7 @@ import { TransactionQueryService } from './transaction-query.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
 import { HorizonSubmissionService } from './horizon-submission.service';
 import { TransactionRetryService } from './transaction-retry.service';
+import { TransactionPollingService } from './transaction-polling.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BalanceIndexerModule } from '../balance-indexer/balance-indexer.module';
 import { WebhookModule } from '../webhooks/webhook.module';
@@ -23,7 +24,8 @@ import { TransactionEnvValidatorService } from './transaction-env-validator.serv
     FeatureFlagService,
     TransactionMetricsService,
     TransactionEnvValidatorService,
+    TransactionPollingService,
   ],
-  exports: [TransactionsService, StellarTransactionBuildService],
+  exports: [TransactionsService, StellarTransactionBuildService, TransactionPollingService],
 })
 export class TransactionsModule {}
