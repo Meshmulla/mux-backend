@@ -8,7 +8,9 @@ describe('EncryptionService', () => {
 
   beforeEach(async () => {
     const mockConfigService = {
-      get: jest.fn(),
+      get: jest
+        .fn()
+        .mockReturnValue('test-encryption-key-32-characters-long!!'),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -38,10 +40,36 @@ describe('EncryptionService', () => {
       );
     });
 
+    it('should throw error if WALLET_ENCRYPTION_KEY contains only whitespace', () => {
+      jest.spyOn(configService, 'get').mockReturnValue('   ');
+
+      expect(() => new EncryptionService(configService)).toThrow(
+        'WALLET_ENCRYPTION_KEY environment variable is required',
+      );
+    });
+
+    it('should throw error if WALLET_ENCRYPTION_KEY is less than 32 characters', () => {
+      jest.spyOn(configService, 'get').mockReturnValue('short-key-123');
+
+      expect(() => new EncryptionService(configService)).toThrow(
+        'WALLET_ENCRYPTION_KEY must be at least 32 characters long',
+      );
+    });
+
+    it('should throw error if WALLET_ENCRYPTION_KEY is the default placeholder value', () => {
+      jest
+        .spyOn(configService, 'get')
+        .mockReturnValue('your-secret-encryption-key-min-32-chars');
+
+      expect(() => new EncryptionService(configService)).toThrow(
+        'WALLET_ENCRYPTION_KEY environment variable cannot use the default placeholder value',
+      );
+    });
+
     it('should initialize successfully with valid encryption key', () => {
       jest
         .spyOn(configService, 'get')
-        .mockReturnValue('test-encryption-key-12345');
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
 
       expect(() => new EncryptionService(configService)).not.toThrow();
     });
@@ -51,7 +79,7 @@ describe('EncryptionService', () => {
     beforeEach(() => {
       jest
         .spyOn(configService, 'get')
-        .mockReturnValue('test-encryption-key-12345');
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
       service = new EncryptionService(configService);
     });
 
@@ -108,7 +136,7 @@ describe('EncryptionService', () => {
     beforeEach(() => {
       jest
         .spyOn(configService, 'get')
-        .mockReturnValue('test-encryption-key-12345');
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
       service = new EncryptionService(configService);
     });
 
@@ -145,7 +173,7 @@ describe('EncryptionService', () => {
     beforeEach(() => {
       jest
         .spyOn(configService, 'get')
-        .mockReturnValue('test-encryption-key-12345');
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
       service = new EncryptionService(configService);
     });
 
@@ -207,7 +235,7 @@ describe('EncryptionService', () => {
     beforeEach(() => {
       jest
         .spyOn(configService, 'get')
-        .mockReturnValue('test-encryption-key-12345');
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
       service = new EncryptionService(configService);
     });
 
@@ -227,8 +255,8 @@ describe('EncryptionService', () => {
 
   describe('key derivation', () => {
     it('should derive same key from same input', () => {
-      const key1 = 'test-encryption-key-12345';
-      const key2 = 'test-encryption-key-12345';
+      const key1 = 'test-encryption-key-12345-long-enough-32-chars';
+      const key2 = 'test-encryption-key-12345-long-enough-32-chars';
 
       jest.spyOn(configService, 'get').mockReturnValue(key1);
       const service1 = new EncryptionService(configService);
@@ -247,8 +275,8 @@ describe('EncryptionService', () => {
     });
 
     it('should derive different keys from different inputs', () => {
-      const key1 = 'test-encryption-key-12345';
-      const key2 = 'different-encryption-key-67890';
+      const key1 = 'test-encryption-key-12345-long-enough-32-chars';
+      const key2 = 'different-encryption-key-32-chars-long!!';
 
       jest.spyOn(configService, 'get').mockReturnValue(key1);
       const service1 = new EncryptionService(configService);
