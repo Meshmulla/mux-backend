@@ -1,14 +1,6 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { PrismaClient } from '../generated/prisma/client';
-import {
-  WebhookEndpoint,
-  EndpointStatus,
-  DeliveryStatus,
-} from './domain/webhook-events';
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CacheService } from '../common/cache/cache.service';
-import { RequestContextService } from '../common/request-context/request-context.service';
 import { WebhookEndpoint, EndpointStatus } from './domain/webhook-events';
 import { WebhookFilterDto } from './dto/webhook-filter.dto';
 import { SafeLogger } from '../common/safe-logger';
@@ -60,7 +52,10 @@ export interface PaginatedDeliveriesResponse {
 export class WebhookService {
   private readonly logger = new SafeLogger(WebhookService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: CacheService,
+  ) {}
 
   async onModuleDestroy() {
     await this.prisma.$disconnect();
@@ -90,40 +85,53 @@ export class WebhookService {
   }
 
   /**
-   * Lists webhook endpoints for a project
+   * Lists webhook endpoints for a project, with optional status/event
+   * filters and pagination.
    */
   async listEndpoints(
     projectId: string,
-    page: number = 1,
-    limit: number = 20,
-  ): Promise<{
-    endpoints: WebhookEndpoint[];
-    total: number;
-  }> {
+    filter: WebhookFilterDto = {},
+  ): Promise<PaginatedEndpointsResponse> {
+    const page = filter.page ?? 1;
+    const limit = filter.limit ?? 20;
     const skip = (page - 1) * limit;
+
+    const where: Record<string, unknown> = { projectId };
+    if (filter.status) {
+      where.status = filter.status;
+    }
+    if (filter.event) {
+      where.events = { has: filter.event };
+    }
 
     const [endpoints, total] = await Promise.all([
       this.prisma.webhookEndpoint.findMany({
-        where: { projectId },
+        where,
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
-      this.prisma.webhookEndpoint.count({
-        where: { projectId },
-      }),
+      this.prisma.webhookEndpoint.count({ where }),
     ]);
 
     return {
       endpoints: endpoints.map((e) => this.mapPrismaEndpointToDomain(e)),
       total,
+      page,
+      limit,
     };
   }
 
   /**
-   * Gets a webhook endpoint by ID
+   * Gets a webhook endpoint by ID, serving from cache when available.
    */
   async getEndpoint(endpointId: string): Promise<WebhookEndpoint> {
+    const cacheKey = `${WEBHOOK_ENDPOINT_CACHE_PREFIX}${endpointId}`;
+    const cached = this.cache.get<WebhookEndpoint>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const endpoint = await this.prisma.webhookEndpoint.findUnique({
       where: { id: endpointId },
     });
@@ -132,7 +140,10 @@ export class WebhookService {
       throw new NotFoundException(`Webhook endpoint ${endpointId} not found`);
     }
 
-    return this.mapPrismaEndpointToDomain(endpoint);
+    const mapped = this.mapPrismaEndpointToDomain(endpoint);
+    this.cache.set(cacheKey, mapped, WEBHOOK_CACHE_TTL);
+
+    return mapped;
   }
 
   /**
@@ -147,6 +158,8 @@ export class WebhookService {
       data: updates,
     });
 
+    this.invalidateEndpointCache(endpointId);
+
     return this.mapPrismaEndpointToDomain(endpoint);
   }
 
@@ -157,6 +170,8 @@ export class WebhookService {
     await this.prisma.webhookEndpoint.delete({
       where: { id: endpointId },
     });
+
+    this.invalidateEndpointCache(endpointId);
   }
 
   /**
@@ -170,36 +185,19 @@ export class WebhookService {
       data: { secret: newSecret },
     });
 
+    this.invalidateEndpointCache(endpointId);
+
     return { secret: newSecret };
   }
 
   /**
-   * Gets delivery attempts for an endpoint, optionally filtered by status
-   */
-  async getDeliveries(
-    endpointId: string,
-    limit: number = 50,
-    status?: DeliveryStatus,
-  ) {
-    // Ensure the endpoint exists so callers get a clear 404 instead of an
-    // empty list when they pass an unknown/mistyped id.
-    await this.getEndpoint(endpointId);
-
-    return await this.prisma.webhookDelivery.findMany({
-      where: {
-        endpointId,
-        ...(status ? { status } : {}),
-      },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
    * Gets delivery attempts for an endpoint with pagination
    */
   async getDeliveries(
     endpointId: string,
     page: number = 1,
-    limit: number = 50,
-  ) {
+    limit: number = 20,
+  ): Promise<PaginatedDeliveriesResponse> {
     const skip = (page - 1) * limit;
 
     const [deliveries, total] = await Promise.all([
@@ -217,6 +215,8 @@ export class WebhookService {
     return {
       deliveries,
       total,
+      page,
+      limit,
     };
   }
 
@@ -225,6 +225,10 @@ export class WebhookService {
    */
   private generateSecret(): string {
     return `whsec_${crypto.randomBytes(32).toString('base64url')}`;
+  }
+
+  private invalidateEndpointCache(endpointId: string): void {
+    this.cache.delete(`${WEBHOOK_ENDPOINT_CACHE_PREFIX}${endpointId}`);
   }
 
   /**

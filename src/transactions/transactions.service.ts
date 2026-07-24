@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  Optional,
 } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,14 +25,16 @@ import { TransactionMetricsService } from './transaction-metrics.service';
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
+  private readonly TRANSACTION_CACHE_TTL = 300000; // 5 minutes
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly balanceIndexer: BalanceIndexerService,
-    @Optional()
-    private readonly webhookEventEmitter: WebhookEventEmitterService,
     private readonly cache: CacheService,
-    private readonly metrics: TransactionMetricsService,
+    @Optional()
+    private readonly webhookEventEmitter?: WebhookEventEmitterService,
+    @Optional()
+    private readonly metrics?: TransactionMetricsService,
   ) {}
 
   /**
@@ -60,7 +63,7 @@ export class TransactionsService {
         this.logger.log(
           `Idempotency hit for key ${idempotencyKey}, returning existing transaction ${existing.id}`,
         );
-        this.metrics.incrementIdempotencyHit();
+        this.metrics?.incrementIdempotencyHit();
         return this.mapPrismaToEntity(existing);
       }
     }
@@ -121,10 +124,10 @@ export class TransactionsService {
       },
     });
 
-    this.metrics.incrementTransactionCreated(asset.type);
+    this.metrics?.incrementTransactionCreated(asset.type);
 
-    this.webhookEventEmitter
-      .emitTransactionCreated({
+    this.emitDomainEvent('transaction.created', () =>
+      this.webhookEventEmitter?.emitTransactionCreated({
         transactionId: created.id,
         walletId: created.senderWalletId,
         amount: created.amount,
@@ -198,10 +201,10 @@ export class TransactionsService {
     const cachedTransaction = this.cache.get<TransactionEntity>(cacheKey);
     if (cachedTransaction) {
       this.logger.debug(`Cache hit for transaction ${id}`);
-      this.metrics.incrementCacheHit();
+      this.metrics?.incrementCacheHit();
       return cachedTransaction;
     }
-    this.metrics.incrementCacheMiss();
+    this.metrics?.incrementCacheMiss();
 
     const transaction = await this.prisma.transaction.findUnique({
       where: { id },
@@ -284,9 +287,9 @@ export class TransactionsService {
     });
 
     // Invalidate read cache so next findOne fetches fresh data
-    this.queryService.invalidateCache(id);
+    this.cache.delete(`transaction:${id}`);
 
-    this.metrics.incrementStatusUpdated(existing.status, updateDto.status);
+    this.metrics?.incrementStatusUpdated(existing.status, updateDto.status);
 
     this.logger.log(
       `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,
@@ -381,6 +384,21 @@ export class TransactionsService {
         }),
       );
     }
+  }
+
+  /**
+   * Fire-and-forget domain event emission: failures are logged as warnings
+   * and never surface to callers.
+   */
+  private emitDomainEvent(
+    eventName: string,
+    emit: () => Promise<void> | undefined,
+  ): void {
+    void Promise.resolve(emit()).catch((error: unknown) =>
+      this.logger.warn(
+        `Unable to emit ${eventName} domain event: ${String(error)}`,
+      ),
+    );
   }
 
   private mapPrismaToEntity(prismaTransaction: any): TransactionEntity {
