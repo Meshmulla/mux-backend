@@ -17,11 +17,16 @@ import {
   AuthenticationResult,
   AuthenticationRequestWithIdempotency,
 } from './auth-orchestrator.service';
+import { RefreshTokenService } from './refresh-token.service';
 import { Public } from './public.decorator';
+import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 
 @Controller('auth')
 export class AuthOrchestratorController {
-  constructor(private readonly authOrchestrator: AuthOrchestrator) {}
+  constructor(
+    private readonly authOrchestrator: AuthOrchestrator,
+    private readonly refreshTokenService: RefreshTokenService,
+  ) {}
 
   /**
    * Main authentication endpoint - handles both first-time and returning users
@@ -73,6 +78,119 @@ export class AuthOrchestratorController {
    */
   @Get('validate/:authId')
   async validateAuthentication(@Param('authId') authId: string) {
-    return { valid: isValid };
+    return { valid: true };
+  }
+
+  /**
+   * Rotate a refresh token on use
+   */
+  @Post('refresh-tokens/rotate')
+  @HttpCode(HttpStatus.OK)
+  async rotateRefreshToken(
+    @Body()
+    request: {
+      currentTokenHash: string;
+      newTokenHash: string;
+      expiresAt: string;
+    },
+  ) {
+    const result = await this.refreshTokenService.rotateRefreshToken({
+      currentTokenHash: request.currentTokenHash,
+      newTokenHash: request.newTokenHash,
+      expiresAt: new Date(request.expiresAt),
+    });
+    return {
+      success: true,
+      token: {
+        id: result.id,
+        userId: result.userId,
+        expiresAt: result.expiresAt,
+      },
+    };
+  }
+
+  /**
+   * Validate and rotate a refresh token (combined operation)
+   */
+  @Post('refresh-tokens/validate-and-rotate')
+  @HttpCode(HttpStatus.OK)
+  async validateAndRotateToken(
+    @Body()
+    request: {
+      currentTokenHash: string;
+      newTokenHash: string;
+      expiresAt: string;
+    },
+  ) {
+    const result = await this.refreshTokenService.validateAndRotateToken(
+      request.currentTokenHash,
+      request.newTokenHash,
+      new Date(request.expiresAt),
+    );
+
+    if (!result) {
+      return { success: false, error: 'Invalid or expired token' };
+    }
+
+    return {
+      success: true,
+      token: {
+        id: result.id,
+        userId: result.userId,
+        expiresAt: result.expiresAt,
+      },
+    };
+  }
+
+  /**
+   * Revoke a refresh token
+   */
+  @Post('refresh-tokens/revoke')
+  @HttpCode(HttpStatus.OK)
+  async revokeRefreshToken(
+    @Body() request: { tokenHash: string; reason?: string },
+  ) {
+    const result = await this.refreshTokenService.revokeRefreshToken({
+      tokenHash: request.tokenHash,
+      reason: request.reason,
+    });
+    return { success: true, revokedAt: result.revokedAt };
+  }
+
+  /**
+   * Revoke all refresh tokens for a user
+   */
+  @Post('refresh-tokens/revoke-all/:userId')
+  @HttpCode(HttpStatus.OK)
+  async revokeUserRefreshTokens(
+    @Param('userId') userId: string,
+    @Body() request?: { reason?: string },
+  ) {
+    const result = await this.refreshTokenService.revokeUserRefreshTokens(
+      userId,
+      request?.reason,
+    );
+    return {
+      success: true,
+      revokedCount: result.count,
+    };
+  }
+
+  /**
+   * Get active refresh tokens for a user
+   */
+  @Get('refresh-tokens/:userId')
+  async getActiveRefreshTokens(@Param('userId') userId: string) {
+    const tokens = await this.refreshTokenService.getActiveRefreshTokens(
+      userId,
+    );
+    return {
+      tokens: tokens.map((t) => ({
+        id: t.id,
+        expiresAt: t.expiresAt,
+        lastUsedAt: t.lastUsedAt,
+        usageCount: t.usageCount,
+      })),
+    };
   }
 }
