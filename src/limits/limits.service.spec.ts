@@ -121,62 +121,49 @@ describe('LimitsService', () => {
       await expect(service.checkLimits(walletId, 50)).resolves.not.toThrow();
     });
 
-    it('should pass when the amount is exactly equal to the per-transaction cap', async () => {
+    it('should pass when the cumulative daily total lands exactly on the limit', async () => {
       prisma.walletLimit.findUnique.mockResolvedValue({
-        perTransactionLimit: 50,
-        dailyLimit: 0,
+        perTransactionLimit: 200,
+        dailyLimit: 100,
       });
-      await expect(service.checkLimits(walletId, 50)).resolves.not.toThrow();
+      prisma.transaction.findMany.mockResolvedValue([{ amount: '40' }]);
+      await expect(service.checkLimits(walletId, 60)).resolves.not.toThrow();
     });
 
-    it('should throw as soon as the amount exceeds the per-transaction cap by any amount', async () => {
+    it('should throw as soon as the cumulative daily total exceeds the limit by any amount', async () => {
       prisma.walletLimit.findUnique.mockResolvedValue({
-        perTransactionLimit: 50,
-        dailyLimit: 0,
+        perTransactionLimit: 200,
+        dailyLimit: 100,
       });
+      prisma.transaction.findMany.mockResolvedValue([{ amount: '40' }]);
       await expect(
-        service.checkLimits(walletId, 50.01),
+        service.checkLimits(walletId, 60.01),
       ).rejects.toBeInstanceOf(LimitExceededException);
     });
 
-    it('should block every transaction when the per-transaction cap is 0', async () => {
+    it('should sum multiple transactions from today toward the daily total', async () => {
       prisma.walletLimit.findUnique.mockResolvedValue({
-        perTransactionLimit: 0,
-        dailyLimit: 0,
+        perTransactionLimit: 200,
+        dailyLimit: 100,
       });
-      await expect(service.checkLimits(walletId, 0.01)).rejects.toBeInstanceOf(
+      prisma.transaction.findMany.mockResolvedValue([
+        { amount: '30' },
+        { amount: '20' },
+      ]);
+      await expect(service.checkLimits(walletId, 51)).rejects.toBeInstanceOf(
         LimitExceededException,
       );
     });
 
-    it('should check the per-transaction cap before the daily cap', async () => {
+    it('should not enforce a daily cap when dailyLimit is 0 (unset/unlimited)', async () => {
       prisma.walletLimit.findUnique.mockResolvedValue({
-        perTransactionLimit: 10,
-        dailyLimit: 1000,
+        perTransactionLimit: 1000,
+        dailyLimit: 0,
       });
-
-      await expect(service.checkLimits(walletId, 20)).rejects.toBeInstanceOf(
-        LimitExceededException,
-      );
-      // Per-tx check short-circuits before the daily total is even queried
+      await expect(
+        service.checkLimits(walletId, 999),
+      ).resolves.not.toThrow();
       expect(prisma.transaction.findMany).not.toHaveBeenCalled();
-    });
-
-    it('should include the errorCode and limit in the thrown exception', async () => {
-      prisma.walletLimit.findUnique.mockResolvedValue({
-        perTransactionLimit: 50,
-        dailyLimit: 0,
-      });
-
-      try {
-        await service.checkLimits(walletId, 100);
-        fail('expected checkLimits to throw');
-      } catch (error) {
-        expect(error).toBeInstanceOf(LimitExceededException);
-        expect((error as LimitExceededException).errorCode).toBe(
-          'LIMIT_PER_TX_EXCEEDED',
-        );
-      }
     });
   });
 

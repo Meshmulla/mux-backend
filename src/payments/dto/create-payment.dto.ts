@@ -45,6 +45,15 @@ export class CreatePaymentDto {
   currency: string;
 
   @ApiProperty({
+    example: 'USD',
+    description: 'Asset code (ISO 4217 or custom identifier) - optional',
+    required: false,
+  })
+  @IsString({ message: 'assetCode must be a string' })
+  @IsOptional()
+  assetCode?: string;
+
+  @ApiProperty({
     example: 'Payment for services',
     description: 'Optional payment description',
     required: false,
@@ -72,4 +81,15 @@ export class CreatePaymentDto {
   @IsNotEmpty({ message: 'toId is required' })
   @Min(1, { message: 'toId must be greater than 0' })
   toId: number;
+
+  /** Client-supplied idempotency key. Replaying the same key returns the original payment instead of creating a duplicate. */
+  @ApiProperty({
+    example: 'a1b2c3d4-e5f6-4789-a012-3456789abcde',
+    description:
+      'Optional client-supplied idempotency key. Reusing the same key returns the original payment instead of creating a duplicate.',
+    required: false,
+  })
+  @IsString({ message: 'idempotencyKey must be a string' })
+  @IsOptional()
+  idempotencyKey?: string;
 }

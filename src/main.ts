@@ -14,6 +14,10 @@ async function bootstrap() {
   // Attach request logging middleware early in the pipeline
   app.use(requestLogger as any);
 
+  // All routes are served under /v1. See docs/API-VERSIONING.md for the
+  // versioning strategy and how future breaking changes will be introduced.
+  app.setGlobalPrefix('v1');
+
   // Validate incoming requests for DTOs globally
   app.useGlobalPipes(
     new ValidationPipe({

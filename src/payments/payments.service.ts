@@ -55,8 +55,23 @@ export class PaymentsService {
       toId,
       amount,
       currency,
+      assetCode,
       description,
+      idempotencyKey,
     } = createPaymentDto;
+
+    if (idempotencyKey) {
+      const existing = await this.prisma.payment.findUnique({
+        where: { idempotencyKey },
+      });
+      if (existing) {
+        this.logger.log(
+          `Idempotency hit for key ${idempotencyKey}, returning existing payment ${existing.id} requestId=${requestId}`,
+        );
+        this.metrics.incrementPaymentIdempotencyHit();
+        return existing;
+      }
+    }
 
     const senderWallet = await retryWithBackoff(
       () => this.walletsService.findWalletById(walletId),
@@ -89,9 +104,11 @@ export class PaymentsService {
         toId,
         amount,
         currency,
+        assetCode,
         description,
         userId: fromId,
         status: PaymentStatus.PENDING,
+        idempotencyKey: idempotencyKey ?? null,
       },
     });
 
