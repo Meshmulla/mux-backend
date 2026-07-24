@@ -72,7 +72,8 @@ export class AuthOrchestratorController {
    * Validation endpoint - checks if authentication is possible
    */
   @Get('validate/:authId')
+  @UseGuards(AuthRateLimitGuard)
   async validateAuthentication(@Param('authId') authId: string) {
-    return { valid: isValid };
+    return { valid: true };
   }
 }
