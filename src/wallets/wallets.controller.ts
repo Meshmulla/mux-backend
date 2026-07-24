@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Body,
   Patch,
   Param,
@@ -25,6 +26,7 @@ import {
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
+import { SetNetworkPreferenceDto } from './dto/set-network-preference.dto';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator';
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
@@ -158,6 +160,31 @@ export class WalletsController {
   @Get('user/:userId')
   async findByUserId(@Param('userId') userId: string) {
     return this.walletsService.findWalletsByUserId(userId);
+  }
+
+  @ApiOperation({
+    summary: "Get a user's default network preference",
+    description:
+      'Retrieve the persisted mainnet/testnet preference for a user. Requires API key authentication.',
+  })
+  @ApiParam({ name: 'userId', description: 'User ID (UUID)' })
+  @Get('users/:userId/network-preference')
+  async getNetworkPreference(@Param('userId') userId: string) {
+    return this.walletsService.getNetworkPreference(userId);
+  }
+
+  @ApiOperation({
+    summary: "Set a user's default network preference",
+    description:
+      'Persist the mainnet/testnet preference for a user, used by wallet operations that do not explicitly specify a network. Requires API key authentication.',
+  })
+  @ApiParam({ name: 'userId', description: 'User ID (UUID)' })
+  @Put('users/:userId/network-preference')
+  async setNetworkPreference(
+    @Param('userId') userId: string,
+    @Body() dto: SetNetworkPreferenceDto,
+  ) {
+    return this.walletsService.setNetworkPreference(userId, dto.network);
   }
 
   @Get(':id')
