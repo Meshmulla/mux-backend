@@ -100,6 +100,17 @@ export class PaymentsController {
       error: 'Unauthorized',
     },
   })
+  @ApiResponse({
+    status: 422,
+    description:
+      "Daily spending limit exceeded for the sender wallet - payment rejected before submission",
+    example: {
+      statusCode: 422,
+      message: 'Daily limit exceeded. Limit: 5000, Used: 4900',
+      errorCode: 'LIMIT_DAILY_EXCEEDED',
+      error: 'Unprocessable Entity',
+    },
+  })
   @Post()
   @SensitiveEndpoint()
   create(@Body() createPaymentDto: CreatePaymentDto) {
