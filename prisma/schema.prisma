@@ -45,8 +45,13 @@ model Payment {
   userId Int // Legacy field
   user   LegacyUser @relation("UserPayments", fields: [userId], references: [id])
 
+  /// Client-supplied idempotency key to prevent duplicate submissions
+  idempotencyKey String? @unique
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([idempotencyKey])
 }
 
 model UserLimit {
