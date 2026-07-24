@@ -21,4 +21,13 @@ export class BalanceFilterDto {
   @IsString({ message: 'assetCode must be a string' })
   @IsOptional()
   assetCode?: string;
+
+  @ApiProperty({
+    example: 'GBUQWP3BOUZX34ZONKXRBTLNNDOWR5HLCVPL2B4XNCLJTLMUMLTSOGBM',
+    description: 'Filter by asset issuer',
+    required: false,
+  })
+  @IsString({ message: 'assetIssuer must be a string' })
+  @IsOptional()
+  assetIssuer?: string;
 }
