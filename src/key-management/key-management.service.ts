@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   Injectable,
-  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -12,6 +11,7 @@ import {
   EncryptionService,
   DecryptionError,
 } from '../encryption/encryption.service';
+import { SafeLogger } from '../common/safe-logger';
 import { PrismaService } from '../prisma/prisma.service';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 import { KeyManagementMetricsService } from './key-management-metrics.service';
@@ -92,7 +92,7 @@ export interface AuditLogResult {
  */
 @Injectable()
 export class KeyManagementService {
-  private readonly logger = new Logger(KeyManagementService.name);
+  private readonly logger = new SafeLogger(KeyManagementService.name);
   private readonly providers: Map<KeyType, IKeyProvider>;
   private readonly auditLog: KeyOperationAudit[] = [];
 

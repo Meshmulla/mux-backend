@@ -1,8 +1,8 @@
 import {
   ConflictException,
   Injectable,
-  Logger,
   NotFoundException,
+  OnModuleDestroy,
   Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -18,11 +18,13 @@ import {
   WalletNetwork,
   WalletStatus,
   WalletStatusResponse,
+  canTransitionWalletStatus,
 } from './domain/wallet.model';
 import {
   DecryptionError,
   EncryptionService,
 } from '../encryption/encryption.service';
+import { SafeLogger } from '../common/safe-logger';
 import { KeyDecryptionException } from '../key-management/exceptions/key-decryption.exception';
 import { KeyManagementService } from '../key-management/key-management.service';
 import { KeyType } from '../key-management/domain/key-types';
@@ -30,6 +32,9 @@ import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.se
 import { WalletApiMetricsService } from './wallet-api-metrics.service';
 import { WalletRetryService } from './wallet-retry.service';
 import * as crypto from 'crypto';
+
+/** Wallet shape safe to return from the API (no encrypted secret material). */
+export type PublicWallet = Omit<Wallet, 'encryptedSecret'>;
 
 export interface CreateWalletRequest {
   userId: string;
@@ -40,6 +45,8 @@ export interface WalletListFilters {
   userId?: string;
   network?: WalletNetwork;
   status?: WalletStatus;
+  /** Include archived wallets in the results (excluded by default). */
+  includeArchived?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -63,8 +70,8 @@ export interface SigningResult {
 }
 
 @Injectable()
-export class WalletsService {
-  private readonly logger = new Logger(WalletsService.name);
+export class WalletsService implements OnModuleDestroy {
+  private readonly logger = new SafeLogger(WalletsService.name);
   private prisma: PrismaClient;
 
   constructor(
@@ -76,6 +83,10 @@ export class WalletsService {
     @Optional() private walletApiMetrics?: WalletApiMetricsService,
   ) {
     this.prisma = new PrismaClient({} as any);
+  }
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
   }
 
   async onModuleInit() {
@@ -352,6 +363,8 @@ export class WalletsService {
     }
     if (filters?.status) {
       where.status = filters.status;
+    } else if (!filters?.includeArchived) {
+      where.status = { not: WalletStatus.ARCHIVED };
     }
 
     const limit = filters?.limit ?? 20;
@@ -368,7 +381,9 @@ export class WalletsService {
     ]);
 
     return {
-      data: wallets.map((wallet) => this.mapPrismaWalletToDomain(wallet)),
+      data: wallets.map((wallet) =>
+        this.toPublicWallet(this.mapPrismaWalletToDomain(wallet)),
+      ),
       total,
       limit,
       offset,
@@ -376,10 +391,28 @@ export class WalletsService {
     };
   }
 
-  create(createWalletDto: any) { return this.createWallet(createWalletDto); }
-  findOne(id: string) { return this.findWalletById(id); }
-  update(id: string, updateWalletDto: any) { return this.updateWalletStatus(id, updateWalletDto.status); }
-  remove(id: string) { return this.prisma.wallet.delete({ where: { id } }); }
+  create(createWalletDto: any) {
+    return this.createWallet(createWalletDto);
+  }
+
+  async findOne(id: string) {
+    const wallet = await this.findWalletById(id);
+    return this.toPublicWallet(wallet);
+  }
+
+  async update(id: string, updateWalletDto: any) {
+    const wallet = await this.updateWalletStatus(id, updateWalletDto.status);
+    return this.toPublicWallet(wallet);
+  }
+
+  remove(id: string) {
+    return this.prisma.wallet.delete({ where: { id } });
+  }
+
+  async archive(id: string, reason?: string) {
+    const wallet = await this.archiveWallet(id, reason);
+    return this.toPublicWallet(wallet);
+  }
 
   private signWithPrivateKey(privateKey: string, data: string): string {
     const key = crypto.createPrivateKey({

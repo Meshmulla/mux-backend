@@ -154,6 +154,9 @@ enum WalletStatus {
 
   /// Wallet is suspected compromised; permanently blocked from use.
   COMPROMISED
+
+  /// Wallet is archived; hidden from default listings, no further use.
+  ARCHIVED
 }
 
 /// Persistence-ready internal representation of an "invisible wallet".

@@ -2,14 +2,12 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  OnModuleInit,
-} from '@nestjs/common';
   OnModuleDestroy,
+  OnModuleInit,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
-import { StellarHorizonService } from './stellar-horizon.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { BalanceRepository } from './balance.repository';
 import { BalanceCacheService } from './balance-cache.service';
@@ -64,7 +62,7 @@ export interface StaleBalanceResult {
  * - `BALANCE_STALE_THRESHOLD_MS` — Staleness window in ms (default: 300 000)
  */
 @Injectable()
-export class BalanceIndexerService implements OnModuleInit {
+export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(BalanceIndexerService.name);
   private readonly staleThresholdMs: number;
   private readonly syncIntervalMs: number;

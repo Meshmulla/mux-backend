@@ -11,6 +11,7 @@ import { CacheService } from '../common/cache/cache.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
 import { WebhookEndpoint, EndpointStatus } from './domain/webhook-events';
 import { WebhookFilterDto } from './dto/webhook-filter.dto';
+import { SafeLogger } from '../common/safe-logger';
 import * as crypto from 'crypto';
 
 export const WEBHOOK_CACHE_TTL = 60_000;
@@ -57,9 +58,13 @@ export interface PaginatedDeliveriesResponse {
  */
 @Injectable()
 export class WebhookService {
-  private readonly logger = new Logger(WebhookService.name);
+  private readonly logger = new SafeLogger(WebhookService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
+  }
 
   /**
    * Creates a new webhook endpoint

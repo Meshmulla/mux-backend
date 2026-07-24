@@ -1,8 +1,8 @@
 import {
   Injectable,
-  Logger,
   ConflictException,
   NotFoundException,
+  OnModuleDestroy,
   Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -18,6 +18,7 @@ import { EncryptionService } from '../encryption/encryption.service';
 import { KeyManagementService } from '../key-management/key-management.service';
 import { KeyType } from '../key-management/domain/key-types';
 import { IdempotentUserService } from '../users/idempotent-user.service';
+import { SafeLogger } from '../common/safe-logger';
 import { CacheService } from '../common/cache/cache.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
@@ -179,8 +180,8 @@ interface WalletIdempotencyCacheEntry {
  * - Replay: returns original `isNewWallet`; `privateKey` is always cleared.
  */
 @Injectable()
-export class WalletCreationOrchestrator {
-  private readonly logger = new Logger(WalletCreationOrchestrator.name);
+export class WalletCreationOrchestrator implements OnModuleDestroy {
+  private readonly logger = new SafeLogger(WalletCreationOrchestrator.name);
   private prisma: PrismaClient;
 
   /** Idempotency records for wallet operations are retained for 24 hours. */
@@ -199,6 +200,10 @@ export class WalletCreationOrchestrator {
     @Optional() private orchestratorMetrics?: WalletOrchestratorMetricsService,
   ) {
     this.prisma = prismaClient ?? new PrismaClient({} as any);
+  }
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
   }
 
   async onModuleInit() {

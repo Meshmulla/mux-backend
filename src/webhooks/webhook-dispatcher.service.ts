@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookDispatchService } from './webhook-dispatch.service';
 import { WebhookRetryService } from './webhook-retry.service';
 import { MetricsService } from '../common/metrics/metrics.service';
+import { SafeLogger } from '../common/safe-logger';
 import {
   WebhookEvent,
   DeliveryStatus,
@@ -24,7 +25,7 @@ export interface DispatchEventRequest {
  */
 @Injectable()
 export class WebhookDispatcherService {
-  private readonly logger = new Logger(WebhookDispatcherService.name);
+  private readonly logger = new SafeLogger(WebhookDispatcherService.name);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -32,6 +33,10 @@ export class WebhookDispatcherService {
     private readonly retryService: WebhookRetryService,
     private readonly metrics: MetricsService,
   ) {}
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
+  }
 
   /**
    * Dispatches an event to all registered webhooks

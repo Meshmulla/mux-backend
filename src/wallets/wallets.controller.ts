@@ -32,7 +32,7 @@ import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator'
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
 import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
-import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
+import { RateLimitGuard, SensitiveEndpoint } from '../rate-limit/rate-limit.guard';
 import {
   FeatureFlag,
   FeatureFlagGuard,
@@ -105,6 +105,12 @@ export class WalletsController {
     description: 'Filter by wallet status',
   })
   @ApiQuery({
+    name: 'includeArchived',
+    required: false,
+    description: 'Include archived wallets in the results (excluded by default)',
+    example: false,
+  })
+  @ApiQuery({
     name: 'limit',
     required: false,
     description: 'Max records to return (1-100, default 20)',
@@ -121,6 +127,7 @@ export class WalletsController {
     @Query('userId') userId?: string,
     @Query('network') network?: WalletNetwork,
     @Query('status') status?: WalletStatus,
+    @Query('includeArchived') includeArchived?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
@@ -128,9 +135,16 @@ export class WalletsController {
       userId,
       network,
       status,
+      includeArchived: includeArchived === 'true',
       limit: parsePaginationParam(limit, 'limit'),
       offset: parsePaginationParam(offset, 'offset'),
     });
+  }
+
+  @Patch(':id/archive')
+  @SensitiveEndpoint()
+  archive(@Param('id') id: string, @Body('reason') reason?: string) {
+    return this.walletsService.archive(id, reason);
   }
 
   @RequireApiKey()

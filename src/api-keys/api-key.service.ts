@@ -1,7 +1,12 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleDestroy,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
 import * as crypto from 'crypto';
+import { SafeLogger } from '../common/safe-logger';
 import {
   ApiKey,
   ApiKeyStatus,
@@ -39,8 +44,8 @@ export interface ListApiKeysRequest {
  * Service for managing API keys
  */
 @Injectable()
-export class ApiKeyService {
-  private readonly logger = new Logger(ApiKeyService.name);
+export class ApiKeyService implements OnModuleDestroy {
+  private readonly logger = new SafeLogger(ApiKeyService.name);
   private prisma: PrismaClient;
   private readonly gracePeriodSeconds: number;
 
@@ -48,6 +53,10 @@ export class ApiKeyService {
     this.prisma = new PrismaClient({} as any);
     this.gracePeriodSeconds =
       this.configService.get<number>('API_KEY_ROTATION_GRACE_SECONDS') ?? 3600;
+  }
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
   }
 
   /**
