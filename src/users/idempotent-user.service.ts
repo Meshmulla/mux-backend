@@ -1,4 +1,9 @@
-import { Injectable, Logger, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ConflictException,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { PrismaClient } from '../generated/prisma/client';
 
 export interface FindOrCreateUserRequest {
@@ -26,7 +31,7 @@ export interface FindOrCreateUserResult {
 }
 
 @Injectable()
-export class IdempotentUserService {
+export class IdempotentUserService implements OnModuleDestroy {
   private readonly logger = new Logger(IdempotentUserService.name);
   private prisma: PrismaClient;
 
@@ -36,6 +41,10 @@ export class IdempotentUserService {
 
   async onModuleInit() {
     this.logger.log('Idempotent User Service initialized');
+  }
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
   }
 
   /**

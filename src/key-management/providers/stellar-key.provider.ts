@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { IKeyProvider } from '../interfaces/key-provider.interface';
 import {
   GeneratedKeyPair,
@@ -6,6 +6,7 @@ import {
   KeyType,
 } from '../domain/key-types';
 import { EncryptionService } from '../../encryption/encryption.service';
+import { SafeLogger } from '../../common/safe-logger';
 import * as crypto from 'crypto';
 
 /**
@@ -16,7 +17,7 @@ import * as crypto from 'crypto';
  */
 @Injectable()
 export class StellarKeyProvider implements IKeyProvider {
-  private readonly logger = new Logger(StellarKeyProvider.name);
+  private readonly logger = new SafeLogger(StellarKeyProvider.name);
 
   constructor(private readonly encryptionService: EncryptionService) {}
 

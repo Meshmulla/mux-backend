@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
+import { SafeLogger } from '../common/safe-logger';
 
 export interface EncryptionResult {
   encryptedData: string;
@@ -14,7 +15,7 @@ export interface DecryptionError extends Error {
 
 @Injectable()
 export class EncryptionService {
-  private readonly logger = new Logger(EncryptionService.name);
+  private readonly logger = new SafeLogger(EncryptionService.name);
   private readonly algorithm = 'aes-256-gcm';
   private readonly keyLength = 32; // 256 bits
   private readonly ivLength = 16; // 128 bits

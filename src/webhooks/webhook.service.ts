@@ -1,6 +1,11 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { PrismaClient } from '../generated/prisma/client';
 import { WebhookEndpoint, EndpointStatus } from './domain/webhook-events';
+import { SafeLogger } from '../common/safe-logger';
 import * as crypto from 'crypto';
 
 export interface CreateWebhookEndpointRequest {
@@ -21,12 +26,16 @@ export interface UpdateWebhookEndpointRequest {
  * Webhook Management Service
  */
 @Injectable()
-export class WebhookService {
-  private readonly logger = new Logger(WebhookService.name);
+export class WebhookService implements OnModuleDestroy {
+  private readonly logger = new SafeLogger(WebhookService.name);
   private prisma: PrismaClient;
 
   constructor() {
     this.prisma = new PrismaClient({} as any);
+  }
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
   }
 
   /**

@@ -1,5 +1,6 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SafeLogger } from '../common/safe-logger';
 import * as crypto from 'crypto';
 
 export interface ApiKeyInfo {
@@ -11,7 +12,7 @@ export interface ApiKeyInfo {
 
 @Injectable()
 export class ApiKeyService {
-  private readonly logger = new Logger(ApiKeyService.name);
+  private readonly logger = new SafeLogger(ApiKeyService.name);
 
   constructor(private readonly prisma: PrismaService) {}
 

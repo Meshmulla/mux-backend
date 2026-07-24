@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { PrismaClient } from '../generated/prisma/client';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
@@ -34,7 +39,7 @@ export interface SyncBalancesResult {
  * - Handle missed updates and recovery
  */
 @Injectable()
-export class BalanceIndexerService {
+export class BalanceIndexerService implements OnModuleDestroy {
   private readonly logger = new Logger(BalanceIndexerService.name);
   private prisma: PrismaClient;
   private readonly staleThresholdMs: number;
@@ -50,6 +55,10 @@ export class BalanceIndexerService {
       'BALANCE_STALE_THRESHOLD_MS',
       5 * 60 * 1000,
     );
+  }
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
   }
 
   /**

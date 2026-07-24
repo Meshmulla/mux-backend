@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '../generated/prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { WebhookSignerService } from './webhook-signer.service';
+import { SafeLogger } from '../common/safe-logger';
 import {
   WebhookEvent,
   WebhookEventType,
@@ -26,8 +27,8 @@ export interface DispatchEventRequest {
  * - Disable failing endpoints automatically
  */
 @Injectable()
-export class WebhookDispatcherService {
-  private readonly logger = new Logger(WebhookDispatcherService.name);
+export class WebhookDispatcherService implements OnModuleDestroy {
+  private readonly logger = new SafeLogger(WebhookDispatcherService.name);
   private prisma: PrismaClient;
 
   private readonly maxRetries: number;
@@ -54,6 +55,10 @@ export class WebhookDispatcherService {
       'WEBHOOK_MAX_CONSECUTIVE_FAILURES',
       10,
     );
+  }
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
   }
 
   /**

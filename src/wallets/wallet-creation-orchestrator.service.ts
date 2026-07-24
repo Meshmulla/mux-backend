@@ -1,14 +1,15 @@
 import {
   Injectable,
-  Logger,
   ConflictException,
   NotFoundException,
+  OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
+import { SafeLogger } from '../common/safe-logger';
 import * as crypto from 'crypto';
 
 export interface User {
@@ -52,8 +53,8 @@ export interface IdempotencyRecord {
 }
 
 @Injectable()
-export class WalletCreationOrchestrator {
-  private readonly logger = new Logger(WalletCreationOrchestrator.name);
+export class WalletCreationOrchestrator implements OnModuleDestroy {
+  private readonly logger = new SafeLogger(WalletCreationOrchestrator.name);
   private prisma: PrismaClient;
 
   constructor(
@@ -62,6 +63,10 @@ export class WalletCreationOrchestrator {
     private idempotentUserService: IdempotentUserService,
   ) {
     this.prisma = new PrismaClient({} as any);
+  }
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
   }
 
   async onModuleInit() {

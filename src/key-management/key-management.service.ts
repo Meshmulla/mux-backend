@@ -1,8 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IKeyProvider } from './interfaces/key-provider.interface';
 import { StellarKeyProvider } from './providers/stellar-key.provider';
 import { EncryptionService } from '../encryption/encryption.service';
+import { SafeLogger } from '../common/safe-logger';
 import {
   GeneratedKeyPair,
   SignatureResult,
@@ -41,7 +42,7 @@ export interface SignRequest {
  */
 @Injectable()
 export class KeyManagementService {
-  private readonly logger = new Logger(KeyManagementService.name);
+  private readonly logger = new SafeLogger(KeyManagementService.name);
   private readonly providers: Map<KeyType, IKeyProvider>;
   private readonly auditLog: KeyOperationAudit[] = [];
 

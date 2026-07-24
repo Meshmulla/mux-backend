@@ -1,17 +1,26 @@
 import {
   Injectable,
-  Logger,
   NotFoundException,
   ConflictException,
+  OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
-import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
+import {
+  WalletNetwork,
+  WalletStatus,
+  Wallet,
+  canTransitionWalletStatus,
+} from './domain/wallet.model';
 import {
   EncryptionService,
   DecryptionError,
 } from '../encryption/encryption.service';
+import { SafeLogger } from '../common/safe-logger';
 import * as crypto from 'crypto';
+
+/** Wallet shape safe to return from the API (no encrypted secret material). */
+export type PublicWallet = Omit<Wallet, 'encryptedSecret'>;
 
 export interface CreateWalletRequest {
   userId: string;
@@ -29,8 +38,8 @@ export interface SigningResult {
 }
 
 @Injectable()
-export class WalletsService {
-  private readonly logger = new Logger(WalletsService.name);
+export class WalletsService implements OnModuleDestroy {
+  private readonly logger = new SafeLogger(WalletsService.name);
   private prisma: PrismaClient;
 
   constructor(
@@ -38,6 +47,10 @@ export class WalletsService {
     private configService: ConfigService,
   ) {
     this.prisma = new PrismaClient(undefined);
+  }
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
   }
 
   async onModuleInit() {
@@ -291,6 +304,46 @@ export class WalletsService {
   }
 
   /**
+   * Archives a wallet, hiding it from the default wallet listing.
+   * Only wallets in a state where archiving makes sense may transition.
+   */
+  async archiveWallet(walletId: string, reason?: string): Promise<Wallet> {
+    const wallet = await this.findWalletById(walletId);
+
+    if (!canTransitionWalletStatus(wallet.status, WalletStatus.ARCHIVED)) {
+      throw new ConflictException(
+        `Cannot archive wallet in status: ${wallet.status}`,
+      );
+    }
+
+    return this.updateWalletStatus(
+      walletId,
+      WalletStatus.ARCHIVED,
+      reason ?? 'Archived by request',
+    );
+  }
+
+  /**
+   * Lists wallets. Archived wallets are excluded unless includeArchived is set.
+   */
+  async listWallets(options?: { includeArchived?: boolean }): Promise<Wallet[]> {
+    const where = options?.includeArchived
+      ? {}
+      : { status: { not: WalletStatus.ARCHIVED } };
+
+    const wallets = await this.prisma.wallet.findMany({ where });
+    return wallets.map((wallet) => this.mapPrismaWalletToDomain(wallet));
+  }
+
+  /**
+   * Strips encrypted secret material so wallets are safe to return from the API.
+   */
+  toPublicWallet(wallet: Wallet): PublicWallet {
+    const { encryptedSecret: _encryptedSecret, ...publicWallet } = wallet;
+    return publicWallet;
+  }
+
+  /**
    * Generates a Stellar keypair (simplified for MVP)
    * In production, use stellar-sdk's Keypair.random()
    */
@@ -349,19 +402,27 @@ export class WalletsService {
     return this.createWallet(createWalletDto);
   }
 
-  findAll() {
-    return this.prisma.wallet.findMany();
+  async findAll(options?: { includeArchived?: boolean }) {
+    const wallets = await this.listWallets(options);
+    return wallets.map((wallet) => this.toPublicWallet(wallet));
   }
 
-  findOne(id: number) {
-    return this.findWalletById(id.toString());
+  async findOne(id: string) {
+    const wallet = await this.findWalletById(id);
+    return this.toPublicWallet(wallet);
   }
 
-  update(id: number, updateWalletDto: any) {
-    return this.updateWalletStatus(id.toString(), updateWalletDto.status);
+  async update(id: string, updateWalletDto: any) {
+    const wallet = await this.updateWalletStatus(id, updateWalletDto.status);
+    return this.toPublicWallet(wallet);
   }
 
-  remove(id: number) {
-    return this.prisma.wallet.delete({ where: { id: id.toString() } });
+  remove(id: string) {
+    return this.prisma.wallet.delete({ where: { id } });
+  }
+
+  async archive(id: string, reason?: string) {
+    const wallet = await this.archiveWallet(id, reason);
+    return this.toPublicWallet(wallet);
   }
 }
