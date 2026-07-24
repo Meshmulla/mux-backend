@@ -32,6 +32,7 @@ model Payment {
   id          Int           @id @default(autoincrement())
   amount      Float
   currency    String
+  assetCode   String?       // ISO 4217 or custom asset identifier
   status      PaymentStatus @default(PENDING)
   description String?
 
@@ -66,7 +67,11 @@ model WalletLimit {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
+  /// Soft-delete timestamp (null = active)
+  deletedAt           DateTime?
+
   @@index([walletId])
+  @@index([deletedAt])
 }
 
 /// Mainnet/testnet separation for all wallets.

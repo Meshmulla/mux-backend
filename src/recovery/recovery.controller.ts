@@ -406,4 +406,53 @@ export class RecoveryController {
     await this.recoveryService.remove(id);
     return { message: 'Recovery request deleted successfully' };
   }
+
+  @ApiOperation({
+    summary: 'Get recovery status for a wallet',
+    description: 'Retrieve the recovery status for a specific wallet, including information about any active recovery requests.',
+  })
+  @ApiParam({
+    name: 'walletId',
+    description: 'Wallet UUID',
+    example: '550e8400-e29b-41d4-a716-446655440000',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet recovery status retrieved',
+    schema: {
+      example: {
+        walletId: '550e8400-e29b-41d4-a716-446655440000',
+        hasActiveRecovery: true,
+        currentStatus: 'IN_REVIEW',
+        recoveryRequestId: '660e8400-e29b-41d4-a716-446655440001',
+        lastUpdatedAt: '2026-06-29T12:00:00.000Z',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - invalid UUID',
+    schema: {
+      example: {
+        statusCode: 400,
+        message: 'Validation failed (uuid is expected)',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Wallet not found',
+    schema: {
+      example: {
+        statusCode: 404,
+        message: 'Wallet not found',
+        error: 'Not Found',
+      },
+    },
+  })
+  @Get('wallet/:walletId/status')
+  async getWalletRecoveryStatus(@Param('walletId', ParseUUIDPipe) walletId: string) {
+    return this.recoveryService.getWalletRecoveryStatus(walletId);
+  }
 }
