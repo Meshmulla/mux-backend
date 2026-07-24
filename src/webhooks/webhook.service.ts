@@ -1,4 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { PrismaClient } from '../generated/prisma/client';
+import {
+  WebhookEndpoint,
+  EndpointStatus,
+  DeliveryStatus,
+} from './domain/webhook-events';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CacheService } from '../common/cache/cache.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
@@ -167,6 +174,25 @@ export class WebhookService {
   }
 
   /**
+   * Gets delivery attempts for an endpoint, optionally filtered by status
+   */
+  async getDeliveries(
+    endpointId: string,
+    limit: number = 50,
+    status?: DeliveryStatus,
+  ) {
+    // Ensure the endpoint exists so callers get a clear 404 instead of an
+    // empty list when they pass an unknown/mistyped id.
+    await this.getEndpoint(endpointId);
+
+    return await this.prisma.webhookDelivery.findMany({
+      where: {
+        endpointId,
+        ...(status ? { status } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
    * Gets delivery attempts for an endpoint with pagination
    */
   async getDeliveries(

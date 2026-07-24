@@ -12,8 +12,10 @@ import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitUpdatedEvent } from './events/limit-updated.event';
 import { LimitExceededEvent } from './events/limit-exceeded.event';
+import { LimitsResponseDto } from './dto/limits-response.dto';
 import { retryWithBackoff } from '../common/utils/retry';
 import { MetricsService } from '../metrics/metrics.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 export const LIMIT_ERROR_CODES = {
   PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
@@ -40,6 +42,7 @@ export class LimitsService {
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
     private readonly metrics: MetricsService,
+    private readonly requestContext: RequestContextService,
   ) {}
 
   async setLimits(walletId: string, daily: number, perTx: number) {
@@ -57,7 +60,7 @@ export class LimitsService {
       () =>
         this.prisma.walletLimit.upsert({
           where: { walletId },
-          update: { dailyLimit: daily, perTransactionLimit: perTx },
+          update: { dailyLimit: daily, perTransactionLimit: perTx, deletedAt: null },
           create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
         }),
       3,
@@ -110,18 +113,57 @@ export class LimitsService {
     return result;
   }
 
-  async getLimits(walletId: string) {
-    return retryWithBackoff(
+  async getLimits(walletId: string): Promise<LimitsResponseDto | null> {
+    const limit = await retryWithBackoff(
       () =>
-        this.prisma.walletLimit.findUnique({ where: { walletId } }),
+        this.prisma.walletLimit.findUnique({
+          where: { walletId },
+        }),
       3,
       100,
       this.logger,
     );
+
+    if (!limit) {
+      return null;
+    }
+
+    const response: LimitsResponseDto = {
+      walletId: limit.walletId,
+      dailyLimit: limit.dailyLimit,
+      perTransactionLimit: limit.perTransactionLimit,
+    };
+
+    // Calculate remaining daily limit if a positive daily limit is configured
+    if (limit.dailyLimit > 0) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+
+      const txns = await retryWithBackoff(
+        () =>
+          this.prisma.transaction.findMany({
+            where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
+            select: { amount: true },
+          }),
+        3,
+        100,
+        this.logger,
+      );
+
+      const currentDailyTotal = txns.reduce(
+        (sum, t) => sum + Number(t.amount),
+        0,
+      );
+      response.remainingDailyLimit = Math.max(
+        0,
+        limit.dailyLimit - currentDailyTotal,
+      );
+    }
+
+    return response;
   }
 
   async checkLimits(walletId: string, amount: number): Promise<void> {
-    const requestId = this.requestContext.getRequestId();
     const limits = await this.getLimits(walletId);
     if (!limits) {
       this.metrics.incrementLimitChecks('allowed');
@@ -129,7 +171,7 @@ export class LimitsService {
     }
 
     this.logger.log(
-      `Checking limits walletId=${walletId} amount=${amount} requestId=${requestId}`,
+      `Checking limits walletId=${walletId} amount=${amount}`,
     );
 
     // Enforce per-transaction cap: a cap of 0 blocks all transactions
@@ -201,10 +243,69 @@ export class LimitsService {
     if (!existing)
       throw new NotFoundException(`No limits found for wallet ${walletId}`);
     return retryWithBackoff(
-      () => this.prisma.walletLimit.delete({ where: { walletId } }),
+      () => this.prisma.walletLimit.update({
+        where: { walletId },
+        data: { deletedAt: new Date() },
+      }),
       3,
       100,
       this.logger,
     );
+  }
+
+  async updateLimits(
+    walletId: string,
+    daily?: number,
+    perTx?: number,
+  ) {
+    const existing = await this.getLimits(walletId);
+    if (!existing)
+      throw new NotFoundException(`No limits found for wallet ${walletId}`);
+
+    if (daily === undefined && perTx === undefined) {
+      return existing;
+    }
+
+    const updateData: any = {};
+    if (daily !== undefined) updateData.dailyLimit = daily;
+    if (perTx !== undefined) updateData.perTransactionLimit = perTx;
+
+    const result = await retryWithBackoff(
+      () =>
+        this.prisma.walletLimit.update({
+          where: { walletId },
+          data: updateData,
+        }),
+      3,
+      100,
+      this.logger,
+    );
+
+    if (daily !== undefined && existing.dailyLimit !== daily) {
+      this.eventEmitter.emit(
+        'limit.updated',
+        new LimitUpdatedEvent(
+          walletId,
+          'daily',
+          existing.dailyLimit,
+          daily,
+          new Date(),
+        ),
+      );
+    }
+    if (perTx !== undefined && existing.perTransactionLimit !== perTx) {
+      this.eventEmitter.emit(
+        'limit.updated',
+        new LimitUpdatedEvent(
+          walletId,
+          'perTransaction',
+          existing.perTransactionLimit,
+          perTx,
+          new Date(),
+        ),
+      );
+    }
+
+    return result;
   }
 }

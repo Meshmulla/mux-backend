@@ -15,6 +15,8 @@ export class MetricsService {
     private readonly limitExceededCounter: Counter,
     @InjectMetric('limit_checks_total')
     private readonly limitChecksCounter: Counter,
+    @InjectMetric('payment_idempotency_hits_total')
+    private readonly paymentIdempotencyHitsCounter: Counter,
   ) {}
 
   incrementPaymentsCreated(): void {
@@ -35,5 +37,9 @@ export class MetricsService {
 
   incrementLimitChecks(result: 'allowed' | 'denied'): void {
     this.limitChecksCounter.labels(result).inc();
+  }
+
+  incrementPaymentIdempotencyHit(): void {
+    this.paymentIdempotencyHitsCounter.inc();
   }
 }

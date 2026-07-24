@@ -8,6 +8,12 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
 import {
+  WalletNetwork,
+  WalletStatus,
+  Wallet,
+  canTransitionWalletStatus,
+} from './domain/wallet.model';
+import {
   Wallet,
   WalletNetwork,
   WalletStatus,
@@ -245,33 +251,16 @@ export class WalletsService implements OnModuleDestroy {
     }
   }
 
-  /**
-   * Archives a wallet, hiding it from the default wallet listing.
-   * Only wallets in a state where archiving makes sense may transition.
-   */
-  async archiveWallet(walletId: string, reason?: string): Promise<Wallet> {
-    const wallet = await this.findWalletById(walletId);
+    const currentStatus = wallet.status as WalletStatus;
 
-    if (!canTransitionWalletStatus(wallet.status, WalletStatus.ARCHIVED)) {
+    if (
+      currentStatus !== status &&
+      !canTransitionWalletStatus(currentStatus, status)
+    ) {
       throw new ConflictException(
-        `Cannot archive wallet in status: ${wallet.status}`,
+        `Invalid wallet status transition: ${currentStatus} -> ${status}`,
       );
     }
-
-    return this.updateWalletStatus(
-      walletId,
-      WalletStatus.ARCHIVED,
-      reason ?? 'Archived by request',
-    );
-  }
-
-  /**
-   * Strips encrypted secret material so wallets are safe to return from the API.
-   */
-  toPublicWallet(wallet: Wallet): PublicWallet {
-    const { encryptedSecret: _encryptedSecret, ...publicWallet } = wallet;
-    return publicWallet;
-  }
 
   async getWalletStatus(walletId: string): Promise<WalletStatusResponse> {
     const wallet = await this.prisma.wallet.findUnique({ where: { id: walletId } });
@@ -330,9 +319,40 @@ export class WalletsService implements OnModuleDestroy {
     return wallets.map((wallet) => this.mapPrismaWalletToDomain(wallet));
   }
 
-  async findAll(
-    filters?: WalletListFilters,
-  ): Promise<Omit<WalletListResult, 'data'> & { data: PublicWallet[] }> {
+  /** Retrieves the user's persisted default network preference (null if unset). */
+  async getNetworkPreference(userId: string): Promise<{
+    userId: string;
+    defaultNetwork: WalletNetwork | null;
+  }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException(`User with ID ${userId} not found`);
+    return {
+      userId: user.id,
+      defaultNetwork: (user.defaultNetwork as WalletNetwork) ?? null,
+    };
+  }
+
+  /** Persists the user's default network preference for future wallet operations. */
+  async setNetworkPreference(
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<{ userId: string; defaultNetwork: WalletNetwork }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException(`User with ID ${userId} not found`);
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { defaultNetwork: network },
+    });
+
+    this.logger.log(`Set network preference for user ${userId} to ${network}`);
+    return {
+      userId: updated.id,
+      defaultNetwork: updated.defaultNetwork as WalletNetwork,
+    };
+  }
+
+  async findAll(filters?: WalletListFilters): Promise<WalletListResult> {
     const where: Record<string, unknown> = {};
 
     if (filters?.userId) {

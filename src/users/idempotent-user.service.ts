@@ -13,6 +13,8 @@ export interface FindOrCreateUserRequest {
   email?: string;
   displayName?: string;
   authProvider?: string;
+  lastLoginIp?: string;
+  lastLoginUserAgent?: string;
 }
 
 export interface User {
@@ -23,6 +25,8 @@ export interface User {
   status?: UserStatus;
   authProvider: string;
   lastLoginAt?: Date;
+  lastLoginIp?: string;
+  lastLoginUserAgent?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -66,7 +70,14 @@ export class IdempotentUserService {
   async findOrCreateUser(
     request: FindOrCreateUserRequest,
   ): Promise<FindOrCreateUserResult> {
-    const { authId, email, displayName, authProvider = 'UNKNOWN' } = request;
+    const {
+      authId,
+      email,
+      displayName,
+      authProvider = 'UNKNOWN',
+      lastLoginIp,
+      lastLoginUserAgent,
+    } = request;
 
     this.logger.log(`Looking up user with authId: ${authId}`);
 
@@ -80,7 +91,11 @@ export class IdempotentUserService {
 
         const updatedUser = await this.prisma.user.update({
           where: { id: existingUser.id },
-          data: { lastLoginAt: new Date() },
+          data: {
+            lastLoginAt: new Date(),
+            lastLoginIp,
+            lastLoginUserAgent,
+          },
         });
 
         this.logger.log(
@@ -100,6 +115,8 @@ export class IdempotentUserService {
           displayName,
           authProvider,
           lastLoginAt: new Date(),
+          lastLoginIp,
+          lastLoginUserAgent,
           status: 'ACTIVE',
         },
       });
@@ -132,7 +149,11 @@ export class IdempotentUserService {
         if (retryUser) {
           const updatedRetryUser = await this.prisma.user.update({
             where: { id: retryUser.id },
-            data: { lastLoginAt: new Date() },
+            data: {
+              lastLoginAt: new Date(),
+              lastLoginIp,
+              lastLoginUserAgent,
+            },
           });
 
           return {
@@ -247,6 +268,8 @@ export class IdempotentUserService {
       status: prismaUser.status,
       authProvider: prismaUser.authProvider,
       lastLoginAt: prismaUser.lastLoginAt,
+      lastLoginIp: prismaUser.lastLoginIp,
+      lastLoginUserAgent: prismaUser.lastLoginUserAgent,
       createdAt: prismaUser.createdAt,
       updatedAt: prismaUser.updatedAt,
     };

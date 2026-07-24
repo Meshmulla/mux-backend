@@ -28,6 +28,8 @@ export interface AuthenticationRequest {
   displayName?: string;
   authProvider?: string;
   network?: WalletNetwork;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 export class AuthPayloadValidator {
@@ -365,6 +367,8 @@ export class AuthOrchestrator {
       email: request.email,
       displayName: request.displayName,
       authProvider: request.authProvider || 'UNKNOWN',
+      lastLoginIp: request.ipAddress,
+      lastLoginUserAgent: request.userAgent,
     };
 
     return retryWithBackoff(() =>

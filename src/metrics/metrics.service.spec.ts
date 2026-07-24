@@ -7,6 +7,7 @@ describe('MetricsService', () => {
   let paymentProcessingHistogram: any;
   let limitExceededCounter: any;
   let limitChecksCounter: any;
+  let paymentIdempotencyHitsCounter: any;
 
   beforeEach(() => {
     const labeledCounter = { inc: jest.fn() };
@@ -15,6 +16,7 @@ describe('MetricsService', () => {
     paymentProcessingHistogram = { observe: jest.fn() };
     limitExceededCounter = { labels: jest.fn().mockReturnValue(labeledCounter) };
     limitChecksCounter = { labels: jest.fn().mockReturnValue(labeledCounter) };
+    paymentIdempotencyHitsCounter = { inc: jest.fn() };
 
     service = new MetricsService(
       paymentsCreatedCounter,
@@ -22,6 +24,7 @@ describe('MetricsService', () => {
       paymentProcessingHistogram,
       limitExceededCounter,
       limitChecksCounter,
+      paymentIdempotencyHitsCounter,
     );
   });
 
@@ -59,6 +62,14 @@ describe('MetricsService', () => {
       service.incrementLimitChecks('allowed');
 
       expect(limitChecksCounter.labels).toHaveBeenCalledWith('allowed');
+    });
+  });
+
+  describe('payment idempotency metrics', () => {
+    it('should increment payment_idempotency_hits_total counter', () => {
+      service.incrementPaymentIdempotencyHit();
+
+      expect(paymentIdempotencyHitsCounter.inc).toHaveBeenCalled();
     });
   });
 });
