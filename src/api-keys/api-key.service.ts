@@ -3,6 +3,7 @@ import {
   OnModuleDestroy,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
 import * as crypto from 'crypto';
 import { SafeLogger } from '../common/safe-logger';
@@ -11,12 +12,15 @@ import {
   ApiKeyStatus,
   Developer,
   Project,
+  ApiKeyContext,
 } from './domain/api-key.model';
+
+export type ApiKeyInfo = ApiKeyContext;
 
 export interface CreateApiKeyRequest {
   name: string;
   projectId: string;
-  expiresAt?: Date;
+  expiresAt?: Date | string;
 }
 
 export interface CreateApiKeyResult {
@@ -29,6 +33,13 @@ export interface RotateApiKeyRequest {
   name?: string;
 }
 
+export interface ListApiKeysRequest {
+  projectId: string;
+  page?: number;
+  pageSize?: number;
+  developerId?: string;
+}
+
 /**
  * Service for managing API keys
  */
@@ -36,9 +47,12 @@ export interface RotateApiKeyRequest {
 export class ApiKeyService implements OnModuleDestroy {
   private readonly logger = new SafeLogger(ApiKeyService.name);
   private prisma: PrismaClient;
+  private readonly gracePeriodSeconds: number;
 
-  constructor() {
+  constructor(private readonly configService: ConfigService) {
     this.prisma = new PrismaClient({} as any);
+    this.gracePeriodSeconds =
+      this.configService.get<number>('API_KEY_ROTATION_GRACE_SECONDS') ?? 3600;
   }
 
   async onModuleDestroy() {
@@ -75,6 +89,10 @@ export class ApiKeyService implements OnModuleDestroy {
     const keyPrefix = `mux_${environment}_`;
     const lastFour = randomPart.slice(-4);
 
+    const expiresAt = request.expiresAt
+      ? new Date(request.expiresAt)
+      : undefined;
+
     // Store hashed key
     const apiKey = await this.prisma.apiKey.create({
       data: {
@@ -84,7 +102,7 @@ export class ApiKeyService implements OnModuleDestroy {
         lastFour,
         projectId: request.projectId,
         status: ApiKeyStatus.ACTIVE,
-        expiresAt: request.expiresAt,
+        expiresAt,
       },
     });
 
@@ -101,11 +119,7 @@ export class ApiKeyService implements OnModuleDestroy {
   /**
    * Validates an API key and returns context if valid
    */
-  async validateApiKey(plainTextKey: string): Promise<{
-    apiKey: ApiKey;
-    project: Project;
-    developer: Developer;
-  }> {
+  async validateApiKey(plainTextKey: string): Promise<ApiKeyInfo> {
     if (!plainTextKey || !plainTextKey.startsWith('mux_')) {
       throw new UnauthorizedException('Invalid API key format');
     }
@@ -129,11 +143,25 @@ export class ApiKeyService implements OnModuleDestroy {
       throw new UnauthorizedException('Invalid API key');
     }
 
-    // Check if key is active
-    if (apiKeyRecord.status !== ApiKeyStatus.ACTIVE) {
-      throw new UnauthorizedException(
-        `API key is ${apiKeyRecord.status.toLowerCase()}`,
-      );
+    // Check if key is active or in grace period
+    if (apiKeyRecord.status === ApiKeyStatus.REVOKED) {
+      throw new UnauthorizedException('API key has been revoked');
+    }
+
+    if (apiKeyRecord.status === ApiKeyStatus.SUSPENDED) {
+      throw new UnauthorizedException('API key is suspended');
+    }
+
+    if (apiKeyRecord.status === ApiKeyStatus.EXPIRED) {
+      throw new UnauthorizedException('API key has expired');
+    }
+
+    // Check if grace period has ended (for rotated keys)
+    if (
+      apiKeyRecord.gracePeriodEndsAt &&
+      apiKeyRecord.gracePeriodEndsAt < new Date()
+    ) {
+      throw new UnauthorizedException('API key rotation grace period expired');
     }
 
     // Check expiration
@@ -162,12 +190,35 @@ export class ApiKeyService implements OnModuleDestroy {
   }
 
   /**
-   * Revokes an API key
+   * Revokes an API key (idempotent - revoking already-revoked key succeeds)
    */
-  async revokeApiKey(apiKeyId: string, reason?: string): Promise<ApiKey> {
+  async revokeApiKey(
+    apiKeyId: string,
+    reason?: string,
+    developerId?: string,
+  ): Promise<ApiKey> {
     this.logger.log(`Revoking API key: ${apiKeyId}`);
 
-    const apiKey = await this.prisma.apiKey.update({
+    const apiKey = await this.prisma.apiKey.findUnique({
+      where: { id: apiKeyId },
+      include: { project: true },
+    });
+
+    if (!apiKey) {
+      throw new Error(`API key ${apiKeyId} not found`);
+    }
+
+    // Verify ownership if developerId provided
+    if (developerId && apiKey.project.developerId !== developerId) {
+      throw new UnauthorizedException('You do not have access to this API key');
+    }
+
+    // If already revoked, return success (idempotent)
+    if (apiKey.status === ApiKeyStatus.REVOKED) {
+      return this.mapPrismaApiKeyToDomain(apiKey);
+    }
+
+    const updated = await this.prisma.apiKey.update({
       where: { id: apiKeyId },
       data: {
         status: ApiKeyStatus.REVOKED,
@@ -177,23 +228,30 @@ export class ApiKeyService implements OnModuleDestroy {
     });
 
     this.logger.log(`Revoked API key: ${apiKeyId}`);
-    return this.mapPrismaApiKeyToDomain(apiKey);
+    return this.mapPrismaApiKeyToDomain(updated);
   }
 
   /**
-   * Rotates an API key (creates new, revokes old)
+   * Rotates an API key (creates new, marks old with grace period)
    */
   async rotateApiKey(
     request: RotateApiKeyRequest,
+    developerId?: string,
   ): Promise<CreateApiKeyResult> {
     this.logger.log(`Rotating API key: ${request.apiKeyId}`);
 
     const oldKey = await this.prisma.apiKey.findUnique({
       where: { id: request.apiKeyId },
+      include: { project: true },
     });
 
     if (!oldKey) {
       throw new Error(`API key ${request.apiKeyId} not found`);
+    }
+
+    // Verify ownership if developerId provided
+    if (developerId && oldKey.project.developerId !== developerId) {
+      throw new UnauthorizedException('You do not have access to this API key');
     }
 
     // Create new key
@@ -203,25 +261,66 @@ export class ApiKeyService implements OnModuleDestroy {
       expiresAt: oldKey.expiresAt || undefined,
     });
 
-    // Revoke old key
-    await this.revokeApiKey(request.apiKeyId, 'Rotated to new key');
+    // Mark old key with grace period instead of revoking immediately
+    const gracePeriodEndsAt = new Date(
+      Date.now() + this.gracePeriodSeconds * 1000,
+    );
+    await this.prisma.apiKey.update({
+      where: { id: request.apiKeyId },
+      data: {
+        gracePeriodEndsAt,
+      },
+    });
 
     this.logger.log(
-      `Rotated API key: ${request.apiKeyId} -> ${newKeyResult.apiKey.id}`,
+      `Rotated API key: ${request.apiKeyId} -> ${newKeyResult.apiKey.id} (grace period until ${gracePeriodEndsAt.toISOString()})`,
     );
     return newKeyResult;
   }
 
   /**
-   * Lists API keys for a project
+   * Lists API keys for a project with optional pagination
    */
-  async listApiKeys(projectId: string): Promise<ApiKey[]> {
-    const apiKeys = await this.prisma.apiKey.findMany({
-      where: { projectId },
-      orderBy: { createdAt: 'desc' },
-    });
+  async listApiKeys(request: ListApiKeysRequest): Promise<{
+    keys: ApiKey[];
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    const page = request.page ?? 1;
+    const pageSize = request.pageSize ?? 10;
+    const skip = (page - 1) * pageSize;
 
-    return apiKeys.map((key) => this.mapPrismaApiKeyToDomain(key));
+    // If developerId is provided, verify they own the project
+    if (request.developerId) {
+      const project = await this.prisma.project.findUnique({
+        where: { id: request.projectId },
+      });
+      if (!project || project.developerId !== request.developerId) {
+        throw new UnauthorizedException(
+          'You do not have access to this project',
+        );
+      }
+    }
+
+    const [keys, total] = await Promise.all([
+      this.prisma.apiKey.findMany({
+        where: { projectId: request.projectId },
+        skip,
+        take: pageSize,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.apiKey.count({
+        where: { projectId: request.projectId },
+      }),
+    ]);
+
+    return {
+      keys: keys.map((key) => this.mapPrismaApiKeyToDomain(key)),
+      total,
+      page,
+      pageSize,
+    };
   }
 
   /**
@@ -289,6 +388,7 @@ export class ApiKeyService implements OnModuleDestroy {
       lastUsedAt: prismaApiKey.lastUsedAt,
       revokedAt: prismaApiKey.revokedAt,
       revokedReason: prismaApiKey.revokedReason,
+      gracePeriodEndsAt: prismaApiKey.gracePeriodEndsAt,
       createdAt: prismaApiKey.createdAt,
       updatedAt: prismaApiKey.updatedAt,
     };

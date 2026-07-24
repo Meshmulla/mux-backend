@@ -56,6 +56,19 @@ model UserLimit {
   user                LegacyUser @relation(fields: [userId], references: [id])
 }
 
+/// Spending limits scoped to a Wallet (replaces legacy UserLimit)
+model WalletLimit {
+  id                  String  @id @default(uuid())
+  walletId            String  @unique
+  wallet              Wallet  @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  dailyLimit          Float
+  perTransactionLimit Float
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([walletId])
+}
+
 /// Mainnet/testnet separation for all wallets.
 enum WalletNetwork {
   MAINNET
@@ -85,14 +98,21 @@ model User {
   lastLoginAt DateTime?
 
   /// Operational metadata
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
 
   /// Relation to user's wallets
   wallets Wallet[]
 
+  /// Relation to user's spending limits
+  spendingLimits SpendingLimit[]
+
   @@index([authId])
   @@index([authProvider])
+  @@index([deletedAt])
 }
 
 /// Internal lifecycle states (wallets are not user-facing).
@@ -139,6 +159,11 @@ model Wallet {
   /// Supports rotation by incrementing secret material while preserving history.
   secretVersion Int @default(1)
 
+  /// Key algorithm/derivation scheme version (e.g. 1 = Stellar Ed25519 via stellar-sdk).
+  /// Increment when the key algorithm or derivation path changes so consumers can detect
+  /// stale material and trigger re-encryption or re-issuance.
+  keyVersion Int @default(1)
+
   network WalletNetwork
   status  WalletStatus  @default(PROVISIONING)
 
@@ -151,6 +176,11 @@ model Wallet {
   rotatedFrom   Wallet?  @relation("WalletRotation", fields: [rotatedFromId], references: [id])
   rotatedTo     Wallet[] @relation("WalletRotation")
 
+  /// Successor linking: direct reference to the wallet that replaced this one during rotation.
+  successorId String? @unique
+  successor   Wallet?  @relation("WalletSuccessor", fields: [successorId], references: [id])
+  predecessor Wallet[] @relation("WalletSuccessor")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -158,6 +188,9 @@ model Wallet {
   recoveryRequests RecoveryRequest[]
   balances         WalletBalance[]
   
+  /// Spending limits for this wallet
+  walletLimit          WalletLimit?
+
   /// Transactions sent from this wallet
   sentTransactions     Transaction[] @relation("SentTransactions")
   
@@ -167,6 +200,8 @@ model Wallet {
   @@unique([network, publicKey])
   @@index([userId, network])
   @@index([status, network])
+  @@index([rotatedFromId])
+  @@index([successorId])
 }
 
 /// Recovery request lifecycle states
@@ -190,7 +225,11 @@ model RecoveryRequest {
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
 
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
+
   @@index([walletId, status])
+  @@index([deletedAt])
 }
 
 /// API Key status lifecycle
@@ -212,14 +251,18 @@ model Developer {
   status      String   @default("ACTIVE")
   
   /// Metadata
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
   /// Relations
   projects    Project[]
-  
+
   @@index([email])
   @@index([status])
+  @@index([deletedAt])
 }
 
 /// Project entity for organizing API keys and usage
@@ -242,62 +285,86 @@ model Project {
   rateLimitRpm Int     @default(60)
   
   /// Metadata
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
   /// Relations
-  apiKeys         ApiKey[]
-  apiKeyUsage     ApiKeyUsage[]
+  apiKeys          ApiKey[]
+  apiKeyUsage      ApiKeyUsage[]
   webhookEndpoints WebhookEndpoint[]
-  
+
   @@index([developerId])
   @@index([status])
+  @@index([deletedAt])
 }
 
 /// API Key for developer authentication
 model ApiKey {
   id              String       @id @default(uuid())
-  
+
   /// Human-readable key name/description
   name            String
-  
+
   /// Hashed API key (never store plaintext)
   keyHash         String       @unique
-  
+
   /// Key prefix for identification (e.g., "mux_live_" or "mux_test_")
   keyPrefix       String
-  
+
   /// Last 4 characters of the key for identification
   lastFour        String
-  
+
   /// Project reference
   projectId       String
   project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  
+
   /// Key status
   status          ApiKeyStatus @default(ACTIVE)
-  
+
   /// Key expiration (optional)
   expiresAt       DateTime?
-  
+
   /// Last used timestamp
   lastUsedAt      DateTime?
-  
+
   /// Revocation info
   revokedAt       DateTime?
   revokedReason   String?
-  
+
+  /// Grace period end for revoked keys still accepting requests
+  gracePeriodEndsAt DateTime?
+
   /// Metadata
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
-  
+
   /// Relations
-  usageRecords    ApiKeyUsage[]
-  
+  usageRecords     ApiKeyUsage[]
+  rateLimitRecords RateLimitRecord[]
+
   @@index([keyHash])
   @@index([projectId])
   @@index([status])
   @@index([keyPrefix])
+}
+
+/// Sliding-window rate limit tracking per API key and endpoint
+model RateLimitRecord {
+  id           String   @id @default(uuid())
+  apiKeyId     String
+  apiKey       ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  endpoint     String
+  windowStart  DateTime
+  requestCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([apiKeyId, endpoint, windowStart])
+  @@index([apiKeyId])
+  @@index([windowStart])
 }
 
 /// API Key usage tracking for analytics and rate limiting
@@ -390,6 +457,7 @@ model WalletBalance {
 /// Balance sync job tracking for reliability
 model BalanceSyncJob {
   id        String   @id @default(uuid())
+  requestId String?  // Request ID for propagation and tracking
   
   /// Job metadata
   jobType   String   // "FULL_SYNC", "INCREMENTAL_SYNC", "RECONCILIATION"
@@ -455,14 +523,18 @@ model WebhookEndpoint {
   lastSuccessAt DateTime?
   
   /// Metadata
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
   /// Relations
   deliveries  WebhookDelivery[]
-  
+
   @@index([projectId])
   @@index([status])
+  @@index([deletedAt])
 }
 
 /// Webhook delivery attempt tracking
@@ -512,6 +584,138 @@ model WebhookDelivery {
   @@index([createdAt])
 }
 
+/// Spending limit period types
+enum LimitPeriod {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+/// Spending limit for a User (UUID-based)
+model SpendingLimit {
+  id                  String      @id @default(uuid())
+
+  /// Owner reference to User model
+  userId              String
+  user                User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Maximum amount per single transaction
+  perTransactionLimit Decimal     @db.Decimal(18, 8)
+
+  /// Maximum cumulative amount within the period
+  periodLimit         Decimal     @db.Decimal(18, 8)
+
+  /// Period type for the cumulative limit
+  period              LimitPeriod @default(DAILY)
+
+  /// Asset code this limit applies to (null = all assets)
+  assetCode           String?
+
+  /// Whether this limit is currently active
+  isActive            Boolean     @default(true)
+
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@unique([userId, period, assetCode])
+  @@index([userId])
+  @@index([isActive])
+}
+
+/// Idempotency record for caching authentication and other operation responses
+model IdempotencyRecord {
+  id String @id @default(uuid())
+
+  /// Unique idempotency key provided by client
+  key String @unique
+
+  /// HTTP method of the original request
+  method String
+
+  /// Endpoint path of the original request
+  endpoint String
+
+  /// Cached response (serialized JSON)
+  response Json
+
+  /// Response status code
+  statusCode Int @default(200)
+
+  /// TTL - when this record expires
+  expiresAt DateTime
+
+  /// Metadata
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([key, endpoint])
+}
+
+/// Key operation types for audit logging
+enum KeyOperation {
+  GENERATE
+  SIGN
+  ROTATE
+  REVOKE
+  ACCESS
+}
+
+/// Persistent audit log for key management operations
+/// Used for security monitoring, compliance, and forensics
+model KeyRotationAuditLog {
+  id String @id @default(uuid())
+
+  /// Operation type
+  operation KeyOperation
+
+  /// Key identifier (wallet ID, key ID, or "new" for generation)
+  keyId String
+
+  /// Public key involved in the operation (never store private keys)
+  publicKey String
+
+  /// Operation timestamp
+  timestamp DateTime @default(now())
+
+  /// Operation result
+  success Boolean @default(true)
+
+  /// Error message if operation failed
+  errorMessage String?
+
+  /// Additional context (JSON for flexibility)
+  /// May include: keyType, userId, rotationReason, previousKeyId, etc.
+  metadata Json?
+
+  /// IP address of request origin (if applicable)
+  ipAddress String?
+
+  /// User agent of request (if applicable)
+  userAgent String?
+
+  /// Key type involved (e.g., STELLAR_ED25519)
+  keyType String?
+
+  /// For ROTATE operations: reference to previous key
+  previousKeyId String?
+
+  /// For ROTATE operations: reference to new key
+  newKeyId String?
+
+  /// Retention metadata
+  /// TTL - when this record can be archived/deleted (compliance requirement)
+  expiresAt DateTime?
+
+  @@index([operation])
+  @@index([keyId])
+  @@index([publicKey])
+  @@index([timestamp])
+  @@index([success])
+  @@index([operation, timestamp])
+  @@index([keyId, operation])
+  @@index([expiresAt])
+}
+
 /// Transaction lifecycle states
 enum TransactionStatus {
   PENDING    // Transaction created but not yet submitted to network
@@ -559,15 +763,21 @@ model Transaction {
   
   /// Metadata for future webhooks and analytics
   metadata Json? // Flexible JSON for additional transaction context
+
+  /// Client-supplied idempotency key to prevent duplicate submissions
+  idempotencyKey String? @unique
   
   /// Operational metadata
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
+  @@index([senderWalletId])
+  @@index([receiverWalletId])
   @@index([senderWalletId, status])
   @@index([receiverWalletId, status])
   @@index([status, createdAt])
   @@index([stellarHash])
   @@index([stellarLedger])
   @@index([createdAt])
+  @@index([idempotencyKey])
 }
