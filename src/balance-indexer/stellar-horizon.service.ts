@@ -1,8 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Server } from 'stellar-sdk';
 import { Asset, AssetType, BalanceUpdate } from './domain/balance.model';
 import { RequestContextService } from '../common/request-context/request-context.service';
+import {
+  CircuitBreaker,
+  CircuitOpenError,
+} from '../common/utils/circuit-breaker';
 
 export interface HorizonBalance {
   asset_type: string;
@@ -15,6 +23,7 @@ export interface HorizonBalance {
 export class StellarHorizonService {
   private readonly logger = new Logger(StellarHorizonService.name);
   private readonly server: Server;
+  private readonly circuitBreaker: CircuitBreaker;
 
   constructor(
     private readonly configService: ConfigService,
@@ -26,29 +35,62 @@ export class StellarHorizonService {
     );
 
     this.server = new Server(horizonUrl, { allowHttp: false });
+    this.circuitBreaker = new CircuitBreaker('stellar-horizon', {
+      failureThreshold: this.configService.get<number>(
+        'HORIZON_CIRCUIT_FAILURE_THRESHOLD',
+        5,
+      ),
+      resetTimeoutMs: this.configService.get<number>(
+        'HORIZON_CIRCUIT_RESET_TIMEOUT_MS',
+        30000,
+      ),
+    });
     this.logger.log(`Initialized Stellar Horizon client: ${horizonUrl}`);
   }
 
   /**
-   * Helper to execute server actions with retry & backoff
+   * Helper to execute server actions with retry & backoff, guarded by a
+   * circuit breaker so a degraded Horizon backend fails fast instead of
+   * queuing up retries (and their backoff delays) on every caller.
    */
   private async executeWithRetry<T>(
     operation: () => Promise<T>,
     opName: string,
   ): Promise<T> {
+    const requestId = this.requestContext.getRequestId();
+    const logPrefix = requestId ? `[${requestId}] ` : '';
+
+    try {
+      this.circuitBreaker.assertClosed();
+    } catch (error) {
+      if (error instanceof CircuitOpenError) {
+        this.logger.warn(
+          `${logPrefix}Horizon API ${opName} short-circuited: ${error.message}`,
+        );
+        throw new ServiceUnavailableException(
+          'Stellar Horizon is currently unavailable. Please try again shortly.',
+        );
+      }
+      throw error;
+    }
+
     const maxRetries = this.configService.get<number>('HORIZON_MAX_RETRIES', 3);
     let attempt = 0;
     while (true) {
       try {
-        return await operation();
+        const result = await operation();
+        this.circuitBreaker.recordSuccess();
+        return result;
       } catch (error) {
         attempt++;
         if (attempt > maxRetries) {
+          this.circuitBreaker.recordFailure();
           throw error;
         }
-        const delay = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 15000);
-        const requestId = this.requestContext.getRequestId();
-        const logPrefix = requestId ? `[${requestId}] ` : '';
+        const delay = Math.min(
+          1000 * Math.pow(2, attempt) + Math.random() * 1000,
+          15000,
+        );
         this.logger.warn(
           `${logPrefix}Horizon API ${opName} failed (attempt ${attempt}/${maxRetries}). Retrying in ${Math.round(delay)}ms. Error: ${error.message}`,
         );

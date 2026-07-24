@@ -97,6 +97,12 @@ model User {
   /// Last login timestamp
   lastLoginAt DateTime?
 
+  /// IP address captured on the most recent successful login
+  lastLoginIp String?
+
+  /// User-Agent header captured on the most recent successful login
+  lastLoginUserAgent String?
+
   /// Operational metadata
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
