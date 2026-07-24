@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  Optional,
 } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,10 +21,12 @@ import { InsufficientBalanceException } from './domain/insufficient-balance.exce
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CacheService } from '../common/cache/cache.service';
 import { TransactionMetricsService } from './transaction-metrics.service';
+import { TransactionQueryService } from './transaction-query.service';
 
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
+  private readonly TRANSACTION_CACHE_TTL = 300000; // 5 minutes
 
   constructor(
     private readonly prisma: PrismaService,
@@ -32,6 +35,7 @@ export class TransactionsService {
     private readonly webhookEventEmitter: WebhookEventEmitterService,
     private readonly cache: CacheService,
     private readonly metrics: TransactionMetricsService,
+    private readonly queryService: TransactionQueryService,
   ) {}
 
   /**
@@ -47,6 +51,7 @@ export class TransactionsService {
       asset,
       senderWalletId,
       receiverWalletId,
+      memo,
       metadata,
       idempotencyKey,
     } = createTransactionDto;
@@ -115,6 +120,7 @@ export class TransactionsService {
         assetIssuer: asset.issuer ?? null,
         senderWalletId,
         receiverWalletId: receiverWalletId ?? null,
+        memo: memo ?? null,
         status: TransactionStatus.PENDING,
         metadata: metadata ?? undefined,
         idempotencyKey: idempotencyKey ?? null,
@@ -123,15 +129,13 @@ export class TransactionsService {
 
     this.metrics.incrementTransactionCreated(asset.type);
 
-    this.webhookEventEmitter
-      .emitTransactionCreated({
-        transactionId: created.id,
-        walletId: created.senderWalletId,
-        amount: created.amount,
-        asset: created.assetCode ?? created.assetType,
-        destination: created.receiverWalletId ?? '',
-      }),
-    );
+    this.webhookEventEmitter?.emitTransactionCreated({
+      transactionId: created.id,
+      walletId: created.senderWalletId,
+      amount: created.amount,
+      asset: created.assetCode ?? created.assetType,
+      destination: created.receiverWalletId ?? '',
+    });
 
     return this.mapPrismaToEntity(created);
   }
@@ -149,6 +153,7 @@ export class TransactionsService {
     maxAmount?: string;
     createdAfter?: Date;
     createdBefore?: Date;
+    memo?: string;
     limit?: number;
     offset?: number;
   }): Promise<PaginatedTransactionsDto> {
@@ -164,6 +169,10 @@ export class TransactionsService {
 
     if (filters?.status) {
       where.status = filters.status;
+    }
+
+    if (filters?.memo) {
+      where.memo = { contains: filters.memo, mode: 'insensitive' };
     }
 
     const limit = filters?.limit ?? 20;
@@ -392,6 +401,7 @@ export class TransactionsService {
       assetIssuer: prismaTransaction.assetIssuer,
       senderWalletId: prismaTransaction.senderWalletId,
       receiverWalletId: prismaTransaction.receiverWalletId,
+      memo: prismaTransaction.memo,
       status: prismaTransaction.status as TransactionStatus,
       stellarHash: prismaTransaction.stellarHash,
       stellarLedger: prismaTransaction.stellarLedger,

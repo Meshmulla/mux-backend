@@ -85,12 +85,18 @@ export class PaymentsService {
       );
     }
 
-    await retryWithBackoff(
+    const receiverWallet = await retryWithBackoff(
       () => this.walletsService.findWalletById(receiverWalletId),
       3,
       100,
       this.logger,
     );
+    if (receiverWallet.network !== senderWallet.network) {
+      throw new BadRequestException(
+        `Payment network mismatch: sender wallet is on ${senderWallet.network}, receiver wallet is on ${receiverWallet.network}`,
+      );
+    }
+
     await retryWithBackoff(
       () => this.paymentLimitsPort.checkLimits(walletId, amount),
       3,

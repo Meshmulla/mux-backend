@@ -20,6 +20,7 @@ import { TransactionEnvValidatorService } from './transaction-env-validator.serv
   controllers: [TransactionsController, TransactionsInternalController],
   providers: [
     TransactionsService,
+    TransactionQueryService,
     StellarTransactionBuildService,
     CacheService,
     FeatureFlagService,
@@ -27,6 +28,11 @@ import { TransactionEnvValidatorService } from './transaction-env-validator.serv
     TransactionEnvValidatorService,
     TransactionPollingService,
   ],
-  exports: [TransactionsService, StellarTransactionBuildService, TransactionPollingService],
+  exports: [
+    TransactionsService,
+    TransactionQueryService,
+    StellarTransactionBuildService,
+    TransactionPollingService,
+  ],
 })
 export class TransactionsModule {}
