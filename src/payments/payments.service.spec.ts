@@ -102,12 +102,42 @@ describe('PaymentsService', () => {
           toId: BASE_DTO.toId,
           amount: BASE_DTO.amount,
           currency: BASE_DTO.currency,
+          assetCode: undefined,
           description: BASE_DTO.description,
           userId: BASE_DTO.fromId,
           status: PaymentStatus.PENDING,
         },
       });
       expect(result.status).toBe(PaymentStatus.PENDING);
+    });
+
+    it('should create payment with assetCode when provided', async () => {
+      walletsService.findWalletById
+        .mockResolvedValueOnce(ACTIVE_WALLET)
+        .mockResolvedValueOnce(RECEIVER_WALLET);
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
+      const dtoWithAsset = { ...BASE_DTO, assetCode: 'EUR' };
+      prisma.payment.create.mockResolvedValue({
+        id: 1,
+        ...dtoWithAsset,
+        status: PaymentStatus.PENDING,
+      });
+
+      const result = await service.create(dtoWithAsset);
+
+      expect(prisma.payment.create).toHaveBeenCalledWith({
+        data: {
+          fromId: dtoWithAsset.fromId,
+          toId: dtoWithAsset.toId,
+          amount: dtoWithAsset.amount,
+          currency: dtoWithAsset.currency,
+          assetCode: 'EUR',
+          description: dtoWithAsset.description,
+          userId: dtoWithAsset.fromId,
+          status: PaymentStatus.PENDING,
+        },
+      });
+      expect(result.assetCode).toBe('EUR');
     });
 
     it('should throw BadRequestException when sender wallet is not ACTIVE', async () => {

@@ -45,6 +45,15 @@ export class CreatePaymentDto {
   currency: string;
 
   @ApiProperty({
+    example: 'USD',
+    description: 'Asset code (ISO 4217 or custom identifier) - optional',
+    required: false,
+  })
+  @IsString({ message: 'assetCode must be a string' })
+  @IsOptional()
+  assetCode?: string;
+
+  @ApiProperty({
     example: 'Payment for services',
     description: 'Optional payment description',
     required: false,

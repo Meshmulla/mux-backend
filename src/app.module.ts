@@ -5,6 +5,7 @@ import { ConfigModule } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { PrismaModule } from './prisma/prisma.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { TracingModule } from './tracing/tracing.module';
 import { AppService } from './app.service';
 import { UsersModule } from './users/users.module';
 import { IdempotentUserModule } from './users/idempotent-user.module';
@@ -35,6 +36,7 @@ import { HealthModule } from './health/health.module';
     }),
     EventEmitterModule.forRoot(),
     MetricsModule,
+    TracingModule.forRoot(),
     PrismaModule,
     AuthModule,
     RateLimitModule,
