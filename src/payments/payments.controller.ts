@@ -41,7 +41,7 @@ export class PaymentsController {
 
   @ApiOperation({
     summary: 'Create a new payment',
-    description: 'Create a new payment between wallets. Requires API key authentication. Rate limited to prevent abuse. Emits payment.created event on success.',
+    description: 'Create a new payment between wallets. Requires API key authentication. Rate limited to prevent abuse. Emits payment.created event on success. If the sender wallet has a daily spending limit configured (see /wallets/:walletId/limits), the payment is rejected with a 422 LIMIT_DAILY_EXCEEDED error before submission when today\'s cumulative total plus this payment would exceed it.',
   })
   @ApiBody({
     type: CreatePaymentDto,
@@ -97,6 +97,17 @@ export class PaymentsController {
       method: 'POST',
       message: 'Unauthorized',
       error: 'Unauthorized',
+    },
+  })
+  @ApiResponse({
+    status: 422,
+    description:
+      "Daily spending limit exceeded for the sender wallet - payment rejected before submission",
+    example: {
+      statusCode: 422,
+      message: 'Daily limit exceeded. Limit: 5000, Used: 4900',
+      errorCode: 'LIMIT_DAILY_EXCEEDED',
+      error: 'Unprocessable Entity',
     },
   })
   @Post()
