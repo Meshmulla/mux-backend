@@ -6,7 +6,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
-import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
+import {
+  WalletNetwork,
+  WalletStatus,
+  Wallet,
+  canTransitionWalletStatus,
+} from './domain/wallet.model';
 import {
   EncryptionService,
   DecryptionError,
@@ -269,6 +274,17 @@ export class WalletsService {
 
     if (!wallet) {
       throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    }
+
+    const currentStatus = wallet.status as WalletStatus;
+
+    if (
+      currentStatus !== status &&
+      !canTransitionWalletStatus(currentStatus, status)
+    ) {
+      throw new ConflictException(
+        `Invalid wallet status transition: ${currentStatus} -> ${status}`,
+      );
     }
 
     try {
