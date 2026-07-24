@@ -5,6 +5,7 @@ import {
   Body,
   Param,
   Delete,
+  Patch,
   HttpCode,
   HttpStatus,
   UseGuards,
@@ -132,6 +133,73 @@ export class LimitsController {
   @Get()
   getLimits(@Param('walletId') walletId: string) {
     return this.limitsService.getLimits(walletId);
+  }
+
+  @ApiOperation({
+    summary: 'Update wallet limits',
+    description: 'Partially update daily and/or per-transaction limits for a wallet. At least one limit must be provided. Requires API key authentication. Emits limit.updated events for each limit changed.',
+  })
+  @ApiParam({ name: 'walletId', description: 'Wallet ID (UUID)' })
+  @ApiBody({
+    type: UpdateLimitsDto,
+    examples: {
+      daily: {
+        summary: 'Update daily limit only',
+        value: {
+          dailyLimit: 10000,
+        },
+      },
+      perTx: {
+        summary: 'Update per-transaction limit only',
+        value: {
+          perTransactionLimit: 2000,
+        },
+      },
+      both: {
+        summary: 'Update both limits',
+        value: {
+          dailyLimit: 10000,
+          perTransactionLimit: 2000,
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Limits updated successfully. Emits limit.updated events.',
+    example: {
+      walletId: '123e4567-e89b-12d3-a456-426614174000',
+      dailyLimit: 10000,
+      perTransactionLimit: 2000,
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - invalid input or no limits provided',
+    example: {
+      statusCode: 400,
+      timestamp: '2024-06-24T12:34:56.789Z',
+      path: '/wallets/123/limits',
+      method: 'PATCH',
+      message: ['dailyLimit must be positive'],
+      error: 'Bad Request',
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'No limits found for wallet',
+    example: {
+      statusCode: 404,
+      timestamp: '2024-06-24T12:34:56.789Z',
+      path: '/wallets/123/limits',
+      method: 'PATCH',
+      message: 'No limits found for wallet 123',
+      error: 'Not Found',
+    },
+  })
+  @Patch()
+  updateLimits(@Param('walletId') walletId: string, @Body() dto: UpdateLimitsDto) {
+    return this.limitsService.updateLimits(walletId, dto.dailyLimit, dto.perTransactionLimit);
   }
 
   @ApiOperation({
