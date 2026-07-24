@@ -207,4 +207,60 @@ export class LimitsService {
       this.logger,
     );
   }
+
+  async updateLimits(
+    walletId: string,
+    daily?: number,
+    perTx?: number,
+  ) {
+    const existing = await this.getLimits(walletId);
+    if (!existing)
+      throw new NotFoundException(`No limits found for wallet ${walletId}`);
+
+    if (daily === undefined && perTx === undefined) {
+      return existing;
+    }
+
+    const updateData: any = {};
+    if (daily !== undefined) updateData.dailyLimit = daily;
+    if (perTx !== undefined) updateData.perTransactionLimit = perTx;
+
+    const result = await retryWithBackoff(
+      () =>
+        this.prisma.walletLimit.update({
+          where: { walletId },
+          data: updateData,
+        }),
+      3,
+      100,
+      this.logger,
+    );
+
+    if (daily !== undefined && existing.dailyLimit !== daily) {
+      this.eventEmitter.emit(
+        'limit.updated',
+        new LimitUpdatedEvent(
+          walletId,
+          'daily',
+          existing.dailyLimit,
+          daily,
+          new Date(),
+        ),
+      );
+    }
+    if (perTx !== undefined && existing.perTransactionLimit !== perTx) {
+      this.eventEmitter.emit(
+        'limit.updated',
+        new LimitUpdatedEvent(
+          walletId,
+          'perTransaction',
+          existing.perTransactionLimit,
+          perTx,
+          new Date(),
+        ),
+      );
+    }
+
+    return result;
+  }
 }
