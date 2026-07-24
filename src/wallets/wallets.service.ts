@@ -291,6 +291,39 @@ export class WalletsService {
     return wallets.map((wallet) => this.mapPrismaWalletToDomain(wallet));
   }
 
+  /** Retrieves the user's persisted default network preference (null if unset). */
+  async getNetworkPreference(userId: string): Promise<{
+    userId: string;
+    defaultNetwork: WalletNetwork | null;
+  }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException(`User with ID ${userId} not found`);
+    return {
+      userId: user.id,
+      defaultNetwork: (user.defaultNetwork as WalletNetwork) ?? null,
+    };
+  }
+
+  /** Persists the user's default network preference for future wallet operations. */
+  async setNetworkPreference(
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<{ userId: string; defaultNetwork: WalletNetwork }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException(`User with ID ${userId} not found`);
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { defaultNetwork: network },
+    });
+
+    this.logger.log(`Set network preference for user ${userId} to ${network}`);
+    return {
+      userId: updated.id,
+      defaultNetwork: updated.defaultNetwork as WalletNetwork,
+    };
+  }
+
   async findAll(filters?: WalletListFilters): Promise<WalletListResult> {
     const where: Record<string, unknown> = {};
 

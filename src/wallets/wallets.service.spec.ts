@@ -24,10 +24,17 @@ const mockPrismaWallet = {
   count: jest.fn(),
 };
 
+// Shared mock Prisma user methods (used by network preference lookups)
+const mockPrismaUser = {
+  findUnique: jest.fn(),
+  update: jest.fn(),
+};
+
 // Mock the PrismaClient module so new PrismaClient() returns our mock
 jest.mock('../generated/prisma/client', () => ({
   PrismaClient: jest.fn(() => ({
     wallet: mockPrismaWallet,
+    user: mockPrismaUser,
   })),
 }));
 
@@ -722,6 +729,78 @@ describe('WalletsService', () => {
       const result = await service.findAll({ limit: 20, offset: 4 });
 
       expect(result.hasMore).toBe(false);
+    });
+  });
+
+  describe('getNetworkPreference', () => {
+    it('returns the persisted preference for an existing user', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        defaultNetwork: 'TESTNET',
+      });
+
+      const result = await service.getNetworkPreference('user-1');
+
+      expect(mockPrismaUser.findUnique).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+      });
+      expect(result).toEqual({
+        userId: 'user-1',
+        defaultNetwork: WalletNetwork.TESTNET,
+      });
+    });
+
+    it('returns null defaultNetwork when the user has no preference set', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        defaultNetwork: null,
+      });
+
+      const result = await service.getNetworkPreference('user-1');
+
+      expect(result).toEqual({ userId: 'user-1', defaultNetwork: null });
+    });
+
+    it('throws NotFoundException when the user does not exist', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.getNetworkPreference('missing-user'),
+      ).rejects.toThrow('User with ID missing-user not found');
+    });
+  });
+
+  describe('setNetworkPreference', () => {
+    it('persists the network preference for an existing user', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue({ id: 'user-1' });
+      mockPrismaUser.update.mockResolvedValue({
+        id: 'user-1',
+        defaultNetwork: 'MAINNET',
+      });
+
+      const result = await service.setNetworkPreference(
+        'user-1',
+        WalletNetwork.MAINNET,
+      );
+
+      expect(mockPrismaUser.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { defaultNetwork: WalletNetwork.MAINNET },
+      });
+      expect(result).toEqual({
+        userId: 'user-1',
+        defaultNetwork: WalletNetwork.MAINNET,
+      });
+    });
+
+    it('throws NotFoundException when the user does not exist', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.setNetworkPreference('missing-user', WalletNetwork.MAINNET),
+      ).rejects.toThrow('User with ID missing-user not found');
+
+      expect(mockPrismaUser.update).not.toHaveBeenCalled();
     });
   });
 });

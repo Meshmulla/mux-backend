@@ -21,6 +21,8 @@ describe('WalletsController', () => {
     getWalletStatus: jest.fn(),
     activateWallet: jest.fn(),
     findWalletsByUserId: jest.fn(),
+    getNetworkPreference: jest.fn(),
+    setNetworkPreference: jest.fn(),
   };
 
   const mockWalletCreationOrchestrator = {
@@ -238,6 +240,43 @@ describe('WalletsController', () => {
       );
       expect(mockWalletsService.findWalletsByUserId).toHaveBeenCalledWith(
         'user-123',
+      );
+    });
+  });
+
+  describe('getNetworkPreference', () => {
+    it('should return the network preference for a userId', async () => {
+      const preference = {
+        userId: 'user-123',
+        defaultNetwork: WalletNetwork.TESTNET,
+      };
+      mockWalletsService.getNetworkPreference.mockResolvedValue(preference);
+
+      await expect(
+        controller.getNetworkPreference('user-123'),
+      ).resolves.toEqual(preference);
+      expect(mockWalletsService.getNetworkPreference).toHaveBeenCalledWith(
+        'user-123',
+      );
+    });
+  });
+
+  describe('setNetworkPreference', () => {
+    it('should persist the network preference for a userId', async () => {
+      const preference = {
+        userId: 'user-123',
+        defaultNetwork: WalletNetwork.MAINNET,
+      };
+      mockWalletsService.setNetworkPreference.mockResolvedValue(preference);
+
+      await expect(
+        controller.setNetworkPreference('user-123', {
+          network: WalletNetwork.MAINNET,
+        }),
+      ).resolves.toEqual(preference);
+      expect(mockWalletsService.setNetworkPreference).toHaveBeenCalledWith(
+        'user-123',
+        WalletNetwork.MAINNET,
       );
     });
   });

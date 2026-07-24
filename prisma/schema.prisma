@@ -94,6 +94,10 @@ model User {
   /// Authentication provider type
   authProvider String @default("UNKNOWN")
 
+  /// Preferred network (mainnet/testnet) for wallet operations that don't
+  /// explicitly specify one. Null = no preference set.
+  defaultNetwork WalletNetwork?
+
   /// Last login timestamp
   lastLoginAt DateTime?
 
