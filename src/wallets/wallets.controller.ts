@@ -6,6 +6,8 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
+  UseGuards,
 } from '@nestjs/common';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
@@ -14,6 +16,7 @@ import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator'
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
 import { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { PaginationQuery } from '../common/pagination/pagination.util';
 
 @Controller('wallets')
 @UseGuards(ApiKeyGuard)
@@ -26,8 +29,8 @@ export class WalletsController {
   }
 
   @Get()
-  findAll() {
-    return this.walletsService.findAll();
+  findAll(@Query() query: PaginationQuery) {
+    return this.walletsService.findAll(query);
   }
 
   @Get(':id')

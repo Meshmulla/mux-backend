@@ -6,9 +6,11 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
+import { PaginationQuery } from '../common/pagination/pagination.util';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { ApiKeyGuard } from '../auth/api-key.guard';
@@ -29,8 +31,8 @@ export class PaymentsController {
   }
 
   @Get()
-  findAll() {
-    return this.paymentsService.findAll();
+  findAll(@Query() query: PaginationQuery) {
+    return this.paymentsService.findAll(query);
   }
 
   @Get(':id')

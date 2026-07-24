@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaClient } from '../generated/prisma/client';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
+import { WalletNetwork } from '../wallets/domain/wallet.model';
 import {
   WalletBalance,
   Asset,
@@ -122,9 +123,10 @@ export class BalanceIndexerService {
         throw new NotFoundException(`Wallet ${walletId} not found`);
       }
 
-      // Check if account exists on-chain
+      // Check if account exists on-chain (on the wallet's own network)
       const accountExists = await this.stellarHorizonService.accountExists(
         wallet.publicKey,
+        wallet.network as WalletNetwork,
       );
 
       if (!accountExists) {
@@ -135,8 +137,10 @@ export class BalanceIndexerService {
       }
 
       // Fetch balances from Horizon
-      const horizonBalances =
-        await this.stellarHorizonService.getAccountBalances(wallet.publicKey);
+      const horizonBalances = await this.stellarHorizonService.getAccountBalances(
+        wallet.publicKey,
+        wallet.network as WalletNetwork,
+      );
 
       // Update indexed balances
       let balancesUpdated = 0;
@@ -213,6 +217,7 @@ export class BalanceIndexerService {
     // Fetch from Horizon
     const horizonBalances = await this.stellarHorizonService.getAccountBalances(
       wallet.publicKey,
+      wallet.network as WalletNetwork,
     );
 
     const onChainBalance = horizonBalances.find((b) =>

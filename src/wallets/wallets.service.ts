@@ -12,6 +12,11 @@ import {
   DecryptionError,
 } from '../encryption/encryption.service';
 import * as crypto from 'crypto';
+import {
+  PaginationQuery,
+  parsePagination,
+  buildPaginatedResponse,
+} from '../common/pagination/pagination.util';
 
 export interface CreateWalletRequest {
   userId: string;
@@ -349,8 +354,19 @@ export class WalletsService {
     return this.createWallet(createWalletDto);
   }
 
-  findAll() {
-    return this.prisma.wallet.findMany();
+  async findAll(query: PaginationQuery = {}) {
+    const { page, limit, skip } = parsePagination(query);
+
+    const [data, total] = await Promise.all([
+      this.prisma.wallet.findMany({
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.wallet.count(),
+    ]);
+
+    return buildPaginatedResponse(data, total, page, limit);
   }
 
   findOne(id: number) {

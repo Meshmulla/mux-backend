@@ -17,6 +17,7 @@ import {
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
 import { TransactionStatus } from './domain/transaction.model';
+import { PaginationQuery } from '../common/pagination/pagination.util';
 
 @Controller('transactions')
 @UseGuards(ApiKeyGuard, RateLimitGuard)
@@ -34,15 +35,14 @@ export class TransactionsController {
     @Query('senderWalletId') senderWalletId?: string,
     @Query('receiverWalletId') receiverWalletId?: string,
     @Query('status') status?: TransactionStatus,
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
+    @Query() pagination?: PaginationQuery,
   ) {
     return this.transactionsService.findAll({
       senderWalletId,
       receiverWalletId,
       status: status as TransactionStatus,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      page: pagination?.page,
+      limit: pagination?.limit,
     });
   }
 

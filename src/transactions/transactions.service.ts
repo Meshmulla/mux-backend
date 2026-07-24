@@ -17,6 +17,11 @@ import {
   StellarNetworkReferences,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
+import {
+  parsePagination,
+  buildPaginatedResponse,
+} from '../common/pagination/pagination.util';
+import { validateMemo } from '../common/stellar/memo.util';
 
 @Injectable()
 export class TransactionsService {
@@ -28,7 +33,11 @@ export class TransactionsService {
    * Create a new transaction in PENDING state
    */
   async create(createTransactionDto: CreateTransactionDto): Promise<TransactionEntity> {
-    const { amount, asset, senderWalletId, receiverWalletId, metadata } = createTransactionDto;
+    const { amount, asset, senderWalletId, receiverWalletId, memo, metadata } =
+      createTransactionDto;
+
+    // Validate memo length/type against Stellar protocol constraints before touching persistence
+    validateMemo(memo);
 
     // Validate wallets exist
     const senderWallet = await this.prisma.wallet.findUnique({
@@ -59,7 +68,7 @@ export class TransactionsService {
         senderWalletId,
         receiverWalletId: receiverWalletId ?? null,
         status: TransactionStatus.PENDING,
-        metadata: metadata ?? null,
+        metadata: memo ? { ...metadata, memo } : (metadata ?? null),
       },
     });
 
@@ -75,9 +84,9 @@ export class TransactionsService {
     senderWalletId?: string;
     receiverWalletId?: string;
     status?: TransactionStatus;
-    limit?: number;
-    offset?: number;
-  }): Promise<TransactionEntity[]> {
+    page?: string;
+    limit?: string;
+  }) {
     const where: any = {};
 
     if (filters?.senderWalletId) {
@@ -92,14 +101,27 @@ export class TransactionsService {
       where.status = filters.status;
     }
 
-    const transactions = await this.prisma.transaction.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: filters?.limit,
-      skip: filters?.offset,
+    const { page, limit, skip } = parsePagination({
+      page: filters?.page,
+      limit: filters?.limit,
     });
 
-    return transactions.map((t) => this.mapPrismaToEntity(t));
+    const [transactions, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip,
+      }),
+      this.prisma.transaction.count({ where }),
+    ]);
+
+    return buildPaginatedResponse(
+      transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+      page,
+      limit,
+    );
   }
 
   /**

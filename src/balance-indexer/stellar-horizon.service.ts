@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Asset, AssetType, BalanceUpdate } from './domain/balance.model';
+import { WalletNetwork } from '../wallets/domain/wallet.model';
 
 export interface HorizonAccountResponse {
   id: string;
@@ -24,26 +25,45 @@ export interface HorizonBalance {
 @Injectable()
 export class StellarHorizonService {
   private readonly logger = new Logger(StellarHorizonService.name);
-  private readonly horizonUrl: string;
+  private readonly horizonUrls: Record<WalletNetwork, string>;
 
   constructor(private readonly configService: ConfigService) {
-    // Default to testnet
-    this.horizonUrl = this.configService.get<string>(
-      'STELLAR_HORIZON_URL',
-      'https://horizon-testnet.stellar.org',
-    );
+    this.horizonUrls = {
+      [WalletNetwork.TESTNET]: this.configService.get<string>(
+        'STELLAR_HORIZON_TESTNET_URL',
+        'https://horizon-testnet.stellar.org',
+      ),
+      [WalletNetwork.MAINNET]: this.configService.get<string>(
+        'STELLAR_HORIZON_MAINNET_URL',
+        'https://horizon.stellar.org',
+      ),
+    };
 
-    this.logger.log(`Initialized Stellar Horizon client: ${this.horizonUrl}`);
+    this.logger.log(
+      `Initialized Stellar Horizon clients: testnet=${this.horizonUrls[WalletNetwork.TESTNET]}, mainnet=${this.horizonUrls[WalletNetwork.MAINNET]}`,
+    );
+  }
+
+  /**
+   * Resolves the Horizon base URL for a given network. Defaults to testnet
+   * when no network is specified, matching prior (single-URL) behavior.
+   */
+  private resolveUrl(network: WalletNetwork = WalletNetwork.TESTNET): string {
+    return this.horizonUrls[network];
   }
 
   /**
    * Fetches account balances from Stellar Horizon
    */
-  async getAccountBalances(publicKey: string): Promise<BalanceUpdate[]> {
+  async getAccountBalances(
+    publicKey: string,
+    network: WalletNetwork = WalletNetwork.TESTNET,
+  ): Promise<BalanceUpdate[]> {
+    const horizonUrl = this.resolveUrl(network);
     try {
 
       // Simplified mock implementation
-      const response = await this.mockHorizonRequest(publicKey);
+      const response = await this.mockHorizonRequest(publicKey, horizonUrl);
 
       const balances: BalanceUpdate[] = response.balances.map((balance) => ({
         walletId: '', // Will be set by caller
@@ -69,9 +89,12 @@ export class StellarHorizonService {
   /**
    * Checks if an account exists on-chain
    */
-  async accountExists(publicKey: string): Promise<boolean> {
+  async accountExists(
+    publicKey: string,
+    network: WalletNetwork = WalletNetwork.TESTNET,
+  ): Promise<boolean> {
     try {
-      await this.mockHorizonRequest(publicKey);
+      await this.mockHorizonRequest(publicKey, this.resolveUrl(network));
       return true;
     } catch (error) {
       if (error.message.includes('404')) {
@@ -119,7 +142,10 @@ export class StellarHorizonService {
    */
   private async mockHorizonRequest(
     publicKey: string,
+    horizonUrl: string,
   ): Promise<HorizonAccountResponse> {
+    this.logger.debug(`Requesting account ${publicKey} from ${horizonUrl}`);
+
     // Simulate API call delay
     await new Promise((resolve) => setTimeout(resolve, 100));
 

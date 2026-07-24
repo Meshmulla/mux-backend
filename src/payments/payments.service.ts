@@ -3,6 +3,11 @@ import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from '../limits/limits.service';
+import {
+  PaginationQuery,
+  parsePagination,
+  buildPaginatedResponse,
+} from '../common/pagination/pagination.util';
 
 @Injectable()
 export class PaymentsService {
@@ -29,8 +34,19 @@ export class PaymentsService {
     });
   }
 
-  findAll() {
-    return this.prisma.payment.findMany();
+  async findAll(query: PaginationQuery = {}) {
+    const { page, limit, skip } = parsePagination(query);
+
+    const [data, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.payment.count(),
+    ]);
+
+    return buildPaginatedResponse(data, total, page, limit);
   }
 
   findOne(id: number) {
