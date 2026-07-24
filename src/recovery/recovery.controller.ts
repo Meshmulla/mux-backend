@@ -364,6 +364,60 @@ export class RecoveryController {
   }
 
   @ApiOperation({
+    summary: 'Initiate a recovery request',
+    description:
+      'Initiate review of a PENDING recovery request, moving it to IN_REVIEW. Only requests currently in PENDING status can be initiated.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Recovery request UUID',
+    example: '660e8400-e29b-41d4-a716-446655440001',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Recovery request initiated and moved to IN_REVIEW',
+    schema: {
+      example: {
+        id: '660e8400-e29b-41d4-a716-446655440001',
+        walletId: '550e8400-e29b-41d4-a716-446655440000',
+        requester: 'user_abc123',
+        status: 'IN_REVIEW',
+        metadata: { reason: 'lost_access' },
+        createdAt: '2026-06-29T12:00:00.000Z',
+        updatedAt: '2026-06-29T12:00:00.000Z',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Bad request - invalid UUID or recovery request is not in PENDING status',
+    schema: {
+      example: {
+        statusCode: 400,
+        message:
+          'Recovery request cannot be initiated from status IN_REVIEW; it must be PENDING',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Recovery request not found',
+    schema: {
+      example: {
+        statusCode: 404,
+        message: 'Recovery request not found',
+        error: 'Not Found',
+      },
+    },
+  })
+  @Post(':id/initiate')
+  initiate(@Param('id', ParseUUIDPipe) id: string) {
+    return this.recoveryService.initiate(id);
+  }
+
+  @ApiOperation({
     summary: 'Delete a recovery request',
     description: 'Permanently delete a recovery request by ID.',
   })

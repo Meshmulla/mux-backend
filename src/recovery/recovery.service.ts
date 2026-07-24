@@ -146,6 +146,28 @@ export class RecoveryService {
     return recovery;
   }
 
+  async initiate(id: string): Promise<RecoveryRequest> {
+    const recovery = await this.findOne(id);
+
+    if (recovery.status !== RecoveryStatus.PENDING) {
+      throw new BadRequestException(
+        `Recovery request cannot be initiated from status ${recovery.status}; it must be PENDING`,
+      );
+    }
+
+    const transitioned = transitionRecoveryStatus(
+      recovery,
+      RecoveryStatus.IN_REVIEW,
+    );
+
+    const result = await this.prisma.recoveryRequest.update({
+      where: { id },
+      data: { status: transitioned.status },
+    });
+
+    return this.mapPrismaToEntity(result);
+  }
+
   async remove(id: string): Promise<void> {
     await this.findOne(id);
     await this.prisma.recoveryRequest.delete({
