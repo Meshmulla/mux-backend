@@ -8,6 +8,12 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
 import {
+  WalletNetwork,
+  WalletStatus,
+  Wallet,
+  canTransitionWalletStatus,
+} from './domain/wallet.model';
+import {
   Wallet,
   WalletNetwork,
   WalletStatus,
@@ -233,6 +239,17 @@ export class WalletsService {
       throw new Error('Wallet status update failed');
     }
   }
+
+    const currentStatus = wallet.status as WalletStatus;
+
+    if (
+      currentStatus !== status &&
+      !canTransitionWalletStatus(currentStatus, status)
+    ) {
+      throw new ConflictException(
+        `Invalid wallet status transition: ${currentStatus} -> ${status}`,
+      );
+    }
 
   async getWalletStatus(walletId: string): Promise<WalletStatusResponse> {
     const wallet = await this.prisma.wallet.findUnique({ where: { id: walletId } });

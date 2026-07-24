@@ -14,6 +14,10 @@ export interface HorizonBalance {
 @Injectable()
 export class StellarHorizonService {
   private readonly logger = new Logger(StellarHorizonService.name);
+  private readonly horizonUrl: string;
+  private readonly maxRetries: number;
+  private readonly retryBackoffMs: number;
+  private readonly retryJitterMs: number;
   private readonly server: Server;
 
   constructor(
@@ -25,6 +29,20 @@ export class StellarHorizonService {
       'https://horizon-testnet.stellar.org',
     );
 
+    this.maxRetries = this.configService.get<number>(
+      'STELLAR_HORIZON_MAX_RETRIES',
+      3,
+    );
+    this.retryBackoffMs = this.configService.get<number>(
+      'STELLAR_HORIZON_RETRY_BACKOFF_MS',
+      500,
+    );
+    this.retryJitterMs = this.configService.get<number>(
+      'STELLAR_HORIZON_RETRY_JITTER_MS',
+      250,
+    );
+
+    this.logger.log(`Initialized Stellar Horizon client: ${this.horizonUrl}`);
     this.server = new Server(horizonUrl, { allowHttp: false });
     this.logger.log(`Initialized Stellar Horizon client: ${horizonUrl}`);
   }
@@ -69,6 +87,15 @@ export class StellarHorizonService {
         `loadAccount(${publicKey.substring(0, 8)}...)`,
       );
 
+      // Simplified mock implementation
+      const response = await this.withRetry(
+        () => this.mockHorizonRequest(publicKey),
+        `getAccountBalances(${publicKey.substring(0, 8)}...)`,
+      );
+
+      const balances: BalanceUpdate[] = response.balances.map((balance) => ({
+        walletId: '', // Will be set by caller
+        asset: this.parseAsset(balance),
       const balances: BalanceUpdate[] = account.balances.map((balance) => ({
         walletId: '',
         asset: this.parseAsset(balance as unknown as HorizonBalance),
@@ -97,6 +124,8 @@ export class StellarHorizonService {
     const requestId = this.requestContext.getRequestId();
     const logPrefix = requestId ? `[${requestId}] ` : '';
     try {
+      await this.withRetry(
+        () => this.mockHorizonRequest(publicKey),
       await this.executeWithRetry(
         () => this.server.loadAccount(publicKey),
         `accountExists(${publicKey.substring(0, 8)}...)`,
@@ -116,6 +145,55 @@ export class StellarHorizonService {
       );
       throw error;
     }
+  }
+
+  /**
+   * Retries a Horizon request with exponential backoff and jitter.
+   * 404s (account not found) are not retried since they are not transient.
+   */
+  private async withRetry<T>(
+    fn: () => Promise<T>,
+    operation: string,
+  ): Promise<T> {
+    let lastError: Error;
+
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+
+        const isLastAttempt = attempt === this.maxRetries;
+        const isRetryable = !error.message?.includes('404');
+
+        if (isLastAttempt || !isRetryable) {
+          throw error;
+        }
+
+        const delayMs = this.calculateBackoffWithJitter(attempt);
+        this.logger.warn(
+          `Horizon request failed for ${operation} (attempt ${attempt}/${this.maxRetries}), ` +
+            `retrying in ${delayMs}ms: ${error.message}`,
+        );
+        await this.sleep(delayMs);
+      }
+    }
+
+    throw lastError;
+  }
+
+  /**
+   * Calculates exponential backoff delay with random jitter to avoid
+   * synchronized retry storms against Horizon.
+   */
+  private calculateBackoffWithJitter(attempt: number): number {
+    const exponentialDelay = this.retryBackoffMs * Math.pow(2, attempt - 1);
+    const jitter = Math.random() * this.retryJitterMs;
+    return Math.round(exponentialDelay + jitter);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
