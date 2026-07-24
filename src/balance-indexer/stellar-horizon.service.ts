@@ -1,6 +1,7 @@
 import {
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -11,6 +12,7 @@ import {
   CircuitBreaker,
   CircuitOpenError,
 } from '../common/utils/circuit-breaker';
+import { HorizonAccountCacheService } from './horizon-account-cache.service';
 
 export interface HorizonBalance {
   asset_type: string;
@@ -32,6 +34,7 @@ export class StellarHorizonService {
   constructor(
     private readonly configService: ConfigService,
     private readonly requestContext: RequestContextService,
+    @Optional() private readonly horizonAccountCache?: HorizonAccountCacheService,
   ) {
     const horizonUrl = this.configService.get<string>(
       'STELLAR_HORIZON_URL',
@@ -160,11 +163,19 @@ export class StellarHorizonService {
   }
 
   /**
-   * Checks if an account exists on-chain
+   * Checks if an account exists on-chain.
+   * Results are cached for a short TTL via HorizonAccountCacheService to
+   * avoid redundant Horizon round-trips in high-frequency payment flows.
    */
   async accountExists(publicKey: string): Promise<boolean> {
     const requestId = this.requestContext.getRequestId();
     const logPrefix = requestId ? `[${requestId}] ` : '';
+
+    const cached = this.horizonAccountCache?.get(publicKey);
+    if (cached !== null && cached !== undefined) {
+      return cached;
+    }
+
     try {
       await this.withRetry(
         () => this.mockHorizonRequest(publicKey),
@@ -172,6 +183,7 @@ export class StellarHorizonService {
         () => this.server.loadAccount(publicKey),
         `accountExists(${publicKey.substring(0, 8)}...)`,
       );
+      this.horizonAccountCache?.set(publicKey, true);
       return true;
     } catch (error) {
       if (
@@ -179,6 +191,7 @@ export class StellarHorizonService {
         error?.message?.includes('404') ||
         error?.name === 'NotFoundError'
       ) {
+        this.horizonAccountCache?.set(publicKey, false);
         return false;
       }
       this.logger.error(
