@@ -14,6 +14,7 @@ import { LimitUpdatedEvent } from './events/limit-updated.event';
 import { LimitExceededEvent } from './events/limit-exceeded.event';
 import { retryWithBackoff } from '../common/utils/retry';
 import { MetricsService } from '../metrics/metrics.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 export const LIMIT_ERROR_CODES = {
   PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
@@ -40,6 +41,7 @@ export class LimitsService {
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
     private readonly metrics: MetricsService,
+    private readonly requestContext: RequestContextService,
   ) {}
 
   async setLimits(walletId: string, daily: number, perTx: number) {

@@ -23,6 +23,7 @@ import { PaymentCompletedEvent } from './events/payment-completed.event';
 import { PaymentFailedEvent } from './events/payment-failed.event';
 import { retryWithBackoff } from '../common/utils/retry';
 import { MetricsService } from '../metrics/metrics.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -42,6 +43,7 @@ export class PaymentsService {
     private readonly walletsService: WalletsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly metrics: MetricsService,
+    private readonly requestContext: RequestContextService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
@@ -54,7 +56,21 @@ export class PaymentsService {
       amount,
       currency,
       description,
+      idempotencyKey,
     } = createPaymentDto;
+
+    if (idempotencyKey) {
+      const existing = await this.prisma.payment.findUnique({
+        where: { idempotencyKey },
+      });
+      if (existing) {
+        this.logger.log(
+          `Idempotency hit for key ${idempotencyKey}, returning existing payment ${existing.id} requestId=${requestId}`,
+        );
+        this.metrics.incrementPaymentIdempotencyHit();
+        return existing;
+      }
+    }
 
     const senderWallet = await retryWithBackoff(
       () => this.walletsService.findWalletById(walletId),
@@ -75,7 +91,7 @@ export class PaymentsService {
       this.logger,
     );
     await retryWithBackoff(
-      () => this.limitsService.checkLimits(walletId, amount),
+      () => this.paymentLimitsPort.checkLimits(walletId, amount),
       3,
       100,
       this.logger,
@@ -90,6 +106,7 @@ export class PaymentsService {
         description,
         userId: fromId,
         status: PaymentStatus.PENDING,
+        idempotencyKey: idempotencyKey ?? null,
       },
     });
 

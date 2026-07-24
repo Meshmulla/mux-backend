@@ -4,6 +4,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { LimitsService, LimitExceededException } from './limits.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetricsService } from '../metrics/metrics.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 import { LimitUpdatedEvent } from './events/limit-updated.event';
 import { LimitExceededEvent } from './events/limit-exceeded.event';
 
@@ -12,6 +13,7 @@ describe('LimitsService', () => {
   let prisma: any;
   let eventEmitter: any;
   let metrics: any;
+  let requestContext: any;
 
   const walletId = 'wallet-uuid-1';
 
@@ -31,8 +33,7 @@ describe('LimitsService', () => {
       incrementLimitExceeded: jest.fn(),
       incrementLimitChecks: jest.fn(),
     };
-
-    cacheService = { get: jest.fn(), set: jest.fn(), delete: jest.fn() };
+    requestContext = { getRequestId: jest.fn().mockReturnValue('req-1') };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -40,6 +41,7 @@ describe('LimitsService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: MetricsService, useValue: metrics },
+        { provide: RequestContextService, useValue: requestContext },
       ],
     }).compile();
 
