@@ -153,6 +153,38 @@ export class RecoveryService {
     });
   }
 
+  async getWalletRecoveryStatus(walletId: string) {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+
+    if (!wallet) {
+      throw new NotFoundException('Wallet not found');
+    }
+
+    const recovery = await this.prisma.recoveryRequest.findFirst({
+      where: {
+        walletId,
+        status: {
+          notIn: [
+            RecoveryStatus.REJECTED,
+            RecoveryStatus.COMPLETED,
+            RecoveryStatus.CANCELLED,
+          ],
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      walletId,
+      hasActiveRecovery: !!recovery,
+      currentStatus: recovery?.status as RecoveryStatus,
+      recoveryRequestId: recovery?.id,
+      lastUpdatedAt: recovery?.updatedAt,
+    };
+  }
+
   private mapPrismaToEntity(prismaRecovery: any): RecoveryRequest {
     return {
       id: prismaRecovery.id,

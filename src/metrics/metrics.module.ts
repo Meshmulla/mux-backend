@@ -32,6 +32,10 @@ import { MetricsController } from './metrics.controller';
       help: 'Total number of limit checks performed',
       labelNames: ['result'],
     }),
+    makeCounterProvider({
+      name: 'payment_idempotency_hits_total',
+      help: 'Total number of payment create requests deduplicated via idempotency key',
+    }),
   ],
   exports: [MetricsService],
 })

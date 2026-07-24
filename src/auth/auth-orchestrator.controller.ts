@@ -7,6 +7,7 @@ import {
   Get,
   Param,
   Headers,
+  Req,
   Res,
   UseGuards,
   Query,
@@ -20,7 +21,7 @@ import {
   ApiQuery,
   ApiHeader,
 } from '@nestjs/swagger';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import {
   AuthOrchestrator,
   type AuthenticationRequest,
@@ -174,11 +175,14 @@ export class AuthOrchestratorController {
   async authenticate(
     @Body() request: AuthenticationRequest,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() httpRequest: Request,
     @Res() response: Response,
   ): Promise<void> {
     const requestWithIdempotency: AuthenticationRequestWithIdempotency = {
       ...request,
       idempotencyKey,
+      ipAddress: httpRequest.ip,
+      userAgent: httpRequest.headers['user-agent'],
     };
 
     const result = await this.authOrchestrator.handleAuthentication(

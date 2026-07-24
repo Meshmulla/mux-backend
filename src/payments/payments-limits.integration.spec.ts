@@ -56,6 +56,7 @@ describe('Payments and Limits Integration', () => {
             incrementPaymentsCreated: jest.fn(),
             incrementPaymentsFailed: jest.fn(),
             recordPaymentProcessingDuration: jest.fn(),
+            incrementPaymentIdempotencyHit: jest.fn(),
             incrementLimitExceeded: jest.fn(),
             incrementLimitChecks: jest.fn(),
           },
