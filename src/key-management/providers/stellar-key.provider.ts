@@ -1,22 +1,26 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { IKeyProvider } from '../interfaces/key-provider.interface';
 import {
   GeneratedKeyPair,
   SignatureResult,
   KeyType,
 } from '../domain/key-types';
-import { EncryptionService } from '../../encryption/encryption.service';
-import * as crypto from 'crypto';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../../encryption/encryption.service';
+import { SafeLogger } from '../../common/safe-logger';
+import { Keypair } from 'stellar-sdk';
+import { StrKeyHelper } from '../utils/strkey.helper';
 
 /**
  * Stellar Ed25519 key provider implementation
  *
- * In production, replace with stellar-sdk:
- * import { Keypair } from 'stellar-sdk';
+ * In production, using stellar-sdk:
  */
 @Injectable()
 export class StellarKeyProvider implements IKeyProvider {
-  private readonly logger = new Logger(StellarKeyProvider.name);
+  private readonly logger = new SafeLogger(StellarKeyProvider.name);
 
   constructor(private readonly encryptionService: EncryptionService) {}
 
@@ -26,16 +30,15 @@ export class StellarKeyProvider implements IKeyProvider {
     }
 
     try {
-      // In production, use: const keypair = Keypair.random();
-      const keyPair = crypto.generateKeyPairSync('ed25519', {
-        publicKeyEncoding: { type: 'spki', format: 'der' },
-        privateKeyEncoding: { type: 'pkcs8', format: 'der' },
-      });
+      // In production, use stellar-sdk to generate a random Ed25519 keypair
+      const keypair = Keypair.random();
 
-      const publicKey = this.formatStellarPublicKey(keyPair.publicKey);
-      const privateKey = this.formatStellarPrivateKey(keyPair.privateKey);
+      const publicKey = keypair.publicKey();
+      const privateKey = keypair.secret();
 
-      this.logger.log('Generated new Stellar Ed25519 keypair');
+      this.logger.log(
+        'Generated new Stellar Ed25519 keypair using stellar-sdk',
+      );
 
       return {
         publicKey,
@@ -57,36 +60,24 @@ export class StellarKeyProvider implements IKeyProvider {
     dataToSign: Buffer,
   ): Promise<SignatureResult> {
     try {
-      // Decrypt the private key material
+      // Decrypt the private key material (may throw DecryptionError)
       const privateKeyMaterial =
         this.encryptionService.deserializeAndDecrypt(encryptedKeyMaterial);
 
-      // Parse the private key
-      const privateKey = this.parseStellarPrivateKey(privateKeyMaterial);
+      // Validate it's a proper secret seed
+      if (!StrKeyHelper.isValidEd25519SecretSeed(privateKeyMaterial)) {
+        throw new Error('Invalid Ed25519 secret seed format');
+      }
 
       // Sign the data
-      // In production, use: const signature = keypair.sign(dataToSign);
-      const signature = crypto.sign(null, dataToSign, {
-        key: privateKey,
-        format: 'der',
-        type: 'pkcs8',
-      });
+      const keypair = Keypair.fromSecret(privateKeyMaterial);
+      const signature = keypair.sign(dataToSign);
 
-      // Derive public key from private key for verification
-      const keyObject = crypto.createPrivateKey({
-        key: privateKey,
-        format: 'der',
-        type: 'pkcs8',
-      });
+      const publicKey = keypair.publicKey();
 
-      const publicKeyDer = crypto.createPublicKey(keyObject).export({
-        type: 'spki',
-        format: 'der',
-      });
-
-      const publicKey = this.formatStellarPublicKey(publicKeyDer);
-
-      this.logger.log('Successfully signed data with Stellar key');
+      this.logger.log(
+        `Successfully signed data with Stellar key (${StrKeyHelper.maskKey(publicKey)})`,
+      );
 
       return {
         signature: signature.toString('base64'),
@@ -95,6 +86,16 @@ export class StellarKeyProvider implements IKeyProvider {
         timestamp: new Date(),
       };
     } catch (error) {
+      // Propagate DecryptionError directly to preserve error context
+      if (error instanceof DecryptionError) {
+        this.logger.error('Key decryption failed during signing:', {
+          code: error.code,
+          message: error.message,
+        });
+        throw error;
+      }
+
+      // Handle other signing errors (e.g., invalid key format, stellar-sdk failures)
       this.logger.error('Signing operation failed:', error);
       throw new Error('Signing failed');
     }
@@ -105,6 +106,12 @@ export class StellarKeyProvider implements IKeyProvider {
     encryptedKeyMaterial: string,
   ): Promise<boolean> {
     try {
+      // Validate public key format first
+      if (!StrKeyHelper.isValidEd25519PublicKey(publicKey)) {
+        this.logger.warn('Invalid Ed25519 public key format');
+        return false;
+      }
+
       // Test data for validation
       const testData = Buffer.from('validation-test-data');
 
@@ -114,6 +121,11 @@ export class StellarKeyProvider implements IKeyProvider {
       // Verify the signature matches the public key
       return signatureResult.publicKey === publicKey;
     } catch (error) {
+      // Propagate DecryptionError so callers can distinguish corrupt key material
+      if (error instanceof DecryptionError) {
+        throw error;
+      }
+
       this.logger.error('Keypair validation failed:', error);
       return false;
     }
@@ -121,31 +133,5 @@ export class StellarKeyProvider implements IKeyProvider {
 
   getProviderName(): string {
     return 'StellarKeyProvider';
-  }
-
-  /**
-   * Formats public key in Stellar format (G... address)
-   * In production, use stellar-sdk's encoding
-   */
-  private formatStellarPublicKey(publicKeyDer: Buffer): string {
-    // Simplified format - in production use stellar-sdk's StrKey.encodeEd25519PublicKey
-    const hash = crypto.createHash('sha256').update(publicKeyDer).digest();
-    return `G${hash.toString('hex').substring(0, 54).toUpperCase()}`;
-  }
-
-  /**
-   * Formats private key in Stellar format (S... secret)
-   * In production, use stellar-sdk's encoding
-   */
-  private formatStellarPrivateKey(privateKeyDer: Buffer): string {
-    // Simplified format - in production use stellar-sdk's StrKey.encodeEd25519SecretSeed
-    return privateKeyDer.toString('hex');
-  }
-
-  /**
-   * Parses Stellar private key back to usable format
-   */
-  private parseStellarPrivateKey(privateKeyMaterial: string): Buffer {
-    return Buffer.from(privateKeyMaterial, 'hex');
   }
 }

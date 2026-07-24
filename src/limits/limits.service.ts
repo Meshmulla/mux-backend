@@ -1,76 +1,311 @@
-import { Injectable } from '@nestjs/common';
-import { CreateLimitDto } from './dto/create-limit.dto';
-import { UpdateLimitDto } from './dto/update-limit.dto';
+import {
+  Injectable,
+  NotFoundException,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
+import { UpdateLimitDto } from './dto/update-limit.dto';
+import { LimitUpdatedEvent } from './events/limit-updated.event';
+import { LimitExceededEvent } from './events/limit-exceeded.event';
+import { LimitsResponseDto } from './dto/limits-response.dto';
+import { retryWithBackoff } from '../common/utils/retry';
+import { MetricsService } from '../metrics/metrics.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+
+export const LIMIT_ERROR_CODES = {
+  PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
+  DAILY_LIMIT_EXCEEDED: 'LIMIT_DAILY_EXCEEDED',
+} as const;
+
+export type LimitErrorCode =
+  (typeof LIMIT_ERROR_CODES)[keyof typeof LIMIT_ERROR_CODES];
+
+export class LimitExceededException extends HttpException {
+  constructor(
+    public readonly errorCode: LimitErrorCode,
+    message: string,
+  ) {
+    super({ errorCode, message }, HttpStatus.UNPROCESSABLE_ENTITY);
+  }
+}
 
 @Injectable()
 export class LimitsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(LimitsService.name);
 
-  async setLimits(userId: number, daily: number, perTx: number) {
-    return this.prisma.userLimit.upsert({
-      where: { userId },
-      update: { dailyLimit: daily, perTransactionLimit: perTx },
-      create: { userId, dailyLimit: daily, perTransactionLimit: perTx },
-    });
-  }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
+    private readonly metrics: MetricsService,
+    private readonly requestContext: RequestContextService,
+  ) {}
 
-  async getLimits(userId: number) {
-    return this.prisma.userLimit.findUnique({
-      where: { userId },
-    });
-  }
+  async setLimits(walletId: string, daily: number, perTx: number) {
+    const existing = await retryWithBackoff(
+      () =>
+        this.prisma.walletLimit.findUnique({
+          where: { walletId },
+        }),
+      3,
+      100,
+      this.logger,
+    );
 
-  async checkLimits(userId: number, amount: number): Promise<void> {
-    const limits = await this.getLimits(userId);
-    if (!limits) return; // No limits set
+    const result = await retryWithBackoff(
+      () =>
+        this.prisma.walletLimit.upsert({
+          where: { walletId },
+          update: { dailyLimit: daily, perTransactionLimit: perTx, deletedAt: null },
+          create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
+        }),
+      3,
+      100,
+      this.logger,
+    );
 
-    if (amount > limits.perTransactionLimit) {
-      throw new Error(
-        `Transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
+    if (existing) {
+      if (existing.dailyLimit !== daily) {
+        this.eventEmitter.emit(
+          'limit.updated',
+          new LimitUpdatedEvent(
+            walletId,
+            'daily',
+            existing.dailyLimit,
+            daily,
+            new Date(),
+          ),
+        );
+      }
+      if (existing.perTransactionLimit !== perTx) {
+        this.eventEmitter.emit(
+          'limit.updated',
+          new LimitUpdatedEvent(
+            walletId,
+            'perTransaction',
+            existing.perTransactionLimit,
+            perTx,
+            new Date(),
+          ),
+        );
+      }
+    } else {
+      this.eventEmitter.emit(
+        'limit.updated',
+        new LimitUpdatedEvent(walletId, 'daily', null, daily, new Date()),
+      );
+      this.eventEmitter.emit(
+        'limit.updated',
+        new LimitUpdatedEvent(
+          walletId,
+          'perTransaction',
+          null,
+          perTx,
+          new Date(),
+        ),
       );
     }
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    return result;
+  }
 
-    const usage = await this.prisma.payment.aggregate({
-      where: {
-        fromId: userId,
-        createdAt: {
-          gte: startOfDay,
-        },
-      },
-      _sum: {
-        amount: true,
-      },
-    });
+  async getLimits(walletId: string): Promise<LimitsResponseDto | null> {
+    const limit = await retryWithBackoff(
+      () =>
+        this.prisma.walletLimit.findUnique({
+          where: { walletId },
+        }),
+      3,
+      100,
+      this.logger,
+    );
 
-    const currentDailyTotal = usage._sum.amount || 0;
-    if (currentDailyTotal + amount > limits.dailyLimit) {
-      throw new Error(
-        `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
+    if (!limit) {
+      return null;
+    }
+
+    const response: LimitsResponseDto = {
+      walletId: limit.walletId,
+      dailyLimit: limit.dailyLimit,
+      perTransactionLimit: limit.perTransactionLimit,
+    };
+
+    // Calculate remaining daily limit if a positive daily limit is configured
+    if (limit.dailyLimit > 0) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+
+      const txns = await retryWithBackoff(
+        () =>
+          this.prisma.transaction.findMany({
+            where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
+            select: { amount: true },
+          }),
+        3,
+        100,
+        this.logger,
+      );
+
+      const currentDailyTotal = txns.reduce(
+        (sum, t) => sum + Number(t.amount),
+        0,
+      );
+      response.remainingDailyLimit = Math.max(
+        0,
+        limit.dailyLimit - currentDailyTotal,
       );
     }
+
+    return response;
   }
 
-  create(createLimitDto: CreateLimitDto) {
-    return 'This action adds a new limit';
+  async checkLimits(walletId: string, amount: number): Promise<void> {
+    const limits = await this.getLimits(walletId);
+    if (!limits) {
+      this.metrics.incrementLimitChecks('allowed');
+      return;
+    }
+
+    this.logger.log(
+      `Checking limits walletId=${walletId} amount=${amount}`,
+    );
+
+    // Enforce per-transaction cap: a cap of 0 blocks all transactions
+    if (
+      limits.perTransactionLimit >= 0 &&
+      amount > limits.perTransactionLimit
+    ) {
+      this.eventEmitter.emit(
+        'limit.exceeded',
+        new LimitExceededEvent(
+          walletId,
+          'perTransaction',
+          limits.perTransactionLimit,
+          amount,
+          new Date(),
+        ),
+      );
+      throw new LimitExceededException(
+        LIMIT_ERROR_CODES.PER_TX_LIMIT_EXCEEDED,
+        `Per-transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
+      );
+    }
+
+    // Enforce daily cap only when a positive daily limit is configured
+    if (limits.dailyLimit > 0) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+
+      const txns = await retryWithBackoff(
+        () =>
+          this.prisma.transaction.findMany({
+            where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
+            select: { amount: true },
+          }),
+        3,
+        100,
+        this.logger,
+      );
+
+      const currentDailyTotal = txns.reduce(
+        (sum, t) => sum + Number(t.amount),
+        0,
+      );
+      if (currentDailyTotal + amount > limits.dailyLimit) {
+        this.metrics.incrementLimitExceeded('daily');
+        this.metrics.incrementLimitChecks('denied');
+        this.eventEmitter.emit(
+          'limit.exceeded',
+          new LimitExceededEvent(
+            walletId,
+            'daily',
+            limits.dailyLimit,
+            currentDailyTotal + amount,
+            new Date(),
+          ),
+        );
+        throw new LimitExceededException(
+          LIMIT_ERROR_CODES.DAILY_LIMIT_EXCEEDED,
+          `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
+        );
+      }
+    }
+
+    this.metrics.incrementLimitChecks('allowed');
   }
 
-  findAll() {
-    return `This action returns all limits`;
+  async removeLimits(walletId: string) {
+    const existing = await this.getLimits(walletId);
+    if (!existing)
+      throw new NotFoundException(`No limits found for wallet ${walletId}`);
+    return retryWithBackoff(
+      () => this.prisma.walletLimit.update({
+        where: { walletId },
+        data: { deletedAt: new Date() },
+      }),
+      3,
+      100,
+      this.logger,
+    );
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} limit`;
-  }
+  async updateLimits(
+    walletId: string,
+    daily?: number,
+    perTx?: number,
+  ) {
+    const existing = await this.getLimits(walletId);
+    if (!existing)
+      throw new NotFoundException(`No limits found for wallet ${walletId}`);
 
-  update(id: number, updateLimitDto: UpdateLimitDto) {
-    return `This action updates a #${id} limit`;
-  }
+    if (daily === undefined && perTx === undefined) {
+      return existing;
+    }
 
-  remove(id: number) {
-    return `This action removes a #${id} limit`;
+    const updateData: any = {};
+    if (daily !== undefined) updateData.dailyLimit = daily;
+    if (perTx !== undefined) updateData.perTransactionLimit = perTx;
+
+    const result = await retryWithBackoff(
+      () =>
+        this.prisma.walletLimit.update({
+          where: { walletId },
+          data: updateData,
+        }),
+      3,
+      100,
+      this.logger,
+    );
+
+    if (daily !== undefined && existing.dailyLimit !== daily) {
+      this.eventEmitter.emit(
+        'limit.updated',
+        new LimitUpdatedEvent(
+          walletId,
+          'daily',
+          existing.dailyLimit,
+          daily,
+          new Date(),
+        ),
+      );
+    }
+    if (perTx !== undefined && existing.perTransactionLimit !== perTx) {
+      this.eventEmitter.emit(
+        'limit.updated',
+        new LimitUpdatedEvent(
+          walletId,
+          'perTransaction',
+          existing.perTransactionLimit,
+          perTx,
+          new Date(),
+        ),
+      );
+    }
+
+    return result;
   }
 }

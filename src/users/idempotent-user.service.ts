@@ -1,11 +1,20 @@
-import { Injectable, Logger, ConflictException } from '@nestjs/common';
-import { PrismaClient } from '../generated/prisma/client';
+import {
+  Injectable,
+  Logger,
+  ConflictException,
+  BadRequestException,
+  HttpException,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { UserStatus } from './entities/user.entity';
 
 export interface FindOrCreateUserRequest {
   authId: string;
   email?: string;
   displayName?: string;
   authProvider?: string;
+  lastLoginIp?: string;
+  lastLoginUserAgent?: string;
 }
 
 export interface User {
@@ -13,9 +22,11 @@ export interface User {
   authId: string;
   email?: string;
   displayName?: string;
-  status: string;
+  status?: UserStatus;
   authProvider: string;
   lastLoginAt?: Date;
+  lastLoginIp?: string;
+  lastLoginUserAgent?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -25,14 +36,27 @@ export interface FindOrCreateUserResult {
   isNewUser: boolean;
 }
 
+export interface SessionListOptions {
+  page?: number;
+  limit?: number;
+  status?: string;
+  authProvider?: string;
+  dateFrom?: Date;
+  dateTo?: Date;
+}
+
+export interface SessionListResult {
+  data: User[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 @Injectable()
 export class IdempotentUserService {
   private readonly logger = new Logger(IdempotentUserService.name);
-  private prisma: PrismaClient;
 
-  constructor() {
-    this.prisma = new PrismaClient({} as any);
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   async onModuleInit() {
     this.logger.log('Idempotent User Service initialized');
@@ -46,21 +70,32 @@ export class IdempotentUserService {
   async findOrCreateUser(
     request: FindOrCreateUserRequest,
   ): Promise<FindOrCreateUserResult> {
-    const { authId, email, displayName, authProvider = 'UNKNOWN' } = request;
+    const {
+      authId,
+      email,
+      displayName,
+      authProvider = 'UNKNOWN',
+      lastLoginIp,
+      lastLoginUserAgent,
+    } = request;
 
     this.logger.log(`Looking up user with authId: ${authId}`);
 
     try {
-      // First, try to find existing user
       const existingUser = await this.prisma.user.findUnique({
         where: { authId },
       });
 
       if (existingUser) {
-        // Update last login timestamp
+        this.validateUserState(existingUser);
+
         const updatedUser = await this.prisma.user.update({
           where: { id: existingUser.id },
-          data: { lastLoginAt: new Date() },
+          data: {
+            lastLoginAt: new Date(),
+            lastLoginIp,
+            lastLoginUserAgent,
+          },
         });
 
         this.logger.log(
@@ -73,7 +108,6 @@ export class IdempotentUserService {
         };
       }
 
-      // User doesn't exist, create new one
       const newUser = await this.prisma.user.create({
         data: {
           authId,
@@ -81,6 +115,8 @@ export class IdempotentUserService {
           displayName,
           authProvider,
           lastLoginAt: new Date(),
+          lastLoginIp,
+          lastLoginUserAgent,
           status: 'ACTIVE',
         },
       });
@@ -91,15 +127,17 @@ export class IdempotentUserService {
         user: this.mapPrismaUserToDomain(newUser),
         isNewUser: true,
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
         `Failed to find or create user with authId ${authId}:`,
         error,
       );
 
-      // Handle potential race conditions where multiple requests try to create the same user
-      if (error.code === 'P2002') {
-        // Unique constraint violation - user was created by another request
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
+      if (error?.code === 'P2002') {
         this.logger.log(
           `Race condition detected, retrying find for authId: ${authId}`,
         );
@@ -111,7 +149,11 @@ export class IdempotentUserService {
         if (retryUser) {
           const updatedRetryUser = await this.prisma.user.update({
             where: { id: retryUser.id },
-            data: { lastLoginAt: new Date() },
+            data: {
+              lastLoginAt: new Date(),
+              lastLoginIp,
+              lastLoginUserAgent,
+            },
           });
 
           return {
@@ -123,6 +165,42 @@ export class IdempotentUserService {
 
       throw new Error(`User creation failed for authId: ${authId}`);
     }
+  }
+
+  /**
+   * Lists authenticated sessions (users with lastLoginAt) with optional filters.
+   * Filters: status, authProvider, dateFrom/dateTo against lastLoginAt.
+   * Results are ordered by lastLoginAt descending, with pagination.
+   */
+  async listSessions(options: SessionListOptions = {}): Promise<SessionListResult> {
+    const { page = 1, status, authProvider, dateFrom, dateTo } = options;
+    const limit = Math.min(options.limit ?? 20, 100);
+
+    const where: Record<string, any> = { deletedAt: null };
+    if (status) where.status = status;
+    if (authProvider) where.authProvider = authProvider;
+    if (dateFrom || dateTo) {
+      where.lastLoginAt = {};
+      if (dateFrom) where.lastLoginAt.gte = dateFrom;
+      if (dateTo) where.lastLoginAt.lte = dateTo;
+    }
+
+    const [users, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        orderBy: { lastLoginAt: 'desc' },
+        take: limit,
+        skip: (page - 1) * limit,
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+
+    return {
+      data: users.map((u) => this.mapPrismaUserToDomain(u)),
+      total,
+      page,
+      limit,
+    };
   }
 
   /**
@@ -190,6 +268,8 @@ export class IdempotentUserService {
       status: prismaUser.status,
       authProvider: prismaUser.authProvider,
       lastLoginAt: prismaUser.lastLoginAt,
+      lastLoginIp: prismaUser.lastLoginIp,
+      lastLoginUserAgent: prismaUser.lastLoginUserAgent,
       createdAt: prismaUser.createdAt,
       updatedAt: prismaUser.updatedAt,
     };
@@ -203,7 +283,6 @@ export class IdempotentUserService {
       return false;
     }
 
-    // Basic validation - authId should be at least 3 characters
     return authId.trim().length >= 3;
   }
 
@@ -226,5 +305,22 @@ export class IdempotentUserService {
   private isValidEmail(email: string): boolean {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return emailRegex.test(email);
+  }
+
+  /**
+   * Validates that a user is in a valid state for authentication
+   * Throws error if user is in an invalid/stale state (e.g., SUSPENDED, DISABLED)
+   */
+  private validateUserState(user: any): void {
+    const status = (user.status || UserStatus.ACTIVE) as UserStatus;
+
+    if (status !== UserStatus.ACTIVE) {
+      this.logger.error(
+        `User ${user.id} with authId ${user.authId} is in invalid state: ${status}`,
+      );
+      throw new BadRequestException(
+        `User account is in an invalid state (${status}). Please contact support.`,
+      );
+    }
   }
 }

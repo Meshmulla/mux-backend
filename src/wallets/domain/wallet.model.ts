@@ -17,6 +17,7 @@ export enum WalletStatus {
   SUSPENDED = 'SUSPENDED',
   DISABLED = 'DISABLED',
   COMPROMISED = 'COMPROMISED',
+  ARCHIVED = 'ARCHIVED',
 }
 
 export type WalletId = string;
@@ -37,6 +38,13 @@ export interface Wallet {
   /** Supports rotation by incrementing secret material while preserving history. */
   secretVersion: number;
 
+  /**
+   * Key algorithm/derivation scheme version (e.g. 1 = Stellar Ed25519 via stellar-sdk).
+   * Increment when the key algorithm or derivation path changes so consumers can detect
+   * stale material and trigger re-encryption or re-issuance.
+   */
+  keyVersion: number;
+
   /** Mainnet/testnet separation. */
   network: WalletNetwork;
 
@@ -47,6 +55,9 @@ export interface Wallet {
 
   /** Rotation lineage (if this wallet is a successor). */
   rotatedFromId?: WalletId | null;
+
+  /** Direct link to the wallet that replaced this one during rotation. */
+  successorId?: WalletId | null;
 
   createdAt: Date;
   updatedAt: Date;
@@ -69,6 +80,7 @@ const ALLOWED_TRANSITIONS: Readonly<
     WalletStatus.SUSPENDED,
     WalletStatus.DISABLED,
     WalletStatus.COMPROMISED,
+    WalletStatus.ARCHIVED,
   ]),
   [WalletStatus.ROTATING]: new Set([
     WalletStatus.ACTIVE,
@@ -80,9 +92,11 @@ const ALLOWED_TRANSITIONS: Readonly<
     WalletStatus.ACTIVE,
     WalletStatus.DISABLED,
     WalletStatus.COMPROMISED,
+    WalletStatus.ARCHIVED,
   ]),
-  [WalletStatus.DISABLED]: new Set([]),
+  [WalletStatus.DISABLED]: new Set([WalletStatus.ARCHIVED]),
   [WalletStatus.COMPROMISED]: new Set([]),
+  [WalletStatus.ARCHIVED]: new Set([]),
 };
 
 export function canTransitionWalletStatus(
@@ -111,4 +125,18 @@ export function transitionWalletStatus(
     statusChangedAt: at,
     updatedAt: at,
   };
+}
+
+/**
+ * Status response DTO exposed via the status endpoint.
+ */
+export interface WalletStatusResponse {
+  id: string;
+  status: WalletStatus;
+  statusReason: string | null;
+  statusChangedAt: Date;
+  network: WalletNetwork;
+  publicKey: string;
+  userId: string;
+  updatedAt: Date;
 }

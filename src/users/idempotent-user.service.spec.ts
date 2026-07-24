@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import {
   IdempotentUserService,
   FindOrCreateUserRequest,
 } from './idempotent-user.service';
-import { PrismaClient } from '../generated/prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 
 // Mock Prisma Client
 const mockPrisma = {
@@ -18,21 +19,21 @@ const mockPrisma = {
 
 describe('IdempotentUserService', () => {
   let service: IdempotentUserService;
-  let prismaClient: jest.Mocked<PrismaClient>;
+  let prismaClient: jest.Mocked<PrismaService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         IdempotentUserService,
         {
-          provide: PrismaClient,
+          provide: PrismaService,
           useValue: mockPrisma,
         },
       ],
     }).compile();
 
     service = module.get<IdempotentUserService>(IdempotentUserService);
-    prismaClient = module.get(PrismaClient);
+    prismaClient = module.get(PrismaService);
 
     // Reset all mocks
     jest.clearAllMocks();
@@ -223,6 +224,140 @@ describe('IdempotentUserService', () => {
       await expect(service.findOrCreateUser(createRequest)).rejects.toThrow(
         'User creation failed for authId: auth-123',
       );
+    });
+
+    it('should reject user with invalid status (SUSPENDED)', async () => {
+      // Arrange
+      const suspendedUser = {
+        id: 'user-123',
+        authId: 'auth-123',
+        email: 'test@example.com',
+        displayName: 'Test User',
+        status: 'SUSPENDED',
+        authProvider: 'GOOGLE',
+        lastLoginAt: new Date('2024-01-01'),
+        createdAt: new Date('2024-01-01'),
+        updatedAt: new Date('2024-01-01'),
+      };
+
+      mockPrisma.user.findUnique.mockResolvedValue(suspendedUser);
+
+      // Act & Assert
+      await expect(service.findOrCreateUser(createRequest)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should reject user with invalid status (DISABLED)', async () => {
+      // Arrange
+      const disabledUser = {
+        id: 'user-123',
+        authId: 'auth-123',
+        email: 'test@example.com',
+        displayName: 'Test User',
+        status: 'DISABLED',
+        authProvider: 'GOOGLE',
+        lastLoginAt: new Date('2024-01-01'),
+        createdAt: new Date('2024-01-01'),
+        updatedAt: new Date('2024-01-01'),
+      };
+
+      mockPrisma.user.findUnique.mockResolvedValue(disabledUser);
+
+      // Act & Assert
+      await expect(service.findOrCreateUser(createRequest)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should reject user with invalid status (PENDING)', async () => {
+      // Arrange
+      const pendingUser = {
+        id: 'user-123',
+        authId: 'auth-123',
+        email: 'test@example.com',
+        displayName: 'Test User',
+        status: 'PENDING',
+        authProvider: 'GOOGLE',
+        lastLoginAt: new Date('2024-01-01'),
+        createdAt: new Date('2024-01-01'),
+        updatedAt: new Date('2024-01-01'),
+      };
+
+      mockPrisma.user.findUnique.mockResolvedValue(pendingUser);
+
+      // Act & Assert
+      await expect(service.findOrCreateUser(createRequest)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should correctly map Clerk subject to authId field', async () => {
+      // Arrange
+      const clerkSubject = 'user_2x7K9qM5p8R2nL3J';
+      const requestWithClerkSub = {
+        authId: clerkSubject,
+        email: 'test@example.com',
+        authProvider: 'CLERK',
+      };
+
+      const newUser = {
+        id: 'new-user-123',
+        authId: clerkSubject,
+        email: 'test@example.com',
+        displayName: null,
+        status: 'ACTIVE',
+        authProvider: 'CLERK',
+        lastLoginAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockPrisma.user.findUnique.mockResolvedValue(null);
+      mockPrisma.user.create.mockResolvedValue(newUser);
+
+      // Act
+      const result = await service.findOrCreateUser(requestWithClerkSub);
+
+      // Assert
+      expect(result.user.authId).toBe(clerkSubject);
+      expect(mockPrisma.user.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          authId: clerkSubject,
+          authProvider: 'CLERK',
+        }),
+      });
+    });
+
+    it('should prevent duplicate user creation for same authId', async () => {
+      // Arrange
+      const existingUser = {
+        id: 'user-123',
+        authId: 'auth-123',
+        email: 'test@example.com',
+        displayName: 'Test User',
+        status: 'ACTIVE',
+        authProvider: 'GOOGLE',
+        lastLoginAt: new Date('2024-01-01'),
+        createdAt: new Date('2024-01-01'),
+        updatedAt: new Date('2024-01-01'),
+      };
+
+      mockPrisma.user.findUnique.mockResolvedValue(existingUser);
+      mockPrisma.user.update.mockResolvedValue({
+        ...existingUser,
+        lastLoginAt: new Date(),
+      });
+
+      // Act - Call twice with same authId
+      const result1 = await service.findOrCreateUser(createRequest);
+      const result2 = await service.findOrCreateUser(createRequest);
+
+      // Assert
+      expect(result1.user.id).toBe(result2.user.id); // Same user returned
+      expect(result1.isNewUser).toBe(false);
+      expect(result2.isNewUser).toBe(false);
+      expect(mockPrisma.user.create).not.toHaveBeenCalled(); // No duplicate creation
     });
   });
 

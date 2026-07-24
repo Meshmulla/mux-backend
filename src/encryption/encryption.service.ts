@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
+import { SafeLogger } from '../common/safe-logger';
 
 export interface EncryptionResult {
   encryptedData: string;
@@ -8,13 +9,23 @@ export interface EncryptionResult {
   tag: string;
 }
 
-export interface DecryptionError extends Error {
+export class DecryptionError extends Error {
   code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA';
+  constructor(
+    message: string,
+    code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA',
+  ) {
+    super(message);
+    this.name = 'DecryptionError';
+    this.code = code;
+  }
 }
+
+export type DecryptionErrorCode = DecryptionError['code'];
 
 @Injectable()
 export class EncryptionService {
-  private readonly logger = new Logger(EncryptionService.name);
+  private readonly logger = new SafeLogger(EncryptionService.name);
   private readonly algorithm = 'aes-256-gcm';
   private readonly keyLength = 32; // 256 bits
   private readonly ivLength = 16; // 128 bits
@@ -24,8 +35,20 @@ export class EncryptionService {
   constructor(private configService: ConfigService) {
     const key = this.configService.get<string>('WALLET_ENCRYPTION_KEY');
 
-    if (!key) {
+    if (!key || key.trim() === '') {
       throw new Error('WALLET_ENCRYPTION_KEY environment variable is required');
+    }
+
+    if (key === 'your-secret-encryption-key-min-32-chars') {
+      throw new Error(
+        'WALLET_ENCRYPTION_KEY environment variable cannot use the default placeholder value',
+      );
+    }
+
+    if (key.length < 32) {
+      throw new Error(
+        'WALLET_ENCRYPTION_KEY must be at least 32 characters long',
+      );
     }
 
     // Ensure key is exactly 32 bytes (256 bits)
@@ -90,22 +113,17 @@ export class EncryptionService {
 
       return decrypted;
     } catch (error) {
-      const decryptionError: DecryptionError = new Error(
-        'Decryption failed',
-      ) as DecryptionError;
-
+      let code: DecryptionError['code'];
       if (error.message.includes('bad decrypt')) {
-        decryptionError.code = 'DECRYPTION_FAILED';
+        code = 'DECRYPTION_FAILED';
       } else if (error.message.includes('wrong key')) {
-        decryptionError.code = 'INVALID_KEY';
+        code = 'INVALID_KEY';
       } else {
-        decryptionError.code = 'INVALID_DATA';
+        code = 'INVALID_DATA';
       }
 
-      this.logger.error('Decryption failed:', {
-        error: error.message,
-        code: decryptionError.code,
-      });
+      const decryptionError = new DecryptionError('Decryption failed', code);
+      this.logger.error('Decryption failed:', { error: error.message, code });
       throw decryptionError;
     }
   }
@@ -122,10 +140,26 @@ export class EncryptionService {
    */
   deserializeFromStorage(storedData: string): EncryptionResult {
     try {
-      return JSON.parse(storedData) as EncryptionResult;
+      const parsed = JSON.parse(storedData) as EncryptionResult;
+
+      // Validate structure
+      if (!parsed.encryptedData || !parsed.iv || !parsed.tag) {
+        throw new DecryptionError(
+          'Invalid encrypted data format: missing required fields',
+          'INVALID_DATA',
+        );
+      }
+
+      return parsed;
     } catch (error) {
+      if (error instanceof DecryptionError) {
+        throw error;
+      }
       this.logger.error('Failed to deserialize encrypted data:', error);
-      throw new Error('Invalid encrypted data format');
+      throw new DecryptionError(
+        'Invalid encrypted data format',
+        'INVALID_DATA',
+      );
     }
   }
 
