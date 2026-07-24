@@ -4,6 +4,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { LimitsService, LimitExceededException } from './limits.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetricsService } from '../metrics/metrics.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 import { LimitUpdatedEvent } from './events/limit-updated.event';
 import { LimitExceededEvent } from './events/limit-exceeded.event';
 
@@ -12,6 +13,7 @@ describe('LimitsService', () => {
   let prisma: any;
   let eventEmitter: any;
   let metrics: any;
+  let requestContext: any;
 
   const walletId = 'wallet-uuid-1';
 
@@ -31,8 +33,7 @@ describe('LimitsService', () => {
       incrementLimitExceeded: jest.fn(),
       incrementLimitChecks: jest.fn(),
     };
-
-    cacheService = { get: jest.fn(), set: jest.fn(), delete: jest.fn() };
+    requestContext = { getRequestId: jest.fn().mockReturnValue('req-1') };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -40,6 +41,7 @@ describe('LimitsService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: MetricsService, useValue: metrics },
+        { provide: RequestContextService, useValue: requestContext },
       ],
     }).compile();
 
@@ -117,6 +119,64 @@ describe('LimitsService', () => {
       });
       prisma.transaction.findMany.mockResolvedValue([{ amount: '40' }]);
       await expect(service.checkLimits(walletId, 50)).resolves.not.toThrow();
+    });
+
+    it('should pass when the amount is exactly equal to the per-transaction cap', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 50,
+        dailyLimit: 0,
+      });
+      await expect(service.checkLimits(walletId, 50)).resolves.not.toThrow();
+    });
+
+    it('should throw as soon as the amount exceeds the per-transaction cap by any amount', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 50,
+        dailyLimit: 0,
+      });
+      await expect(
+        service.checkLimits(walletId, 50.01),
+      ).rejects.toBeInstanceOf(LimitExceededException);
+    });
+
+    it('should block every transaction when the per-transaction cap is 0', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 0,
+        dailyLimit: 0,
+      });
+      await expect(service.checkLimits(walletId, 0.01)).rejects.toBeInstanceOf(
+        LimitExceededException,
+      );
+    });
+
+    it('should check the per-transaction cap before the daily cap', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 10,
+        dailyLimit: 1000,
+      });
+
+      await expect(service.checkLimits(walletId, 20)).rejects.toBeInstanceOf(
+        LimitExceededException,
+      );
+      // Per-tx check short-circuits before the daily total is even queried
+      expect(prisma.transaction.findMany).not.toHaveBeenCalled();
+    });
+
+    it('should include the errorCode and limit in the thrown exception', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 50,
+        dailyLimit: 0,
+      });
+
+      try {
+        await service.checkLimits(walletId, 100);
+        fail('expected checkLimits to throw');
+      } catch (error) {
+        expect(error).toBeInstanceOf(LimitExceededException);
+        expect((error as LimitExceededException).errorCode).toBe(
+          'LIMIT_PER_TX_EXCEEDED',
+        );
+      }
     });
   });
 

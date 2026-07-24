@@ -5,6 +5,8 @@ import { PaymentsService } from './payments.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { MetricsService } from '../metrics/metrics.service';
+import { PAYMENT_LIMITS_PORT } from './ports/payment-limits.port';
+import { RequestContextService } from '../common/request-context/request-context.service';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 import { PaymentCreatedEvent } from './events/payment-created.event';
@@ -34,6 +36,7 @@ describe('PaymentsService', () => {
   let walletsService: any;
   let eventEmitter: any;
   let metrics: any;
+  let requestContext: any;
 
   beforeEach(async () => {
     prisma = {
@@ -53,6 +56,7 @@ describe('PaymentsService', () => {
       incrementPaymentsFailed: jest.fn(),
       recordPaymentProcessingDuration: jest.fn(),
     };
+    requestContext = { getRequestId: jest.fn().mockReturnValue('req-1') };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -62,6 +66,7 @@ describe('PaymentsService', () => {
         { provide: WalletsService, useValue: walletsService },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: MetricsService, useValue: metrics },
+        { provide: RequestContextService, useValue: requestContext },
       ],
     }).compile();
 
@@ -219,7 +224,7 @@ describe('PaymentsService', () => {
       walletsService.findWalletById
         .mockResolvedValueOnce(ACTIVE_WALLET)
         .mockResolvedValueOnce(RECEIVER_WALLET);
-      limitsService.checkLimits.mockResolvedValue(undefined);
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
       prisma.payment.create.mockResolvedValue({
         id: 1,
         ...BASE_DTO,
@@ -288,7 +293,7 @@ describe('PaymentsService', () => {
       walletsService.findWalletById
         .mockResolvedValueOnce(ACTIVE_WALLET)
         .mockResolvedValueOnce(RECEIVER_WALLET);
-      limitsService.checkLimits.mockResolvedValue(undefined);
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
       const payment = {
         id: 1,
         ...BASE_DTO,
