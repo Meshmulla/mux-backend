@@ -57,7 +57,7 @@ export class LimitsService {
       () =>
         this.prisma.walletLimit.upsert({
           where: { walletId },
-          update: { dailyLimit: daily, perTransactionLimit: perTx },
+          update: { dailyLimit: daily, perTransactionLimit: perTx, deletedAt: null },
           create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
         }),
       3,
@@ -113,11 +113,16 @@ export class LimitsService {
   async getLimits(walletId: string) {
     return retryWithBackoff(
       () =>
-        this.prisma.walletLimit.findUnique({ where: { walletId } }),
+        this.prisma.walletLimit.findUnique({
+          where: { walletId },
+        }),
       3,
       100,
       this.logger,
-    );
+    ).then(limit => {
+      // Exclude soft-deleted limits
+      return limit?.deletedAt ? null : limit;
+    });
   }
 
   async checkLimits(walletId: string, amount: number): Promise<void> {
@@ -201,7 +206,10 @@ export class LimitsService {
     if (!existing)
       throw new NotFoundException(`No limits found for wallet ${walletId}`);
     return retryWithBackoff(
-      () => this.prisma.walletLimit.delete({ where: { walletId } }),
+      () => this.prisma.walletLimit.update({
+        where: { walletId },
+        data: { deletedAt: new Date() },
+      }),
       3,
       100,
       this.logger,
