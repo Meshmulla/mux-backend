@@ -223,6 +223,7 @@ model Wallet {
   @@unique([network, publicKey])
   @@index([userId, network])
   @@index([status, network])
+  @@index([status, createdAt])
   @@index([rotatedFromId])
   @@index([successorId])
 }
@@ -818,7 +819,10 @@ model Transaction {
   
   receiverWalletId  String?
   receiverWallet    Wallet? @relation("ReceivedTransactions", fields: [receiverWalletId], references: [id])
-  
+
+  /// Optional memo attached at creation, searchable (max 28 bytes, Stellar text memo limit)
+  memo String?
+
   /// Lifecycle state
   status TransactionStatus @default(PENDING)
   
@@ -850,6 +854,8 @@ model Transaction {
   @@index([receiverWalletId])
   @@index([senderWalletId, status])
   @@index([receiverWalletId, status])
+  @@index([senderWalletId, createdAt])
+  @@index([receiverWalletId, createdAt])
   @@index([status, createdAt])
   @@index([stellarHash])
   @@index([stellarLedger])

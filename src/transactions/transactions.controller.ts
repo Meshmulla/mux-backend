@@ -133,6 +133,7 @@ export class TransactionsController {
   @ApiQuery({ name: 'senderWalletId', required: false, description: 'Filter by sender wallet ID' })
   @ApiQuery({ name: 'receiverWalletId', required: false, description: 'Filter by receiver wallet ID' })
   @ApiQuery({ name: 'status', required: false, enum: TransactionStatus, description: 'Filter by transaction status' })
+  @ApiQuery({ name: 'memo', required: false, description: 'Case-insensitive substring search on transaction memo' })
   @ApiQuery({ name: 'limit', required: false, description: 'Max records to return (1-100, default 20)', example: 20 })
   @ApiQuery({ name: 'offset', required: false, description: 'Number of records to skip (default 0)', example: 0 })
   @ApiResponse({
@@ -171,6 +172,7 @@ export class TransactionsController {
     @Query('maxAmount') maxAmount?: string,
     @Query('createdAfter') createdAfter?: string,
     @Query('createdBefore') createdBefore?: string,
+    @Query('memo') memo?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {

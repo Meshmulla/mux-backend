@@ -12,10 +12,14 @@ import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitUpdatedEvent } from './events/limit-updated.event';
 import { LimitExceededEvent } from './events/limit-exceeded.event';
+import { LimitWarningEvent } from './events/limit-warning.event';
 import { LimitsResponseDto } from './dto/limits-response.dto';
 import { retryWithBackoff } from '../common/utils/retry';
 import { MetricsService } from '../metrics/metrics.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
+
+/** Emit a warning once spending reaches this fraction of a limit, without blocking */
+const WARNING_THRESHOLD_RATIO = 0.8;
 
 export const LIMIT_ERROR_CODES = {
   PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
@@ -195,6 +199,25 @@ export class LimitsService {
       );
     }
 
+    if (
+      limits.perTransactionLimit > 0 &&
+      amount >= limits.perTransactionLimit * WARNING_THRESHOLD_RATIO
+    ) {
+      this.logger.warn(
+        `Wallet ${walletId} nearing per-transaction limit: amount=${amount} limit=${limits.perTransactionLimit}`,
+      );
+      this.eventEmitter.emit(
+        'limit.warning',
+        new LimitWarningEvent(
+          walletId,
+          'perTransaction',
+          limits.perTransactionLimit,
+          amount,
+          new Date(),
+        ),
+      );
+    }
+
     // Enforce daily cap only when a positive daily limit is configured
     if (limits.dailyLimit > 0) {
       const startOfDay = new Date();
@@ -231,6 +254,25 @@ export class LimitsService {
         throw new LimitExceededException(
           LIMIT_ERROR_CODES.DAILY_LIMIT_EXCEEDED,
           `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
+        );
+      }
+
+      if (
+        currentDailyTotal + amount >=
+        limits.dailyLimit * WARNING_THRESHOLD_RATIO
+      ) {
+        this.logger.warn(
+          `Wallet ${walletId} nearing daily limit: projected=${currentDailyTotal + amount} limit=${limits.dailyLimit}`,
+        );
+        this.eventEmitter.emit(
+          'limit.warning',
+          new LimitWarningEvent(
+            walletId,
+            'daily',
+            limits.dailyLimit,
+            currentDailyTotal + amount,
+            new Date(),
+          ),
         );
       }
     }

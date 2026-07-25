@@ -8,6 +8,7 @@ export interface TransactionFilters {
   senderWalletId?: string;
   receiverWalletId?: string;
   status?: TransactionStatus;
+  memo?: string;
   limit?: number;
   offset?: number;
 }
@@ -41,6 +42,10 @@ export class TransactionQueryService {
 
     if (filters?.status) {
       where.status = filters.status;
+    }
+
+    if (filters?.memo) {
+      where.memo = { contains: filters.memo, mode: 'insensitive' };
     }
 
     const transactions = await this.prisma.transaction.findMany({
@@ -121,6 +126,7 @@ export class TransactionQueryService {
       assetIssuer: prismaTransaction.assetIssuer,
       senderWalletId: prismaTransaction.senderWalletId,
       receiverWalletId: prismaTransaction.receiverWalletId,
+      memo: prismaTransaction.memo,
       status: prismaTransaction.status as TransactionStatus,
       stellarHash: prismaTransaction.stellarHash,
       stellarLedger: prismaTransaction.stellarLedger,

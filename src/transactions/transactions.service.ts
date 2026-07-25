@@ -26,6 +26,7 @@ import { InsufficientBalanceException } from './domain/insufficient-balance.exce
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CacheService } from '../common/cache/cache.service';
 import { TransactionMetricsService } from './transaction-metrics.service';
+import { TransactionQueryService } from './transaction-query.service';
 
 @Injectable()
 export class TransactionsService {
@@ -61,6 +62,7 @@ export class TransactionsService {
       asset,
       senderWalletId,
       receiverWalletId,
+      memo,
       metadata,
       idempotencyKey,
     } = createTransactionDto;
@@ -129,6 +131,7 @@ export class TransactionsService {
         assetIssuer: asset.issuer ?? null,
         senderWalletId,
         receiverWalletId: receiverWalletId ?? null,
+        memo: memo ?? null,
         status: TransactionStatus.PENDING,
         metadata: memo ? { ...metadata, memo } : (metadata ?? null),
         metadata: metadata ?? undefined,
@@ -167,6 +170,7 @@ export class TransactionsService {
     maxAmount?: string;
     createdAfter?: Date;
     createdBefore?: Date;
+    memo?: string;
     limit?: number;
     offset?: number;
   }): Promise<PaginatedTransactionsDto> {
@@ -436,6 +440,7 @@ export class TransactionsService {
       assetIssuer: prismaTransaction.assetIssuer,
       senderWalletId: prismaTransaction.senderWalletId,
       receiverWalletId: prismaTransaction.receiverWalletId,
+      memo: prismaTransaction.memo,
       status: prismaTransaction.status as TransactionStatus,
       stellarHash: prismaTransaction.stellarHash,
       stellarLedger: prismaTransaction.stellarLedger,
