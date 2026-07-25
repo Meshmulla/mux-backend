@@ -18,6 +18,7 @@ import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
   controllers: [AuthOrchestratorController, AuthMetricsController],
   providers: [
     AuthOrchestrator,
+    RefreshTokenService,
     IdempotencyService,
     AuthRateLimitService,
     AuthRateLimitGuard,
@@ -27,6 +28,7 @@ import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
   ],
   exports: [
     AuthOrchestrator,
+    RefreshTokenService,
     IdempotencyService,
     AuthRateLimitService,
     AuthRateLimitGuard,

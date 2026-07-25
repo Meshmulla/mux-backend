@@ -41,7 +41,10 @@ import {
 @FeatureFlag('auth_api')
 @UseGuards(FeatureFlagGuard)
 export class AuthOrchestratorController {
-  constructor(private readonly authOrchestrator: AuthOrchestrator) {}
+  constructor(
+    private readonly authOrchestrator: AuthOrchestrator,
+    private readonly refreshTokenService: RefreshTokenService,
+  ) {}
 
   /**
    * Main authentication endpoint - handles both first-time and returning users.
