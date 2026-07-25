@@ -60,7 +60,10 @@ export interface PaginatedDeliveriesResponse {
 export class WebhookService {
   private readonly logger = new SafeLogger(WebhookService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: CacheService,
+  ) {}
 
   async onModuleDestroy() {
     await this.prisma.$disconnect();
@@ -90,7 +93,8 @@ export class WebhookService {
   }
 
   /**
-   * Lists webhook endpoints for a project
+   * Lists webhook endpoints for a project, with optional status/event
+   * filters and pagination.
    */
   async listEndpoints(
     projectId: string,
@@ -124,6 +128,14 @@ export class WebhookService {
     if (statusFilter) where.status = statusFilter;
     if (eventFilter) where.events = { has: eventFilter };
 
+    const where: Record<string, unknown> = { projectId };
+    if (filter.status) {
+      where.status = filter.status;
+    }
+    if (filter.event) {
+      where.events = { has: filter.event };
+    }
+
     const [endpoints, total] = await Promise.all([
       this.prisma.webhookEndpoint.findMany({
         where,
@@ -143,9 +155,15 @@ export class WebhookService {
   }
 
   /**
-   * Gets a webhook endpoint by ID
+   * Gets a webhook endpoint by ID, serving from cache when available.
    */
   async getEndpoint(endpointId: string): Promise<WebhookEndpoint> {
+    const cacheKey = `${WEBHOOK_ENDPOINT_CACHE_PREFIX}${endpointId}`;
+    const cached = this.cache.get<WebhookEndpoint>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const endpoint = await this.prisma.webhookEndpoint.findUnique({
       where: { id: endpointId },
     });
@@ -154,7 +172,10 @@ export class WebhookService {
       throw new NotFoundException(`Webhook endpoint ${endpointId} not found`);
     }
 
-    return this.mapPrismaEndpointToDomain(endpoint);
+    const mapped = this.mapPrismaEndpointToDomain(endpoint);
+    this.cache.set(cacheKey, mapped, WEBHOOK_CACHE_TTL);
+
+    return mapped;
   }
 
   /**
@@ -169,6 +190,8 @@ export class WebhookService {
       data: updates,
     });
 
+    this.invalidateEndpointCache(endpointId);
+
     return this.mapPrismaEndpointToDomain(endpoint);
   }
 
@@ -179,6 +202,8 @@ export class WebhookService {
     await this.prisma.webhookEndpoint.delete({
       where: { id: endpointId },
     });
+
+    this.invalidateEndpointCache(endpointId);
   }
 
   /**
@@ -191,6 +216,8 @@ export class WebhookService {
       where: { id: endpointId },
       data: { secret: newSecret },
     });
+
+    this.invalidateEndpointCache(endpointId);
 
     return { secret: newSecret };
   }
@@ -226,6 +253,8 @@ export class WebhookService {
       page,
       limit,
       total,
+      page,
+      limit,
     };
   }
 
@@ -285,6 +314,10 @@ export class WebhookService {
    */
   private generateSecret(): string {
     return `whsec_${crypto.randomBytes(32).toString('base64url')}`;
+  }
+
+  private invalidateEndpointCache(endpointId: string): void {
+    this.cache.delete(`${WEBHOOK_ENDPOINT_CACHE_PREFIX}${endpointId}`);
   }
 
   /**

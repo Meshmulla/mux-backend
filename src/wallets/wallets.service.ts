@@ -8,12 +8,6 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
 import {
-  WalletNetwork,
-  WalletStatus,
-  Wallet,
-  canTransitionWalletStatus,
-} from './domain/wallet.model';
-import {
   Wallet,
   WalletNetwork,
   WalletStatus,
@@ -57,7 +51,7 @@ export interface WalletListFilters {
 }
 
 export interface WalletListResult {
-  data: Wallet[];
+  data: PublicWallet[];
   total: number;
   limit: number;
   offset: number;
@@ -98,10 +92,14 @@ export class WalletsService implements OnModuleDestroy {
     if (!this.encryptionService.validateConfiguration()) {
       throw new Error('Wallet encryption service configuration is invalid');
     }
-    this.logger.log('Wallet service initialized with encryption validation passed');
+    this.logger.log(
+      'Wallet service initialized with encryption validation passed',
+    );
   }
 
-  async createWallet(request: CreateWalletRequest): Promise<WalletCreationResult> {
+  async createWallet(
+    request: CreateWalletRequest,
+  ): Promise<WalletCreationResult> {
     const startedAt = Date.now();
     const { userId, network } = request;
     const existingWallet = await this.prisma.wallet.findFirst({
@@ -128,7 +126,9 @@ export class WalletsService implements OnModuleDestroy {
           keyVersion: 1,
         },
       });
-      const privateKey = this.encryptionService.deserializeAndDecrypt(key.encryptedData);
+      const privateKey = this.encryptionService.deserializeAndDecrypt(
+        key.encryptedData,
+      );
       const wallet = this.mapPrismaWalletToDomain(created);
       this.emitDomainEvent('wallet.created', () =>
         this.webhookEventEmitter?.emitWalletCreated({
@@ -149,50 +149,83 @@ export class WalletsService implements OnModuleDestroy {
   }
 
   async findWalletById(walletId: string): Promise<Wallet> {
-    const wallet = await this.prisma.wallet.findUnique({ where: { id: walletId } });
-    if (!wallet) throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+    if (!wallet)
+      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     return this.mapPrismaWalletToDomain(wallet);
   }
 
-  async findWalletByUser(userId: string, network: WalletNetwork): Promise<Wallet> {
-    const wallet = await this.prisma.wallet.findFirst({ where: { userId, network } });
+  async findWalletByUser(
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<Wallet> {
+    const wallet = await this.prisma.wallet.findFirst({
+      where: { userId, network },
+    });
     if (!wallet) {
-      throw new NotFoundException(`Wallet for user ${userId} on ${network} not found`);
+      throw new NotFoundException(
+        `Wallet for user ${userId} on ${network} not found`,
+      );
     }
     return this.mapPrismaWalletToDomain(wallet);
   }
 
   async getDecryptedPrivateKey(walletId: string): Promise<string> {
-    const wallet = await this.prisma.wallet.findUnique({ where: { id: walletId } });
-    if (!wallet) throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+    if (!wallet)
+      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     if (wallet.status !== 'ACTIVE') {
       throw new Error(`Cannot sign with wallet in status: ${wallet.status}`);
     }
     try {
-      return this.encryptionService.deserializeAndDecrypt(wallet.encryptedSecret);
+      return this.encryptionService.deserializeAndDecrypt(
+        wallet.encryptedSecret,
+      );
     } catch (error) {
       if (error instanceof DecryptionError) {
-        throw new KeyDecryptionException(walletId, error.code, 'Wallet key decryption failed — the key material may be corrupted or the encryption key may have changed');
+        throw new KeyDecryptionException(
+          walletId,
+          error.code,
+          'Wallet key decryption failed — the key material may be corrupted or the encryption key may have changed',
+        );
       }
-      this.logger.error(`Unexpected error decrypting wallet ${walletId}:`, error);
+      this.logger.error(
+        `Unexpected error decrypting wallet ${walletId}:`,
+        error,
+      );
       throw new Error('Failed to access wallet private key');
     }
   }
 
-  async signTransaction(walletId: string, transactionData: string): Promise<SigningResult> {
+  async signTransaction(
+    walletId: string,
+    transactionData: string,
+  ): Promise<SigningResult> {
     try {
       const privateKey = await this.getDecryptedPrivateKey(walletId);
-      return { signature: this.signWithPrivateKey(privateKey, transactionData) };
+      return {
+        signature: this.signWithPrivateKey(privateKey, transactionData),
+      };
     } catch (error) {
-      this.logger.error(`Failed to sign transaction with wallet ${walletId}:`, error);
+      this.logger.error(
+        `Failed to sign transaction with wallet ${walletId}:`,
+        error,
+      );
       throw new Error('Transaction signing failed');
     }
   }
 
   async rotateWalletKey(walletId: string): Promise<WalletCreationResult> {
     const startedAt = Date.now();
-    const existing = await this.prisma.wallet.findUnique({ where: { id: walletId } });
-    if (!existing) throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    const existing = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+    if (!existing)
+      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     try {
       const key = await this.generateKeyWithRetry('key_rotation', {
         keyType: KeyType.STELLAR_ED25519,
@@ -209,7 +242,9 @@ export class WalletsService implements OnModuleDestroy {
         },
       });
       const wallet = this.mapPrismaWalletToDomain(updated);
-      const privateKey = this.encryptionService.deserializeAndDecrypt(key.encryptedData);
+      const privateKey = this.encryptionService.deserializeAndDecrypt(
+        key.encryptedData,
+      );
       this.emitDomainEvent('wallet.rotated', () =>
         this.webhookEventEmitter?.emitWalletRotated({
           walletId: wallet.id,
@@ -223,19 +258,48 @@ export class WalletsService implements OnModuleDestroy {
       return { wallet, privateKey };
     } catch (error) {
       this.logger.error(`Failed to rotate wallet ${walletId}:`, error);
-      this.recordMetric('key_rotate', 'failure', startedAt, existing.network);
+      this.recordMetric(
+        'key_rotate',
+        'failure',
+        startedAt,
+        existing.network as WalletNetwork,
+      );
       throw new Error('Wallet key rotation failed');
     }
   }
 
-  async updateWalletStatus(walletId: string, status: WalletStatus, reason?: string): Promise<Wallet> {
+  async updateWalletStatus(
+    walletId: string,
+    status: WalletStatus,
+    reason?: string,
+  ): Promise<Wallet> {
     const startedAt = Date.now();
-    const wallet = await this.prisma.wallet.findUnique({ where: { id: walletId } });
-    if (!wallet) throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+    if (!wallet)
+      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+
+    const currentStatus = wallet.status as WalletStatus;
+
+    if (
+      currentStatus !== status &&
+      !canTransitionWalletStatus(currentStatus, status)
+    ) {
+      throw new ConflictException(
+        `Invalid wallet status transition: ${currentStatus} -> ${status}`,
+      );
+    }
+
     try {
       const updated = await this.prisma.wallet.update({
         where: { id: walletId },
-        data: { status, statusReason: reason, statusChangedAt: new Date(), updatedAt: new Date() },
+        data: {
+          status,
+          statusReason: reason,
+          statusChangedAt: new Date(),
+          updatedAt: new Date(),
+        },
       });
       const mapped = this.mapPrismaWalletToDomain(updated);
       if (status === WalletStatus.SUSPENDED) {
@@ -251,25 +315,22 @@ export class WalletsService implements OnModuleDestroy {
       return mapped;
     } catch (error) {
       this.logger.error(`Failed to update wallet ${walletId} status:`, error);
-      this.recordMetric('status_update', 'failure', startedAt, wallet.network);
+      this.recordMetric(
+        'status_update',
+        'failure',
+        startedAt,
+        wallet.network as WalletNetwork,
+      );
       throw new Error('Wallet status update failed');
     }
   }
 
-    const currentStatus = wallet.status as WalletStatus;
-
-    if (
-      currentStatus !== status &&
-      !canTransitionWalletStatus(currentStatus, status)
-    ) {
-      throw new ConflictException(
-        `Invalid wallet status transition: ${currentStatus} -> ${status}`,
-      );
-    }
-
   async getWalletStatus(walletId: string): Promise<WalletStatusResponse> {
-    const wallet = await this.prisma.wallet.findUnique({ where: { id: walletId } });
-    if (!wallet) throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+    if (!wallet)
+      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     return {
       id: wallet.id,
       status: wallet.status as WalletStatus,
@@ -282,12 +343,20 @@ export class WalletsService implements OnModuleDestroy {
     };
   }
 
-  async activateWallet(walletId: string, statusReason?: string): Promise<Wallet> {
+  async activateWallet(
+    walletId: string,
+    statusReason?: string,
+  ): Promise<Wallet> {
     const startedAt = Date.now();
-    const wallet = await this.prisma.wallet.findUnique({ where: { id: walletId } });
-    if (!wallet) throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+    if (!wallet)
+      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     if (wallet.status !== 'PROVISIONING') {
-      throw new Error(`Cannot activate wallet in status: ${wallet.status}. Only PROVISIONING wallets can be activated.`);
+      throw new Error(
+        `Cannot activate wallet in status: ${wallet.status}. Only PROVISIONING wallets can be activated.`,
+      );
     }
     try {
       const updated = await this.prisma.wallet.update({
@@ -311,7 +380,12 @@ export class WalletsService implements OnModuleDestroy {
       return mapped;
     } catch (error) {
       this.logger.error(`Failed to activate wallet ${walletId}:`, error);
-      this.recordMetric('activate', 'failure', startedAt, wallet.network);
+      this.recordMetric(
+        'activate',
+        'failure',
+        startedAt,
+        wallet.network as WalletNetwork,
+      );
       throw new Error('Wallet activation failed');
     }
   }
@@ -419,6 +493,19 @@ export class WalletsService implements OnModuleDestroy {
     return this.toPublicWallet(wallet);
   }
 
+  async archiveWallet(walletId: string, reason?: string): Promise<Wallet> {
+    return this.updateWalletStatus(
+      walletId,
+      WalletStatus.ARCHIVED,
+      reason ?? 'Wallet archived',
+    );
+  }
+
+  private toPublicWallet(wallet: Wallet): PublicWallet {
+    const { encryptedSecret: _encryptedSecret, ...publicWallet } = wallet;
+    return publicWallet;
+  }
+
   private signWithPrivateKey(privateKey: string, data: string): string {
     const key = crypto.createPrivateKey({
       key: Buffer.from(privateKey, 'hex'),
@@ -432,15 +519,21 @@ export class WalletsService implements OnModuleDestroy {
     operation: string,
     request: { keyType: KeyType; metadata: Record<string, unknown> },
   ) {
-    if (!this.walletRetryService) return this.keyManagementService.generateKey(request);
+    if (!this.walletRetryService)
+      return this.keyManagementService.generateKey(request);
     return this.walletRetryService.execute({ operation }, () =>
       this.keyManagementService.generateKey(request),
     );
   }
 
-  private emitDomainEvent(eventName: string, emit: () => Promise<void> | undefined): void {
+  private emitDomainEvent(
+    eventName: string,
+    emit: () => Promise<void> | undefined,
+  ): void {
     void Promise.resolve(emit()).catch((error: unknown) =>
-      this.logger.warn(`Unable to emit ${eventName} domain event: ${String(error)}`),
+      this.logger.warn(
+        `Unable to emit ${eventName} domain event: ${String(error)}`,
+      ),
     );
   }
 
@@ -450,7 +543,12 @@ export class WalletsService implements OnModuleDestroy {
     startedAt: number,
     network?: WalletNetwork,
   ): void {
-    this.walletApiMetrics?.record({ operation, outcome, durationMs: Date.now() - startedAt, network });
+    this.walletApiMetrics?.record({
+      operation,
+      outcome,
+      durationMs: Date.now() - startedAt,
+      network,
+    });
   }
 
   private mapPrismaWalletToDomain(prismaWallet: any): Wallet {

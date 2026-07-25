@@ -46,9 +46,6 @@ export class StellarHorizonService {
     this.logger.log(
       `Initialized Stellar Horizon clients: testnet=${this.horizonUrls[WalletNetwork.TESTNET]}, mainnet=${this.horizonUrls[WalletNetwork.MAINNET]}`,
   private readonly horizonUrl: string;
-  private readonly maxRetries: number;
-  private readonly retryBackoffMs: number;
-  private readonly retryJitterMs: number;
   private readonly server: Server;
   private readonly circuitBreaker: CircuitBreaker;
 
@@ -56,7 +53,7 @@ export class StellarHorizonService {
     private readonly configService: ConfigService,
     private readonly requestContext: RequestContextService,
   ) {
-    const horizonUrl = this.configService.get<string>(
+    this.horizonUrl = this.configService.get<string>(
       'STELLAR_HORIZON_URL',
       'https://horizon-testnet.stellar.org',
     );
@@ -92,7 +89,7 @@ export class StellarHorizonService {
         30000,
       ),
     });
-    this.logger.log(`Initialized Stellar Horizon client: ${horizonUrl}`);
+    this.logger.log(`Initialized Stellar Horizon client: ${this.horizonUrl}`);
   }
 
   /**
@@ -174,7 +171,7 @@ export class StellarHorizonService {
         walletId: '', // Will be set by caller
         asset: this.parseAsset(balance),
       const balances: BalanceUpdate[] = account.balances.map((balance) => ({
-        walletId: '',
+        walletId: '', // Will be set by caller
         asset: this.parseAsset(balance as unknown as HorizonBalance),
         balance: balance.balance,
         ledgerSequence: parseInt(account.sequence, 10),
@@ -226,55 +223,6 @@ export class StellarHorizonService {
       );
       throw error;
     }
-  }
-
-  /**
-   * Retries a Horizon request with exponential backoff and jitter.
-   * 404s (account not found) are not retried since they are not transient.
-   */
-  private async withRetry<T>(
-    fn: () => Promise<T>,
-    operation: string,
-  ): Promise<T> {
-    let lastError: Error;
-
-    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
-      try {
-        return await fn();
-      } catch (error) {
-        lastError = error;
-
-        const isLastAttempt = attempt === this.maxRetries;
-        const isRetryable = !error.message?.includes('404');
-
-        if (isLastAttempt || !isRetryable) {
-          throw error;
-        }
-
-        const delayMs = this.calculateBackoffWithJitter(attempt);
-        this.logger.warn(
-          `Horizon request failed for ${operation} (attempt ${attempt}/${this.maxRetries}), ` +
-            `retrying in ${delayMs}ms: ${error.message}`,
-        );
-        await this.sleep(delayMs);
-      }
-    }
-
-    throw lastError;
-  }
-
-  /**
-   * Calculates exponential backoff delay with random jitter to avoid
-   * synchronized retry storms against Horizon.
-   */
-  private calculateBackoffWithJitter(attempt: number): number {
-    const exponentialDelay = this.retryBackoffMs * Math.pow(2, attempt - 1);
-    const jitter = Math.random() * this.retryJitterMs;
-    return Math.round(exponentialDelay + jitter);
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
