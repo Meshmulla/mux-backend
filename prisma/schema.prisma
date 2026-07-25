@@ -32,6 +32,7 @@ model Payment {
   id          Int           @id @default(autoincrement())
   amount      Float
   currency    String
+  assetCode   String?       // ISO 4217 or custom asset identifier
   status      PaymentStatus @default(PENDING)
   description String?
 
@@ -44,8 +45,13 @@ model Payment {
   userId Int // Legacy field
   user   LegacyUser @relation("UserPayments", fields: [userId], references: [id])
 
+  /// Client-supplied idempotency key to prevent duplicate submissions
+  idempotencyKey String? @unique
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([idempotencyKey])
 }
 
 model UserLimit {
@@ -66,7 +72,11 @@ model WalletLimit {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
+  /// Soft-delete timestamp (null = active)
+  deletedAt           DateTime?
+
   @@index([walletId])
+  @@index([deletedAt])
 }
 
 /// Mainnet/testnet separation for all wallets.
@@ -94,8 +104,18 @@ model User {
   /// Authentication provider type
   authProvider String @default("UNKNOWN")
 
+  /// Preferred network (mainnet/testnet) for wallet operations that don't
+  /// explicitly specify one. Null = no preference set.
+  defaultNetwork WalletNetwork?
+
   /// Last login timestamp
   lastLoginAt DateTime?
+
+  /// IP address captured on the most recent successful login
+  lastLoginIp String?
+
+  /// User-Agent header captured on the most recent successful login
+  lastLoginUserAgent String?
 
   /// Operational metadata
   createdAt DateTime  @default(now())
@@ -134,6 +154,9 @@ enum WalletStatus {
 
   /// Wallet is suspected compromised; permanently blocked from use.
   COMPROMISED
+
+  /// Wallet is archived; hidden from default listings, no further use.
+  ARCHIVED
 }
 
 /// Persistence-ready internal representation of an "invisible wallet".
@@ -155,6 +178,11 @@ model Wallet {
 
   /// Supports rotation by incrementing secret material while preserving history.
   secretVersion Int @default(1)
+
+  /// Key algorithm/derivation scheme version (e.g. 1 = Stellar Ed25519 via stellar-sdk).
+  /// Increment when the key algorithm or derivation path changes so consumers can detect
+  /// stale material and trigger re-encryption or re-issuance.
+  keyVersion Int @default(1)
 
   network WalletNetwork
   status  WalletStatus  @default(PROVISIONING)
@@ -326,6 +354,9 @@ model ApiKey {
   revokedAt       DateTime?
   revokedReason   String?
 
+  /// Grace period end for revoked keys still accepting requests
+  gracePeriodEndsAt DateTime?
+
   /// Metadata
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
@@ -446,6 +477,7 @@ model WalletBalance {
 /// Balance sync job tracking for reliability
 model BalanceSyncJob {
   id        String   @id @default(uuid())
+  requestId String?  // Request ID for propagation and tracking
   
   /// Job metadata
   jobType   String   // "FULL_SYNC", "INCREMENTAL_SYNC", "RECONCILIATION"

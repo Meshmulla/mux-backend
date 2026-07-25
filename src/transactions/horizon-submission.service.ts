@@ -1,12 +1,14 @@
 import {
   Injectable,
   Logger,
+  Optional,
   BadRequestException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
 import { TransactionsService } from './transactions.service';
+import { TransactionRetryService } from './transaction-retry.service';
 import { TransactionStatus } from './domain/transaction.model';
 import {
   mapHorizonResultToStatus,
@@ -27,6 +29,7 @@ export class HorizonSubmissionService {
   constructor(
     private readonly configService: ConfigService,
     private readonly transactionsService: TransactionsService,
+    @Optional() private readonly retryService?: TransactionRetryService,
   ) {
     this.horizonUrl = this.configService.get<string>(
       'STELLAR_HORIZON_URL',
@@ -44,11 +47,7 @@ export class HorizonSubmissionService {
     let horizonResult: HorizonTransactionResult;
 
     try {
-      const response = await axios.post<HorizonTransactionResult>(
-        `${this.horizonUrl}/transactions`,
-        new URLSearchParams({ tx: signedXdr }),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
-      );
+      const response = await this.postToHorizon(signedXdr);
       horizonResult = response.data;
     } catch (err) {
       const axiosErr = err as AxiosError<any>;
@@ -71,16 +70,18 @@ export class HorizonSubmissionService {
           horizonResult.extras?.result_codes?.transaction ??
           String(status);
 
-        await this.persistStatus(transactionId, TransactionStatus.FAILED, txCode);
+        await this.persistStatus(
+          transactionId,
+          TransactionStatus.FAILED,
+          txCode,
+        );
         throw new BadRequestException(
           `Horizon rejected transaction: ${txCode}`,
         );
       }
 
       // 5xx — surface as service unavailable
-      throw new ServiceUnavailableException(
-        `Horizon server error (${status})`,
-      );
+      throw new ServiceUnavailableException(`Horizon server error (${status})`);
     }
 
     const mappedStatus = mapHorizonResultToStatus(horizonResult);
@@ -100,6 +101,24 @@ export class HorizonSubmissionService {
     );
 
     return { transactionId, stellarHash, status: mappedStatus };
+  }
+
+  /**
+   * POST the signed XDR to Horizon, retrying transient errors when a
+   * TransactionRetryService is wired in.
+   */
+  private postToHorizon(signedXdr: string) {
+    const post = () =>
+      axios.post<HorizonTransactionResult>(
+        `${this.horizonUrl}/transactions`,
+        new URLSearchParams({ tx: signedXdr }),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+      );
+
+    if (this.retryService) {
+      return this.retryService.execute({ operation: 'horizon_submit' }, post);
+    }
+    return post();
   }
 
   private async persistStatus(
