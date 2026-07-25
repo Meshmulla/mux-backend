@@ -118,10 +118,6 @@ export class UsersService {
   async update(id: string, updateUserDto: UpdateUserDto) {
     const data: any = {};
 
-    if (updateUserDto.authId) {
-      data.authId = updateUserDto.authId.trim();
-    }
-
     if (updateUserDto.email) {
       data.email = updateUserDto.email.trim();
     }
@@ -181,9 +177,7 @@ export class UsersService {
 
   private normalizeStatus(status: string): UserStatus {
     if (!Object.values(UserStatus).includes(status as UserStatus)) {
-      throw new BadRequestException(
-        `Invalid user status: ${status}.`,
-      );
+      throw new BadRequestException(`Invalid user status: ${status}.`);
     }
 
     return status as UserStatus;
