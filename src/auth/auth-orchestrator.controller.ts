@@ -306,6 +306,7 @@ export class AuthOrchestratorController {
     },
   })
   @Get('validate/:authId')
+  @UseGuards(AuthRateLimitGuard)
   async validateAuthentication(@Param('authId') authId: string) {
     const isValid = await this.authOrchestrator.validateAuthentication(authId);
     return { valid: isValid };
