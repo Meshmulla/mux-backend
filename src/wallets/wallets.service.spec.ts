@@ -1,8 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { WalletsService, CreateWalletRequest } from './wallets.service';
-import { WalletNetwork } from './domain/wallet.model';
-import { EncryptionService } from '../encryption/encryption.service';
+import { WalletNetwork, WalletStatus } from './domain/wallet.model';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../encryption/encryption.service';
+import { KeyManagementService } from '../key-management/key-management.service';
+import { KeyDecryptionException } from '../key-management/exceptions/key-decryption.exception';
+import { KeyType } from '../key-management/domain/key-types';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { WalletRetryService } from './wallet-retry.service';
+import { WalletApiMetricsService } from './wallet-api-metrics.service';
 
 // Shared mock Prisma wallet methods
 const mockPrismaWallet = {
@@ -12,12 +21,20 @@ const mockPrismaWallet = {
   update: jest.fn(),
   delete: jest.fn(),
   findMany: jest.fn(),
+  count: jest.fn(),
+};
+
+// Shared mock Prisma user methods (used by network preference lookups)
+const mockPrismaUser = {
+  findUnique: jest.fn(),
+  update: jest.fn(),
 };
 
 // Mock the PrismaClient module so new PrismaClient() returns our mock
 jest.mock('../generated/prisma/client', () => ({
   PrismaClient: jest.fn(() => ({
     wallet: mockPrismaWallet,
+    user: mockPrismaUser,
   })),
 }));
 
@@ -28,8 +45,12 @@ jest.mock('crypto', () => {
     ...actual,
     sign: jest.fn().mockReturnValue(Buffer.from('mock-signature')),
     generateKeyPairSync: jest.fn().mockReturnValue({
-      publicKey: { export: jest.fn().mockReturnValue(Buffer.from('mock-public-key')) },
-      privateKey: { export: jest.fn().mockReturnValue(Buffer.from('mock-private-key')) },
+      publicKey: {
+        export: jest.fn().mockReturnValue(Buffer.from('mock-public-key')),
+      },
+      privateKey: {
+        export: jest.fn().mockReturnValue(Buffer.from('mock-private-key')),
+      },
     }),
     createPrivateKey: jest.fn().mockReturnValue({}),
   };
@@ -38,6 +59,19 @@ jest.mock('crypto', () => {
 describe('WalletsService', () => {
   let service: WalletsService;
   let encryptionService: EncryptionService;
+  let keyManagementService: {
+    generateKey: jest.Mock;
+    sign: jest.Mock;
+    validateKey: jest.Mock;
+  };
+  let webhookEventEmitter: {
+    emitWalletCreated: jest.Mock;
+    emitWalletActivated: jest.Mock;
+    emitWalletSuspended: jest.Mock;
+    emitWalletRotated: jest.Mock;
+  };
+  let walletRetryService: { execute: jest.Mock };
+  let walletApiMetrics: { record: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -52,6 +86,28 @@ describe('WalletsService', () => {
       get: jest.fn().mockReturnValue('test-encryption-key'),
     };
 
+    const mockKeyManagementService = {
+      generateKey: jest.fn().mockResolvedValue({
+        publicKey: 'new-public-key',
+        encryptedData: 'new-encrypted-secret',
+        encryptionVersion: 1,
+        keyVersion: 2,
+        keyType: 'STELLAR_ED25519',
+      }),
+      sign: jest.fn(),
+      validateKey: jest.fn(),
+    };
+    webhookEventEmitter = {
+      emitWalletCreated: jest.fn().mockResolvedValue(undefined),
+      emitWalletActivated: jest.fn().mockResolvedValue(undefined),
+      emitWalletSuspended: jest.fn().mockResolvedValue(undefined),
+      emitWalletRotated: jest.fn().mockResolvedValue(undefined),
+    };
+    walletRetryService = {
+      execute: jest.fn((_options, operation) => operation(1)),
+    };
+    walletApiMetrics = { record: jest.fn() };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WalletsService,
@@ -63,11 +119,19 @@ describe('WalletsService', () => {
           provide: ConfigService,
           useValue: mockConfigService,
         },
+        {
+          provide: KeyManagementService,
+          useValue: mockKeyManagementService,
+        },
+        { provide: WebhookEventEmitterService, useValue: webhookEventEmitter },
+        { provide: WalletRetryService, useValue: walletRetryService },
+        { provide: WalletApiMetricsService, useValue: walletApiMetrics },
       ],
     }).compile();
 
     service = module.get<WalletsService>(WalletsService);
     encryptionService = module.get<EncryptionService>(EncryptionService);
+    keyManagementService = module.get(KeyManagementService);
   });
 
   it('should be defined', () => {
@@ -107,6 +171,7 @@ describe('WalletsService', () => {
         status: 'ACTIVE',
         encryptionVersion: 1,
         secretVersion: 1,
+        keyVersion: 1,
         statusReason: null,
         statusChangedAt: new Date(),
         rotatedFromId: null,
@@ -130,6 +195,16 @@ describe('WalletsService', () => {
         keyType: KeyType.STELLAR_ED25519,
         metadata: { userId: 'user-123', network: WalletNetwork.TESTNET },
       });
+      expect(webhookEventEmitter.emitWalletCreated).toHaveBeenCalledWith({
+        walletId: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'public-key-123',
+        network: WalletNetwork.TESTNET,
+        status: 'ACTIVE',
+      });
+      expect(walletApiMetrics.record).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: 'create', outcome: 'success' }),
+      );
     });
 
     it('should throw ConflictException if user already has a wallet on the network', async () => {
@@ -229,7 +304,7 @@ describe('WalletsService', () => {
         status: 'ACTIVE',
       };
 
-      mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
+      mockPrismaWallet.findUnique.mockResolvedValue(mockWallet);
       jest
         .spyOn(encryptionService, 'deserializeAndDecrypt')
         .mockImplementation(() => {
@@ -289,6 +364,7 @@ describe('WalletsService', () => {
         publicKey: 'old-public-key',
         encryptedSecret: 'old-encrypted-secret',
         secretVersion: 1,
+        keyVersion: 1,
       };
 
       const updatedWallet = {
@@ -297,6 +373,7 @@ describe('WalletsService', () => {
         publicKey: 'new-public-key',
         encryptedSecret: 'new-encrypted-secret',
         secretVersion: 2,
+        keyVersion: 2,
         network: WalletNetwork.TESTNET,
         status: 'ACTIVE',
         encryptionVersion: 1,
@@ -321,6 +398,13 @@ describe('WalletsService', () => {
       expect(keyManagementService.generateKey).toHaveBeenCalledWith({
         keyType: KeyType.STELLAR_ED25519,
         metadata: { walletId: 'wallet-123', operation: 'rotation' },
+      });
+      expect(webhookEventEmitter.emitWalletRotated).toHaveBeenCalledWith({
+        walletId: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'new-public-key',
+        network: WalletNetwork.TESTNET,
+        secretVersion: 2,
       });
     });
 
@@ -374,6 +458,49 @@ describe('WalletsService', () => {
     });
   });
 
+  describe('updateWalletStatus', () => {
+    it('emits wallet.suspended only after the status update is persisted', async () => {
+      const suspendedWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
+        encryptedSecret: 'secret',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: WalletStatus.SUSPENDED,
+        statusReason: 'manual review',
+        statusChangedAt: new Date(),
+        rotatedFromId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      mockPrismaWallet.findUnique.mockResolvedValue({
+        ...suspendedWallet,
+        status: WalletStatus.ACTIVE,
+      });
+      mockPrismaWallet.update.mockResolvedValue(suspendedWallet);
+
+      await service.updateWalletStatus(
+        'wallet-123',
+        WalletStatus.SUSPENDED,
+        'manual review',
+      );
+
+      expect(webhookEventEmitter.emitWalletSuspended).toHaveBeenCalledWith({
+        walletId: 'wallet-123',
+        userId: 'user-123',
+        reason: 'manual review',
+      });
+      expect(walletApiMetrics.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: 'status_update',
+          outcome: 'success',
+        }),
+      );
+    });
+  });
+
   // #188: Activate Wallet (PROVISIONING -> ACTIVE)
   describe('activateWallet', () => {
     it('should transition PROVISIONING to ACTIVE', async () => {
@@ -413,6 +540,11 @@ describe('WalletsService', () => {
           status: 'ACTIVE',
           statusReason: 'Wallet provisioned and activated',
         }),
+      });
+      expect(webhookEventEmitter.emitWalletActivated).toHaveBeenCalledWith({
+        walletId: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
       });
     });
 
@@ -504,6 +636,171 @@ describe('WalletsService', () => {
       const result = await service.findWalletsByUserId('user-no-wallets');
 
       expect(result).toEqual([]);
+    });
+  });
+
+  // #325 / #326: pagination + filtering on the wallet list endpoint
+  describe('findAll', () => {
+    const walletRow = {
+      id: 'wallet-1',
+      userId: 'user-123',
+      publicKey: 'GABC1',
+      encryptedSecret: 'secret1',
+      encryptionVersion: 1,
+      secretVersion: 1,
+      network: WalletNetwork.TESTNET,
+      status: 'ACTIVE',
+      statusReason: null,
+      statusChangedAt: new Date(),
+      rotatedFromId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    it('defaults to limit=20 and offset=0 with no filters', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([walletRow]);
+      mockPrismaWallet.count.mockResolvedValue(1);
+
+      const result = await service.findAll();
+
+      expect(mockPrismaWallet.findMany).toHaveBeenCalledWith({
+        where: {},
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        skip: 0,
+      });
+      expect(mockPrismaWallet.count).toHaveBeenCalledWith({ where: {} });
+      expect(result).toEqual({
+        data: [expect.objectContaining({ id: 'wallet-1' })],
+        total: 1,
+        limit: 20,
+        offset: 0,
+        hasMore: false,
+      });
+    });
+
+    it('applies network, status, and userId filters', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([]);
+      mockPrismaWallet.count.mockResolvedValue(0);
+
+      await service.findAll({
+        userId: 'user-123',
+        network: WalletNetwork.MAINNET,
+        status: WalletStatus.ACTIVE,
+      });
+
+      expect(mockPrismaWallet.findMany).toHaveBeenCalledWith({
+        where: {
+          userId: 'user-123',
+          network: WalletNetwork.MAINNET,
+          status: WalletStatus.ACTIVE,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        skip: 0,
+      });
+    });
+
+    it('passes a custom limit and offset through to Prisma', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([]);
+      mockPrismaWallet.count.mockResolvedValue(0);
+
+      await service.findAll({ limit: 5, offset: 10 });
+
+      expect(mockPrismaWallet.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 5, skip: 10 }),
+      );
+    });
+
+    it('sets hasMore=true when more records remain after this page', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([walletRow]);
+      mockPrismaWallet.count.mockResolvedValue(5);
+
+      const result = await service.findAll({ limit: 1, offset: 0 });
+
+      expect(result.hasMore).toBe(true);
+      expect(result.total).toBe(5);
+    });
+
+    it('sets hasMore=false on the last page', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([walletRow]);
+      mockPrismaWallet.count.mockResolvedValue(5);
+
+      const result = await service.findAll({ limit: 20, offset: 4 });
+
+      expect(result.hasMore).toBe(false);
+    });
+  });
+
+  describe('getNetworkPreference', () => {
+    it('returns the persisted preference for an existing user', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        defaultNetwork: 'TESTNET',
+      });
+
+      const result = await service.getNetworkPreference('user-1');
+
+      expect(mockPrismaUser.findUnique).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+      });
+      expect(result).toEqual({
+        userId: 'user-1',
+        defaultNetwork: WalletNetwork.TESTNET,
+      });
+    });
+
+    it('returns null defaultNetwork when the user has no preference set', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        defaultNetwork: null,
+      });
+
+      const result = await service.getNetworkPreference('user-1');
+
+      expect(result).toEqual({ userId: 'user-1', defaultNetwork: null });
+    });
+
+    it('throws NotFoundException when the user does not exist', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.getNetworkPreference('missing-user'),
+      ).rejects.toThrow('User with ID missing-user not found');
+    });
+  });
+
+  describe('setNetworkPreference', () => {
+    it('persists the network preference for an existing user', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue({ id: 'user-1' });
+      mockPrismaUser.update.mockResolvedValue({
+        id: 'user-1',
+        defaultNetwork: 'MAINNET',
+      });
+
+      const result = await service.setNetworkPreference(
+        'user-1',
+        WalletNetwork.MAINNET,
+      );
+
+      expect(mockPrismaUser.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { defaultNetwork: WalletNetwork.MAINNET },
+      });
+      expect(result).toEqual({
+        userId: 'user-1',
+        defaultNetwork: WalletNetwork.MAINNET,
+      });
+    });
+
+    it('throws NotFoundException when the user does not exist', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.setNetworkPreference('missing-user', WalletNetwork.MAINNET),
+      ).rejects.toThrow('User with ID missing-user not found');
+
+      expect(mockPrismaUser.update).not.toHaveBeenCalled();
     });
   });
 });

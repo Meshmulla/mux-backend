@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { RequestContextService } from '../request-context/request-context.service';
 
 export function requestLogger(
   req: Request | any,
@@ -8,16 +9,24 @@ export function requestLogger(
   next: NextFunction,
 ) {
   const logger = new Logger('RequestLogger');
+
+  if (!req) {
+    logger.warn('Request logging skipped: invalid request object');
+    next();
+    return;
+  }
+
   try {
     const idHeader =
-      req &&
       req.headers &&
       (req.headers['x-request-id'] || req.headers['X-Request-Id']);
-    const id =
+    id =
       typeof idHeader === 'string' && idHeader.length > 0
         ? idHeader
         : randomUUID();
     const start = Date.now();
+
+    req.requestId = id;
 
     if (res && typeof res.setHeader === 'function') {
       try {
@@ -28,10 +37,9 @@ export function requestLogger(
     }
 
     const ip =
-      (req && (req.ip || (req.socket && req.socket.remoteAddress))) ||
-      'unknown';
-    const method = (req && req.method) || 'UNKNOWN';
-    const url = (req && (req.originalUrl || req.url)) || 'unknown';
+      (req.ip || (req.socket && req.socket.remoteAddress)) || 'unknown';
+    const method = req.method || 'UNKNOWN';
+    const url = (req.originalUrl || req.url) || 'unknown';
 
     logger.log(`${method} ${url} id=${id} ip=${ip}`);
 
@@ -47,13 +55,28 @@ export function requestLogger(
         }
       });
     }
+
+    RequestContextService.run({ requestId: id }, () => {
+      try {
+        next();
+      } catch (e) {
+        logger.warn('next() threw in requestLogger');
+      }
+    });
   } catch (err: any) {
     logger.warn('Request logging failed: ' + (err && err.message));
-  } finally {
     try {
-      next();
+      // Propagate the request ID through AsyncLocalStorage so downstream
+      // code (controllers, services — e.g. auth/session flows) can access
+      // it via RequestContextService without needing direct access to the
+      // Express request object.
+      if (id) {
+        RequestContextService.run({ requestId: id }, () => next());
+      } else {
+        next();
+      }
     } catch (e) {
-      logger.warn('next() threw in requestLogger');
+      logger.warn('next() threw after requestLogger error');
     }
   }
 }
