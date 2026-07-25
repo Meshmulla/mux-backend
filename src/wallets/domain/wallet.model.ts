@@ -17,6 +17,7 @@ export enum WalletStatus {
   SUSPENDED = 'SUSPENDED',
   DISABLED = 'DISABLED',
   COMPROMISED = 'COMPROMISED',
+  ARCHIVED = 'ARCHIVED',
 }
 
 export type WalletId = string;
@@ -36,6 +37,13 @@ export interface Wallet {
 
   /** Supports rotation by incrementing secret material while preserving history. */
   secretVersion: number;
+
+  /**
+   * Key algorithm/derivation scheme version (e.g. 1 = Stellar Ed25519 via stellar-sdk).
+   * Increment when the key algorithm or derivation path changes so consumers can detect
+   * stale material and trigger re-encryption or re-issuance.
+   */
+  keyVersion: number;
 
   /** Mainnet/testnet separation. */
   network: WalletNetwork;
@@ -72,6 +80,7 @@ const ALLOWED_TRANSITIONS: Readonly<
     WalletStatus.SUSPENDED,
     WalletStatus.DISABLED,
     WalletStatus.COMPROMISED,
+    WalletStatus.ARCHIVED,
   ]),
   [WalletStatus.ROTATING]: new Set([
     WalletStatus.ACTIVE,
@@ -83,9 +92,11 @@ const ALLOWED_TRANSITIONS: Readonly<
     WalletStatus.ACTIVE,
     WalletStatus.DISABLED,
     WalletStatus.COMPROMISED,
+    WalletStatus.ARCHIVED,
   ]),
-  [WalletStatus.DISABLED]: new Set([]),
+  [WalletStatus.DISABLED]: new Set([WalletStatus.ARCHIVED]),
   [WalletStatus.COMPROMISED]: new Set([]),
+  [WalletStatus.ARCHIVED]: new Set([]),
 };
 
 export function canTransitionWalletStatus(

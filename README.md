@@ -33,6 +33,8 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 
 ## API Endpoints
 
+All routes below are served under the `/v1` prefix (e.g. `GET /v1/health`). See [docs/API-VERSIONING.md](docs/API-VERSIONING.md) for the versioning strategy.
+
 ### Health & Monitoring
 
 #### `GET /health`
@@ -391,7 +393,92 @@ The middleware is registered in `src/main.ts` and runs for all incoming requests
 
 ---
 
+## Balance Indexer
+
+The balance indexer provides fast, cached balance reads without hitting Stellar Horizon on every request.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  BalanceIndexerService                  │
+│                                                         │
+│  getBalance()          → cached read from DB            │
+│  getAllBalances()       → cached reads from DB           │
+│  syncWalletBalances()  → fetch Horizon → upsert DB      │
+│  reconcileBalance()    → compare DB vs Horizon          │
+│  reconcileAllBalances()→ full sweep across active wallets│
+│  syncAllWallets()      → manual full sync trigger       │
+└──────────┬──────────────────────┬───────────────────────┘
+           │                      │
+  ┌────────▼────────┐   ┌────────▼──────────────┐
+  │  PrismaService  │   │  StellarHorizonService │
+  │  (PostgreSQL)   │   │  (Horizon REST API)    │
+  └─────────────────┘   └────────────────────────┘
+```
+
+### Stale Detection
+
+Balances older than `BALANCE_STALE_THRESHOLD_MS` (default 5 minutes) trigger an async background refresh on the next read. The stale value is still returned immediately so callers are never blocked.
+
+### Mismatch Handling
+
+On reconciliation, if the indexed balance differs from the on-chain balance, the indexed value is corrected and `mismatchDetectedAt` / `reconciliationAttempts` are updated for observability.
+
+### Sync Job Tracking
+
+All sync and reconciliation operations create a `BalanceSyncJob` record for audit and observability.
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/balances/wallet/:walletId` | Get cached balances (add `?assetType=NATIVE` for single asset) |
+| `POST` | `/balances/wallet/:walletId/sync` | Manually trigger sync for a single wallet |
+| `POST` | `/balances/sync-all` | Manually trigger full sync for all active wallets (admin) |
+| `POST` | `/balances/wallet/:walletId/reconcile` | Reconcile wallet balance with on-chain state |
+| `POST` | `/balances/reconcile-all` | Reconcile all balances (admin) |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BALANCE_STALE_THRESHOLD_MS` | `300000` | Age (ms) after which a balance is considered stale |
+| `STELLAR_HORIZON_URL` | `https://horizon-testnet.stellar.org` | Stellar Horizon API URL |
+
+---
+
+## Webhooks
+
+Webhooks allow your application to receive real-time notifications when events occur in Mux Protocol.
+
+### Endpoint CRUD
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks/endpoints` | Register a new webhook endpoint |
+| `GET` | `/webhooks/endpoints/project/:projectId` | List endpoints for a project |
+| `GET` | `/webhooks/endpoints/:id` | Get a specific endpoint |
+| `PUT` | `/webhooks/endpoints/:id` | Update an endpoint |
+| `DELETE` | `/webhooks/endpoints/:id` | Delete an endpoint |
+| `POST` | `/webhooks/endpoints/:id/rotate-secret` | Rotate signing secret |
+| `GET` | `/webhooks/endpoints/:id/deliveries` | Get delivery history |
+| `POST` | `/webhooks/process-deliveries` | Manually process pending deliveries (admin) |
+
+### Payload Signing
+
+All webhook payloads are signed with HMAC-SHA256. The `X-Webhook-Signature` header has format `t=<timestamp>,v1=<signature>`. Verify with the secret returned at endpoint creation.
+
+### Supported Events
+
+`wallet.created`, `wallet.activated`, `wallet.suspended`, `wallet.rotated`, `transaction.created`, `transaction.pending`, `transaction.confirmed`, `transaction.failed`, `balance.updated`, `balance.low`, `user.created`, `user.updated`
+
+---
+
 ## Wallets API
+
+Endpoint semantics, idempotency, lifecycle events, dependency retries, and
+metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 
 - `POST /wallets` - create wallet
 - `GET /wallets` - list all wallets
@@ -433,4 +520,3 @@ Testing
 
 - Unit tests are under `src/**/*spec.ts`.
 - E2E tests are under `test/` and use Jest + Supertest.
-
