@@ -56,6 +56,7 @@ async function buildModule(flagEnabled: boolean) {
       predecessorWalletId: 'wallet-pred',
       successorWalletId: 'wallet-succ',
       successorPublicKey: 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN',
+      successorKeyVersion: 1,
     }),
     getAuditLog: jest.fn().mockReturnValue([]),
     getStatistics: jest.fn().mockReturnValue({}),
@@ -320,13 +321,14 @@ describe('KeyManagementController — delegation', () => {
 
   // rotateKey
   describe('rotateKey', () => {
-    it('delegates and returns rotation result', async () => {
+    it('delegates and returns rotation result with successor key version', async () => {
       const result = await controller.rotateKey({ walletId: 'wallet-pred' });
 
       expect(keyManagementService.rotateKey).toHaveBeenCalledWith('wallet-pred');
       expect(result).toMatchObject({
         predecessorWalletId: 'wallet-pred',
         successorWalletId: 'wallet-succ',
+        successorKeyVersion: 1,
       });
     });
   });

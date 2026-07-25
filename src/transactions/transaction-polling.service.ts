@@ -6,7 +6,8 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios, { AxiosError } from 'axios';
+import { AxiosError } from 'axios';
+import { createRequestIdAwareAxios } from '../common/http/request-id-axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { TransactionsService } from './transactions.service';
 import { TransactionStatus } from './domain/transaction.model';
@@ -26,6 +27,7 @@ export interface PollingResult {
 export class TransactionPollingService {
   private readonly logger = new Logger(TransactionPollingService.name);
   private readonly horizonUrl: string;
+  private readonly http = createRequestIdAwareAxios();
 
   constructor(
     private readonly configService: ConfigService,
@@ -134,7 +136,7 @@ export class TransactionPollingService {
     hash: string,
   ): Promise<HorizonTransactionResult> {
     try {
-      const response = await axios.get<HorizonTransactionResult>(
+      const response = await this.http.get<HorizonTransactionResult>(
         `${this.horizonUrl}/transactions/${hash}`,
       );
       return response.data;

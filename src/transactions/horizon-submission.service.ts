@@ -6,7 +6,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios, { AxiosError } from 'axios';
+import { AxiosError } from 'axios';
+import { createRequestIdAwareAxios } from '../common/http/request-id-axios';
 import { TransactionsService } from './transactions.service';
 import { TransactionRetryService } from './transaction-retry.service';
 import { TransactionStatus } from './domain/transaction.model';
@@ -25,6 +26,7 @@ export interface SubmissionResult {
 export class HorizonSubmissionService {
   private readonly logger = new Logger(HorizonSubmissionService.name);
   private readonly horizonUrl: string;
+  private readonly http = createRequestIdAwareAxios();
 
   constructor(
     private readonly configService: ConfigService,
@@ -109,7 +111,7 @@ export class HorizonSubmissionService {
    */
   private postToHorizon(signedXdr: string) {
     const post = () =>
-      axios.post<HorizonTransactionResult>(
+      this.http.post<HorizonTransactionResult>(
         `${this.horizonUrl}/transactions`,
         new URLSearchParams({ tx: signedXdr }),
         { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
