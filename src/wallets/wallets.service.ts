@@ -26,6 +26,11 @@ import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.se
 import { WalletApiMetricsService } from './wallet-api-metrics.service';
 import { WalletRetryService } from './wallet-retry.service';
 import * as crypto from 'crypto';
+import {
+  PaginationQuery,
+  parsePagination,
+  buildPaginatedResponse,
+} from '../common/pagination/pagination.util';
 
 /** Wallet shape safe to return from the API (no encrypted secret material). */
 export type PublicWallet = Omit<Wallet, 'encryptedSecret'>;
@@ -564,5 +569,37 @@ export class WalletsService implements OnModuleDestroy {
       createdAt: prismaWallet.createdAt,
       updatedAt: prismaWallet.updatedAt,
     };
+  }
+
+  // Legacy methods for compatibility
+  create(createWalletDto: any) {
+    return this.createWallet(createWalletDto);
+  }
+
+  async findAll(query: PaginationQuery = {}) {
+    const { page, limit, skip } = parsePagination(query);
+
+    const [data, total] = await Promise.all([
+      this.prisma.wallet.findMany({
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.wallet.count(),
+    ]);
+
+    return buildPaginatedResponse(data, total, page, limit);
+  }
+
+  findOne(id: number) {
+    return this.findWalletById(id.toString());
+  }
+
+  update(id: number, updateWalletDto: any) {
+    return this.updateWalletStatus(id.toString(), updateWalletDto.status);
+  }
+
+  remove(id: number) {
+    return this.prisma.wallet.delete({ where: { id: id.toString() } });
   }
 }

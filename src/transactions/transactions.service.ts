@@ -16,6 +16,11 @@ import {
   canTransitionTransactionStatus,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
+import {
+  parsePagination,
+  buildPaginatedResponse,
+} from '../common/pagination/pagination.util';
+import { validateMemo } from '../common/stellar/memo.util';
 import { PaginatedTransactionsDto } from './dto/paginated-transactions.dto';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
@@ -42,6 +47,12 @@ export class TransactionsService {
    * If an idempotencyKey is supplied and a transaction with that key already
    * exists, the existing transaction is returned without creating a duplicate.
    */
+  async create(createTransactionDto: CreateTransactionDto): Promise<TransactionEntity> {
+    const { amount, asset, senderWalletId, receiverWalletId, memo, metadata } =
+      createTransactionDto;
+
+    // Validate memo length/type against Stellar protocol constraints before touching persistence
+    validateMemo(memo);
   async create(
     createTransactionDto: CreateTransactionDto,
   ): Promise<TransactionEntity> {
@@ -119,6 +130,7 @@ export class TransactionsService {
         senderWalletId,
         receiverWalletId: receiverWalletId ?? null,
         status: TransactionStatus.PENDING,
+        metadata: memo ? { ...metadata, memo } : (metadata ?? null),
         metadata: metadata ?? undefined,
         idempotencyKey: idempotencyKey ?? null,
       },
@@ -146,6 +158,9 @@ export class TransactionsService {
     senderWalletId?: string;
     receiverWalletId?: string;
     status?: TransactionStatus;
+    page?: string;
+    limit?: string;
+  }) {
     assetType?: string;
     assetCode?: string;
     minAmount?: string;
@@ -169,6 +184,10 @@ export class TransactionsService {
       where.status = filters.status;
     }
 
+    const { page, limit, skip } = parsePagination({
+      page: filters?.page,
+      limit: filters?.limit,
+    });
     const limit = filters?.limit ?? 20;
     const offset = filters?.offset ?? 0;
 
@@ -177,11 +196,18 @@ export class TransactionsService {
         where,
         orderBy: { createdAt: 'desc' },
         take: limit,
+        skip,
         skip: offset,
       }),
       this.prisma.transaction.count({ where }),
     ]);
 
+    return buildPaginatedResponse(
+      transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+      page,
+      limit,
+    );
     return {
       data: transactions.map((t) => this.mapPrismaToEntity(t)),
       total,

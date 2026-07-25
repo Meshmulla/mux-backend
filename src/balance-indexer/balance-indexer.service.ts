@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
+import { WalletNetwork } from '../wallets/domain/wallet.model';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { BalanceRepository } from './balance.repository';
 import { BalanceCacheService } from './balance-cache.service';
@@ -395,8 +396,10 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         throw new NotFoundException(`Wallet ${walletId} not found`);
       }
 
+      // Check if account exists on-chain (on the wallet's own network)
       const accountExists = await this.stellarHorizonService.accountExists(
         wallet.publicKey,
+        wallet.network as WalletNetwork,
       );
 
       if (!accountExists) {
@@ -426,6 +429,11 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         return result;
       }
 
+      // Fetch balances from Horizon
+      const horizonBalances = await this.stellarHorizonService.getAccountBalances(
+        wallet.publicKey,
+        wallet.network as WalletNetwork,
+      );
       const horizonBalances =
         await this.stellarHorizonService.getAccountBalances(wallet.publicKey);
 
@@ -530,6 +538,51 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       `${logPrefix}Reconciling balance for wallet ${walletId}, asset ${asset.type}`,
     );
 
+    const indexedBalance = await this.getBalance(walletId, asset);
+
+    const wallet = await this.balanceRepo.findWallet(walletId);
+    if (!wallet) {
+      throw new NotFoundException(`Wallet ${walletId} not found`);
+    }
+
+    const horizonBalances = await this.stellarHorizonService.getAccountBalances(
+      wallet.publicKey,
+      wallet.network as WalletNetwork,
+    );
+    const onChainBalance = horizonBalances.find((b) =>
+      this.assetsMatch(b.asset, asset),
+    );
+
+    const indexed = indexedBalance?.balance ?? '0';
+    const onChain = onChainBalance?.balance ?? '0';
+    const matches = indexed === onChain;
+
+    if (!matches) {
+      this.logger.warn(
+        `Balance mismatch for wallet ${walletId}: indexed=${indexed}, onChain=${onChain}`,
+      );
+
+      if (onChainBalance) {
+        await this.applyBalanceUpdate(walletId, onChainBalance, true);
+      }
+
+      await this.balanceRepo.recordMismatch(walletId, asset);
+
+      const assetLabel = asset.code ?? asset.type;
+      const difference = this.calculateDifference(indexed, onChain);
+      this.webhookEventEmitter
+        .emitBalanceMismatch({
+          walletId,
+          asset: assetLabel,
+          indexedBalance: indexed,
+          onChainBalance: onChain,
+          difference,
+        })
+        .catch((err) =>
+          this.logger.error('Failed to emit balance.mismatch event:', err),
+        );
+    } else {
+      await this.balanceRepo.clearMismatch(walletId, asset);
     try {
       const indexedBalance = await this.getBalance(walletId, asset);
 
@@ -886,21 +939,26 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private isBalanceStale(balance: { lastSyncedAt?: Date | null }): boolean {
+  private isBalanceStale(balance: WalletBalance): boolean {
     if (!balance.lastSyncedAt) return true;
     return Date.now() - balance.lastSyncedAt.getTime() > this.staleThresholdMs;
   }
 
-  private assetsMatch(asset1: Asset, asset2: Asset): boolean {
-    return (
-      asset1.type === asset2.type &&
-      asset1.code === asset2.code &&
-      asset1.issuer === asset2.issuer
-    );
+  private assetsMatch(a: Asset, b: Asset): boolean {
+    return a.type === b.type && a.code === b.code && a.issuer === b.issuer;
   }
 
-  private calculateDifference(balance1: string, balance2: string): string {
-    return (parseFloat(balance1) - parseFloat(balance2)).toFixed(7);
+  private calculateDifference(a: string, b: string): string {
+    return (parseFloat(a) - parseFloat(b)).toFixed(7);
+  }
+
+  private assetCompoundKey(walletId: string, asset: Asset) {
+    return {
+      walletId,
+      assetType: asset.type,
+      assetCode: asset.code ?? null,
+      assetIssuer: asset.issuer ?? null,
+    } as any;
   }
 
   private balanceEventKey(event: BalanceChangeEvent): string {
