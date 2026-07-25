@@ -16,6 +16,11 @@ import {
   canTransitionTransactionStatus,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
+import {
+  parsePagination,
+  buildPaginatedResponse,
+} from '../common/pagination/pagination.util';
+import { validateMemo } from '../common/stellar/memo.util';
 import { PaginatedTransactionsDto } from './dto/paginated-transactions.dto';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
@@ -31,11 +36,11 @@ export class TransactionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly balanceIndexer: BalanceIndexerService,
-    @Optional()
-    private readonly webhookEventEmitter: WebhookEventEmitterService,
     private readonly cache: CacheService,
-    private readonly metrics: TransactionMetricsService,
-    private readonly queryService: TransactionQueryService,
+    @Optional()
+    private readonly webhookEventEmitter?: WebhookEventEmitterService,
+    @Optional()
+    private readonly metrics?: TransactionMetricsService,
   ) {}
 
   /**
@@ -43,6 +48,12 @@ export class TransactionsService {
    * If an idempotencyKey is supplied and a transaction with that key already
    * exists, the existing transaction is returned without creating a duplicate.
    */
+  async create(createTransactionDto: CreateTransactionDto): Promise<TransactionEntity> {
+    const { amount, asset, senderWalletId, receiverWalletId, memo, metadata } =
+      createTransactionDto;
+
+    // Validate memo length/type against Stellar protocol constraints before touching persistence
+    validateMemo(memo);
   async create(
     createTransactionDto: CreateTransactionDto,
   ): Promise<TransactionEntity> {
@@ -65,7 +76,7 @@ export class TransactionsService {
         this.logger.log(
           `Idempotency hit for key ${idempotencyKey}, returning existing transaction ${existing.id}`,
         );
-        this.metrics.incrementIdempotencyHit();
+        this.metrics?.incrementIdempotencyHit();
         return this.mapPrismaToEntity(existing);
       }
     }
@@ -122,20 +133,23 @@ export class TransactionsService {
         receiverWalletId: receiverWalletId ?? null,
         memo: memo ?? null,
         status: TransactionStatus.PENDING,
+        metadata: memo ? { ...metadata, memo } : (metadata ?? null),
         metadata: metadata ?? undefined,
         idempotencyKey: idempotencyKey ?? null,
       },
     });
 
-    this.metrics.incrementTransactionCreated(asset.type);
+    this.metrics?.incrementTransactionCreated(asset.type);
 
-    this.webhookEventEmitter?.emitTransactionCreated({
-      transactionId: created.id,
-      walletId: created.senderWalletId,
-      amount: created.amount,
-      asset: created.assetCode ?? created.assetType,
-      destination: created.receiverWalletId ?? '',
-    });
+    this.emitDomainEvent('transaction.created', () =>
+      this.webhookEventEmitter?.emitTransactionCreated({
+        transactionId: created.id,
+        walletId: created.senderWalletId,
+        amount: created.amount,
+        asset: created.assetCode ?? created.assetType,
+        destination: created.receiverWalletId ?? '',
+      }),
+    );
 
     return this.mapPrismaToEntity(created);
   }
@@ -147,6 +161,9 @@ export class TransactionsService {
     senderWalletId?: string;
     receiverWalletId?: string;
     status?: TransactionStatus;
+    page?: string;
+    limit?: string;
+  }) {
     assetType?: string;
     assetCode?: string;
     minAmount?: string;
@@ -171,10 +188,10 @@ export class TransactionsService {
       where.status = filters.status;
     }
 
-    if (filters?.memo) {
-      where.memo = { contains: filters.memo, mode: 'insensitive' };
-    }
-
+    const { page, limit, skip } = parsePagination({
+      page: filters?.page,
+      limit: filters?.limit,
+    });
     const limit = filters?.limit ?? 20;
     const offset = filters?.offset ?? 0;
 
@@ -183,11 +200,18 @@ export class TransactionsService {
         where,
         orderBy: { createdAt: 'desc' },
         take: limit,
+        skip,
         skip: offset,
       }),
       this.prisma.transaction.count({ where }),
     ]);
 
+    return buildPaginatedResponse(
+      transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+      page,
+      limit,
+    );
     return {
       data: transactions.map((t) => this.mapPrismaToEntity(t)),
       total,
@@ -207,10 +231,10 @@ export class TransactionsService {
     const cachedTransaction = this.cache.get<TransactionEntity>(cacheKey);
     if (cachedTransaction) {
       this.logger.debug(`Cache hit for transaction ${id}`);
-      this.metrics.incrementCacheHit();
+      this.metrics?.incrementCacheHit();
       return cachedTransaction;
     }
-    this.metrics.incrementCacheMiss();
+    this.metrics?.incrementCacheMiss();
 
     const transaction = await this.prisma.transaction.findUnique({
       where: { id },
@@ -293,9 +317,9 @@ export class TransactionsService {
     });
 
     // Invalidate read cache so next findOne fetches fresh data
-    this.queryService.invalidateCache(id);
+    this.cache.delete(`transaction:${id}`);
 
-    this.metrics.incrementStatusUpdated(existing.status, updateDto.status);
+    this.metrics?.incrementStatusUpdated(existing.status, updateDto.status);
 
     this.logger.log(
       `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,
@@ -390,6 +414,21 @@ export class TransactionsService {
         }),
       );
     }
+  }
+
+  /**
+   * Fire-and-forget domain event emission: failures are logged as warnings
+   * and never surface to callers.
+   */
+  private emitDomainEvent(
+    eventName: string,
+    emit: () => Promise<void> | undefined,
+  ): void {
+    void Promise.resolve(emit()).catch((error: unknown) =>
+      this.logger.warn(
+        `Unable to emit ${eventName} domain event: ${String(error)}`,
+      ),
+    );
   }
 
   private mapPrismaToEntity(prismaTransaction: any): TransactionEntity {

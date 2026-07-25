@@ -34,6 +34,7 @@ import {
   FeatureFlag,
 } from '../common/feature-flags/feature-flag.guard';
 import { TransactionStatus } from './domain/transaction.model';
+import { PaginationQuery } from '../common/pagination/pagination.util';
 
 /** Parse a pagination query param, throwing 400 on invalid input */
 function parsePaginationParam(
@@ -164,6 +165,7 @@ export class TransactionsController {
     @Query('senderWalletId') senderWalletId?: string,
     @Query('receiverWalletId') receiverWalletId?: string,
     @Query('status') status?: TransactionStatus,
+    @Query() pagination?: PaginationQuery,
     @Query('assetType') assetType?: string,
     @Query('assetCode') assetCode?: string,
     @Query('minAmount') minAmount?: string,
@@ -178,7 +180,8 @@ export class TransactionsController {
       senderWalletId,
       receiverWalletId,
       status: status as TransactionStatus,
-      memo,
+      page: pagination?.page,
+      limit: pagination?.limit,
       limit: parsePaginationParam(limit, 'limit'),
       offset: parsePaginationParam(offset, 'offset'),
     });

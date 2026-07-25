@@ -9,6 +9,12 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { LimitsService } from '../limits/limits.service';
+import {
+  PaginationQuery,
+  parsePagination,
+  buildPaginatedResponse,
+} from '../common/pagination/pagination.util';
 import { WalletsService } from '../wallets/wallets.service';
 import {
   PAYMENT_LIMITS_PORT,
@@ -134,6 +140,19 @@ export class PaymentsService {
     return payment;
   }
 
+  async findAll(query: PaginationQuery = {}) {
+    const { page, limit, skip } = parsePagination(query);
+
+    const [data, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.payment.count(),
+    ]);
+
+    return buildPaginatedResponse(data, total, page, limit);
   async findAll(
     pagination: PaginationDto,
     filters: PaymentsFilterDto,

@@ -9,7 +9,6 @@ import {
   Query,
   HttpCode,
   HttpStatus,
-  BadRequestException,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -22,11 +21,9 @@ import {
 } from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
-import { DeliveryStatus } from './domain/webhook-events';
-
-const MAX_DELIVERIES_LIMIT = 200;
 import { CreateWebhookEndpointDto } from './dto/create-webhook-endpoint.dto';
 import { UpdateWebhookEndpointDto } from './dto/update-webhook-endpoint.dto';
+import { WebhookFilterDto } from './dto/webhook-filter.dto';
 import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 import { FeatureFlag } from '../common/feature-flags/feature-flag.guard';
 
@@ -102,11 +99,35 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
 
   @ApiOperation({ summary: 'List webhook endpoints for a project' })
-  @ApiParam({ name: 'projectId', description: 'Project ID', example: 'project-uuid' })
-  @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (starting from 1)' })
-  @ApiQuery({ name: 'limit', required: false, example: 20, description: 'Items per page (max 100)' })
-  @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'DISABLED', 'FAILED'], description: 'Filter by endpoint status' })
-  @ApiQuery({ name: 'event', required: false, example: 'wallet.created', description: 'Filter by subscribed event type' })
+  @ApiParam({
+    name: 'projectId',
+    description: 'Project ID',
+    example: 'project-uuid',
+  })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    example: 1,
+    description: 'Page number (starting from 1)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: 20,
+    description: 'Items per page (max 100)',
+  })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: ['ACTIVE', 'DISABLED', 'FAILED'],
+    description: 'Filter by endpoint status',
+  })
+  @ApiQuery({
+    name: 'event',
+    required: false,
+    example: 'wallet.created',
+    description: 'Filter by subscribed event type',
+  })
   @ApiResponse({
     status: 200,
     description: 'Paginated list of webhook endpoints',
@@ -134,21 +155,13 @@ export class WebhookController {
   @Get('endpoints/project/:projectId')
   async listEndpoints(
     @Param('projectId') projectId: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
+    @Query() filter: WebhookFilterDto,
   ) {
-    const pageNumber = Math.max(1, parseInt(page || '1', 10));
-    const pageLimit = Math.min(100, Math.max(1, parseInt(limit || '20', 10)));
-
-    const result = await this.webhookService.listEndpoints(
-      projectId,
-      pageNumber,
-      pageLimit,
-    );
+    const result = await this.webhookService.listEndpoints(projectId, filter);
 
     return {
-      page: pageNumber,
-      limit: pageLimit,
+      page: result.page,
+      limit: result.limit,
       total: result.total,
       endpoints: result.endpoints.map((e) => ({
         id: e.id,
@@ -171,7 +184,11 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
 
   @ApiOperation({ summary: 'Get a specific webhook endpoint' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint ID', example: 'endpoint-uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
   @ApiResponse({
     status: 200,
     description: 'Webhook endpoint details (secret is never returned here)',
@@ -223,7 +240,11 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
 
   @ApiOperation({ summary: 'Update a webhook endpoint' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint ID', example: 'endpoint-uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
   @ApiBody({
     type: UpdateWebhookEndpointDto,
     examples: {
@@ -295,7 +316,11 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
 
   @ApiOperation({ summary: 'Delete a webhook endpoint' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint ID', example: 'endpoint-uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
   @ApiResponse({
     status: 204,
     description: 'Endpoint deleted successfully (no body returned)',
@@ -325,10 +350,15 @@ export class WebhookController {
       'Generates a new HMAC-SHA256 signing secret for the endpoint. ' +
       'The new secret is **only returned once** in this response — store it immediately.',
   })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint ID', example: 'endpoint-uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
   @ApiResponse({
     status: 200,
-    description: 'New secret returned. This is the only time it will be visible.',
+    description:
+      'New secret returned. This is the only time it will be visible.',
     example: {
       secret: 'whsec_newSecretValue123...',
       rotatedAt: '2024-06-24T15:00:00.000Z',
@@ -359,9 +389,23 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
 
   @ApiOperation({ summary: 'Get delivery history for a webhook endpoint' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint ID', example: 'endpoint-uuid' })
-  @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (starting from 1)' })
-  @ApiQuery({ name: 'limit', required: false, example: 50, description: 'Items per page (max 100)' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    example: 1,
+    description: 'Page number (starting from 1)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: 50,
+    description: 'Items per page (max 100)',
+  })
   @ApiResponse({
     status: 200,
     description: 'Paginated delivery history',
@@ -402,16 +446,6 @@ export class WebhookController {
   @Get('endpoints/:id/deliveries')
   async getDeliveries(
     @Param('id') id: string,
-    @Query('limit') limit?: string,
-    @Query('status') status?: string,
-  ) {
-    const deliveryLimit = this.parseLimit(limit);
-    const deliveryStatus = this.parseStatus(status);
-
-    const deliveries = await this.webhookService.getDeliveries(
-      id,
-      deliveryLimit,
-      deliveryStatus,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
@@ -448,6 +482,60 @@ export class WebhookController {
     };
   }
 
+  /**
+   * Lists dead-lettered deliveries (exhausted all retries)
+   */
+  @Get('deliveries/dead-letter')
+  async getDeadLetters(
+    @Query('projectId') projectId?: string,
+    @Query('endpointId') endpointId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const deadLetters = await this.webhookService.getDeadLetters({
+      projectId,
+      endpointId,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+
+    return {
+      deadLetters: deadLetters.map((d) => ({
+        id: d.id,
+        endpointId: d.endpointId,
+        endpointUrl: (d as any).endpoint?.url,
+        eventId: d.eventId,
+        eventType: d.eventType,
+        attempts: d.attempts,
+        maxAttempts: d.maxAttempts,
+        responseStatus: d.responseStatus,
+        errorMessage: d.errorMessage,
+        firstAttemptAt: d.firstAttemptAt,
+        lastAttemptAt: d.lastAttemptAt,
+        createdAt: d.createdAt,
+      })),
+    };
+  }
+
+  /**
+   * Requeues a dead-lettered delivery and immediately attempts redelivery
+   */
+  @Post('deliveries/:id/replay')
+  @HttpCode(HttpStatus.OK)
+  async replayDeadLetter(@Param('id') id: string) {
+    await this.webhookService.replayDeadLetter(id);
+    const result = await this.webhookDispatcher.processDeliveries();
+
+    return {
+      replayed: id,
+      processed: result.delivered + result.failed + result.retrying,
+      delivered: result.delivered,
+      failed: result.failed,
+      retrying: result.retrying,
+    };
+  }
+
+  /**
+   * Manually triggers webhook delivery processing (admin only)
+   */
   // ---------------------------------------------------------------------------
   // POST /webhooks/process-deliveries
   // ---------------------------------------------------------------------------
@@ -481,43 +569,4 @@ export class WebhookController {
     };
   }
 
-  /**
-   * Parses and validates the `limit` query param for delivery history
-   */
-  private parseLimit(limit?: string): number {
-    if (limit === undefined) {
-      return 50;
-    }
-
-    const parsed = Number(limit);
-
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_DELIVERIES_LIMIT) {
-      throw new BadRequestException(
-        `limit must be an integer between 1 and ${MAX_DELIVERIES_LIMIT}`,
-      );
-    }
-
-    return parsed;
-  }
-
-  /**
-   * Parses and validates the `status` query param for delivery history
-   */
-  private parseStatus(status?: string): DeliveryStatus | undefined {
-    if (status === undefined) {
-      return undefined;
-    }
-
-    const normalized = status.toUpperCase();
-
-    if (
-      !Object.values(DeliveryStatus).includes(normalized as DeliveryStatus)
-    ) {
-      throw new BadRequestException(
-        `status must be one of: ${Object.values(DeliveryStatus).join(', ')}`,
-      );
-    }
-
-    return normalized as DeliveryStatus;
-  }
 }

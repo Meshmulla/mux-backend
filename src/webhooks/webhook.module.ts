@@ -10,6 +10,7 @@ import { WebhookDeliveryQueueWorker } from './webhook-delivery-queue.worker';
 import { WebhookController } from './webhook.controller';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { WebhookConfigService } from './webhook-config.service';
+import { CacheService } from '../common/cache/cache.service';
 
 @Module({
   imports: [ConfigModule],
@@ -24,6 +25,7 @@ import { WebhookConfigService } from './webhook-config.service';
     WebhookDeliveryQueueWorker,
     MetricsService,
     WebhookConfigService,
+    CacheService,
   ],
   exports: [WebhookEventEmitterService, WebhookDispatcherService],
 })

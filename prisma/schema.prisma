@@ -130,6 +130,9 @@ model User {
   /// Relation to user's spending limits
   spendingLimits SpendingLimit[]
 
+  /// Relation to user's refresh tokens
+  refreshTokens RefreshToken[]
+
   @@index([authId])
   @@index([authProvider])
   @@index([deletedAt])
@@ -735,6 +738,58 @@ model KeyRotationAuditLog {
   @@index([operation, timestamp])
   @@index([keyId, operation])
   @@index([expiresAt])
+}
+
+/// Refresh token status lifecycle
+enum RefreshTokenStatus {
+  ACTIVE
+  ROTATED
+  REVOKED
+  EXPIRED
+}
+
+/// Refresh token management with automatic rotation on use
+model RefreshToken {
+  id String @id @default(uuid())
+
+  /// User reference
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Refresh token hash (never store plaintext)
+  tokenHash String @unique
+
+  /// Rotation chain - previous token in rotation sequence
+  previousTokenId String?
+  previousToken   RefreshToken?  @relation("TokenRotation", fields: [previousTokenId], references: [id])
+  nextToken       RefreshToken[] @relation("TokenRotation")
+
+  /// Token status
+  status RefreshTokenStatus @default(ACTIVE)
+
+  /// Expiration timestamp
+  expiresAt DateTime
+
+  /// Usage tracking
+  lastUsedAt DateTime?
+  usageCount Int @default(0)
+
+  /// Rotation tracking
+  rotatedAt DateTime?
+  rotatedReason String?
+
+  /// Revocation details
+  revokedAt DateTime?
+  revokeReason String?
+
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@index([previousTokenId])
 }
 
 /// Transaction lifecycle states
