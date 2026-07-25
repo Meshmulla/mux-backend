@@ -9,16 +9,19 @@ import { PAYMENT_LIMITS_PORT } from './ports/payment-limits.port';
 import { RequestContextService } from '../common/request-context/request-context.service';
 import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
 import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
+import { PaymentMetricsService } from './payment-metrics.service';
 
 @Module({
   imports: [ConfigModule, LimitsModule, WalletsModule],
   controllers: [PaymentsController],
   providers: [
     PaymentsService,
+    PaymentMetricsService,
     { provide: PAYMENT_LIMITS_PORT, useExisting: LimitsService },
     RequestContextService,
     FeatureFlagService,
     FeatureFlagGuard,
   ],
+  exports: [PaymentMetricsService],
 })
 export class PaymentsModule {}
