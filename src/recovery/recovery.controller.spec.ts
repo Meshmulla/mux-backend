@@ -32,6 +32,7 @@ describe('RecoveryController', () => {
       findAll: jest.fn(),
       findOne: jest.fn(),
       update: jest.fn(),
+      initiate: jest.fn(),
       remove: jest.fn(),
     };
 
@@ -184,6 +185,24 @@ describe('RecoveryController', () => {
       expect(service.update).toHaveBeenCalledWith(
         '660e8400-e29b-41d4-a716-446655440001',
         dto,
+      );
+      expect(result.status).toEqual(RecoveryStatus.IN_REVIEW);
+    });
+  });
+
+  describe('initiate', () => {
+    it('should call service.initiate', async () => {
+      service.initiate.mockResolvedValue({
+        ...mockRecovery,
+        status: RecoveryStatus.IN_REVIEW,
+      });
+
+      const result = await controller.initiate(
+        '660e8400-e29b-41d4-a716-446655440001',
+      );
+
+      expect(service.initiate).toHaveBeenCalledWith(
+        '660e8400-e29b-41d4-a716-446655440001',
       );
       expect(result.status).toEqual(RecoveryStatus.IN_REVIEW);
     });
