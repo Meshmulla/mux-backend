@@ -81,7 +81,6 @@ export class StellarHorizonService {
       250,
     );
 
-    this.logger.log(`Initialized Stellar Horizon client: ${this.horizonUrl}`);
     this.server = new Server(horizonUrl, { allowHttp: false });
     this.circuitBreaker = new CircuitBreaker('stellar-horizon', {
       failureThreshold: this.configService.get<number>(
@@ -208,8 +207,6 @@ export class StellarHorizonService {
     const requestId = this.requestContext.getRequestId();
     const logPrefix = requestId ? `[${requestId}] ` : '';
     try {
-      await this.withRetry(
-        () => this.mockHorizonRequest(publicKey),
       await this.executeWithRetry(
         () => this.server.loadAccount(publicKey),
         `accountExists(${publicKey.substring(0, 8)}...)`,

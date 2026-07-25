@@ -9,7 +9,6 @@ import {
   Query,
   HttpCode,
   HttpStatus,
-  BadRequestException,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -22,9 +21,6 @@ import {
 } from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
-import { DeliveryStatus } from './domain/webhook-events';
-
-const MAX_DELIVERIES_LIMIT = 200;
 import { CreateWebhookEndpointDto } from './dto/create-webhook-endpoint.dto';
 import { UpdateWebhookEndpointDto } from './dto/update-webhook-endpoint.dto';
 import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
@@ -402,16 +398,6 @@ export class WebhookController {
   @Get('endpoints/:id/deliveries')
   async getDeliveries(
     @Param('id') id: string,
-    @Query('limit') limit?: string,
-    @Query('status') status?: string,
-  ) {
-    const deliveryLimit = this.parseLimit(limit);
-    const deliveryStatus = this.parseStatus(status);
-
-    const deliveries = await this.webhookService.getDeliveries(
-      id,
-      deliveryLimit,
-      deliveryStatus,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
@@ -535,43 +521,4 @@ export class WebhookController {
     };
   }
 
-  /**
-   * Parses and validates the `limit` query param for delivery history
-   */
-  private parseLimit(limit?: string): number {
-    if (limit === undefined) {
-      return 50;
-    }
-
-    const parsed = Number(limit);
-
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_DELIVERIES_LIMIT) {
-      throw new BadRequestException(
-        `limit must be an integer between 1 and ${MAX_DELIVERIES_LIMIT}`,
-      );
-    }
-
-    return parsed;
-  }
-
-  /**
-   * Parses and validates the `status` query param for delivery history
-   */
-  private parseStatus(status?: string): DeliveryStatus | undefined {
-    if (status === undefined) {
-      return undefined;
-    }
-
-    const normalized = status.toUpperCase();
-
-    if (
-      !Object.values(DeliveryStatus).includes(normalized as DeliveryStatus)
-    ) {
-      throw new BadRequestException(
-        `status must be one of: ${Object.values(DeliveryStatus).join(', ')}`,
-      );
-    }
-
-    return normalized as DeliveryStatus;
-  }
 }

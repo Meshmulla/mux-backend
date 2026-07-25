@@ -1049,7 +1049,6 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isBalanceStale(balance: WalletBalance): boolean {
-  private isBalanceStale(balance: any): boolean {
     if (!balance.lastSyncedAt) return true;
     return Date.now() - balance.lastSyncedAt.getTime() > this.staleThresholdMs;
   }
@@ -1060,12 +1059,6 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
 
   private calculateDifference(a: string, b: string): string {
     return (parseFloat(a) - parseFloat(b)).toFixed(7);
-  private assetsMatch(asset1: Asset, asset2: Asset): boolean {
-    return (
-      asset1.type === asset2.type &&
-      asset1.code === asset2.code &&
-      asset1.issuer === asset2.issuer
-    );
   }
 
   private assetCompoundKey(walletId: string, asset: Asset) {
@@ -1075,10 +1068,6 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       assetCode: asset.code ?? null,
       assetIssuer: asset.issuer ?? null,
     } as any;
-  }
-
-  private calculateDifference(balance1: string, balance2: string): string {
-    return (parseFloat(balance1) - parseFloat(balance2)).toFixed(7);
   }
 
   private balanceEventKey(event: BalanceChangeEvent): string {
