@@ -30,6 +30,7 @@ import { PaymentFailedEvent } from './events/payment-failed.event';
 import { retryWithBackoff } from '../common/utils/retry';
 import { MetricsService } from '../metrics/metrics.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
+import { PaymentMetricsService } from './payment-metrics.service';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -50,10 +51,12 @@ export class PaymentsService {
     private readonly eventEmitter: EventEmitter2,
     private readonly metrics: MetricsService,
     private readonly requestContext: RequestContextService,
+    private readonly paymentMetrics: PaymentMetricsService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
     const requestId = this.requestContext.getRequestId();
+    const start = Date.now();
     const {
       walletId,
       receiverWalletId,
@@ -75,69 +78,86 @@ export class PaymentsService {
           `Idempotency hit for key ${idempotencyKey}, returning existing payment ${existing.id} requestId=${requestId}`,
         );
         this.metrics.incrementPaymentIdempotencyHit();
+        this.paymentMetrics.record({
+          operation: 'create',
+          outcome: 'idempotent',
+          durationMs: Date.now() - start,
+          currency,
+        });
         return existing;
       }
     }
 
-    const senderWallet = await retryWithBackoff(
-      () => this.walletsService.findWalletById(walletId),
-      3,
-      100,
-      this.logger,
-    );
-    if (senderWallet.status !== WalletStatus.ACTIVE) {
-      throw new BadRequestException(
-        `Sender wallet is not active (status: ${senderWallet.status})`,
+    try {
+      const senderWallet = await retryWithBackoff(
+        () => this.walletsService.findWalletById(walletId),
+        3,
+        100,
+        this.logger,
       );
-    }
+      if (senderWallet.status !== WalletStatus.ACTIVE) {
+        throw new BadRequestException(
+          `Sender wallet is not active (status: ${senderWallet.status})`,
+        );
+      }
 
-    const receiverWallet = await retryWithBackoff(
-      () => this.walletsService.findWalletById(receiverWalletId),
-      3,
-      100,
-      this.logger,
-    );
-    if (receiverWallet.network !== senderWallet.network) {
-      throw new BadRequestException(
-        `Payment network mismatch: sender wallet is on ${senderWallet.network}, receiver wallet is on ${receiverWallet.network}`,
+      await retryWithBackoff(
+        () => this.walletsService.findWalletById(receiverWalletId),
+        3,
+        100,
+        this.logger,
       );
-    }
+      await retryWithBackoff(
+        () => this.paymentLimitsPort.checkLimits(walletId, amount),
+        3,
+        100,
+        this.logger,
+      );
 
-    await retryWithBackoff(
-      () => this.paymentLimitsPort.checkLimits(walletId, amount),
-      3,
-      100,
-      this.logger,
-    );
+      const payment = await this.prisma.payment.create({
+        data: {
+          fromId,
+          toId,
+          amount,
+          currency,
+          assetCode,
+          description,
+          userId: fromId,
+          status: PaymentStatus.PENDING,
+          idempotencyKey: idempotencyKey ?? null,
+        },
+      });
 
-    const payment = await this.prisma.payment.create({
-      data: {
-        fromId,
-        toId,
-        amount,
+      this.metrics.incrementPaymentsCreated();
+      this.paymentMetrics.record({
+        operation: 'create',
+        outcome: 'success',
+        durationMs: Date.now() - start,
         currency,
-        assetCode,
-        description,
-        userId: fromId,
-        status: PaymentStatus.PENDING,
-        idempotencyKey: idempotencyKey ?? null,
-      },
-    });
+      });
 
-    this.metrics.incrementPaymentsCreated();
+      this.eventEmitter.emit(
+        'payment.created',
+        new PaymentCreatedEvent(
+          payment.id,
+          payment.amount,
+          payment.currency,
+          payment.userId,
+          new Date(),
+        ),
+      );
 
-    this.eventEmitter.emit(
-      'payment.created',
-      new PaymentCreatedEvent(
-        payment.id,
-        payment.amount,
-        payment.currency,
-        payment.userId,
-        new Date(),
-      ),
-    );
-
-    return payment;
+      return payment;
+    } catch (err) {
+      this.paymentMetrics.record({
+        operation: 'create',
+        outcome: 'failure',
+        durationMs: Date.now() - start,
+        currency,
+        failureReason: err?.constructor?.name ?? 'unknown',
+      });
+      throw err;
+    }
   }
 
   async findAll(query: PaginationQuery = {}) {
