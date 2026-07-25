@@ -6,6 +6,13 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Server } from 'stellar-sdk';
 import { Asset, AssetType, BalanceUpdate } from './domain/balance.model';
+import { WalletNetwork } from '../wallets/domain/wallet.model';
+
+export interface HorizonAccountResponse {
+  id: string;
+  sequence: string;
+  balances: HorizonBalance[];
+}
 import { RequestContextService } from '../common/request-context/request-context.service';
 import {
   CircuitBreaker,
@@ -22,6 +29,22 @@ export interface HorizonBalance {
 @Injectable()
 export class StellarHorizonService {
   private readonly logger = new Logger(StellarHorizonService.name);
+  private readonly horizonUrls: Record<WalletNetwork, string>;
+
+  constructor(private readonly configService: ConfigService) {
+    this.horizonUrls = {
+      [WalletNetwork.TESTNET]: this.configService.get<string>(
+        'STELLAR_HORIZON_TESTNET_URL',
+        'https://horizon-testnet.stellar.org',
+      ),
+      [WalletNetwork.MAINNET]: this.configService.get<string>(
+        'STELLAR_HORIZON_MAINNET_URL',
+        'https://horizon.stellar.org',
+      ),
+    };
+
+    this.logger.log(
+      `Initialized Stellar Horizon clients: testnet=${this.horizonUrls[WalletNetwork.TESTNET]}, mainnet=${this.horizonUrls[WalletNetwork.MAINNET]}`,
   private readonly horizonUrl: string;
   private readonly maxRetries: number;
   private readonly retryBackoffMs: number;
@@ -37,7 +60,14 @@ export class StellarHorizonService {
       'STELLAR_HORIZON_URL',
       'https://horizon-testnet.stellar.org',
     );
+  }
 
+  /**
+   * Resolves the Horizon base URL for a given network. Defaults to testnet
+   * when no network is specified, matching prior (single-URL) behavior.
+   */
+  private resolveUrl(network: WalletNetwork = WalletNetwork.TESTNET): string {
+    return this.horizonUrls[network];
     this.maxRetries = this.configService.get<number>(
       'STELLAR_HORIZON_MAX_RETRIES',
       3,
@@ -120,6 +150,11 @@ export class StellarHorizonService {
   /**
    * Fetches account balances from Stellar Horizon
    */
+  async getAccountBalances(
+    publicKey: string,
+    network: WalletNetwork = WalletNetwork.TESTNET,
+  ): Promise<BalanceUpdate[]> {
+    const horizonUrl = this.resolveUrl(network);
   async getAccountBalances(publicKey: string): Promise<BalanceUpdate[]> {
     const requestId = this.requestContext.getRequestId();
     const logPrefix = requestId ? `[${requestId}] ` : '';
@@ -130,6 +165,7 @@ export class StellarHorizonService {
       );
 
       // Simplified mock implementation
+      const response = await this.mockHorizonRequest(publicKey, horizonUrl);
       const response = await this.withRetry(
         () => this.mockHorizonRequest(publicKey),
         `getAccountBalances(${publicKey.substring(0, 8)}...)`,
@@ -162,6 +198,12 @@ export class StellarHorizonService {
   /**
    * Checks if an account exists on-chain
    */
+  async accountExists(
+    publicKey: string,
+    network: WalletNetwork = WalletNetwork.TESTNET,
+  ): Promise<boolean> {
+    try {
+      await this.mockHorizonRequest(publicKey, this.resolveUrl(network));
   async accountExists(publicKey: string): Promise<boolean> {
     const requestId = this.requestContext.getRequestId();
     const logPrefix = requestId ? `[${requestId}] ` : '';
@@ -269,5 +311,37 @@ export class StellarHorizonService {
       default:
         throw new Error(`Unknown asset type: ${horizonBalance.asset_type}`);
     }
+  }
+
+  /**
+   * Mock Horizon request (replace with real stellar-sdk in production)
+   */
+  private async mockHorizonRequest(
+    publicKey: string,
+    horizonUrl: string,
+  ): Promise<HorizonAccountResponse> {
+    this.logger.debug(`Requesting account ${publicKey} from ${horizonUrl}`);
+
+    // Simulate API call delay
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Mock response with realistic data
+    return {
+      id: publicKey,
+      sequence: '123456789',
+      balances: [
+        {
+          asset_type: 'native',
+          balance: '1000.5000000',
+        },
+        {
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer:
+            'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+          balance: '500.0000000',
+        },
+      ],
+    };
   }
 }

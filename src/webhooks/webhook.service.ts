@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaClient } from '../generated/prisma/client';
 import {
   WebhookEndpoint,
@@ -218,6 +223,57 @@ export class WebhookService {
       deliveries,
       total,
     };
+  }
+
+  /**
+   * Lists dead-lettered deliveries (exhausted all retries) for inspection.
+   */
+  async getDeadLetters(
+    params: { projectId?: string; endpointId?: string; limit?: number } = {},
+  ) {
+    const { projectId, endpointId, limit = 50 } = params;
+
+    return await this.prisma.webhookDelivery.findMany({
+      where: {
+        status: DeliveryStatus.FAILED,
+        ...(endpointId ? { endpointId } : {}),
+        ...(projectId ? { endpoint: { projectId } } : {}),
+      },
+      include: { endpoint: true },
+      orderBy: { lastAttemptAt: 'desc' },
+      take: limit,
+    });
+  }
+
+  /**
+   * Requeues a dead-lettered delivery for redelivery by resetting its attempt count.
+   * Actual delivery happens on the next dispatcher processing pass.
+   */
+  async replayDeadLetter(deliveryId: string): Promise<void> {
+    const delivery = await this.prisma.webhookDelivery.findUnique({
+      where: { id: deliveryId },
+    });
+
+    if (!delivery) {
+      throw new NotFoundException(`Webhook delivery ${deliveryId} not found`);
+    }
+
+    if (delivery.status !== DeliveryStatus.FAILED) {
+      throw new BadRequestException(
+        `Delivery ${deliveryId} is not dead-lettered (status: ${delivery.status})`,
+      );
+    }
+
+    await this.prisma.webhookDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        status: DeliveryStatus.PENDING,
+        attempts: 0,
+        nextRetryAt: null,
+      },
+    });
+
+    this.logger.log(`Requeued dead-lettered delivery ${deliveryId}`);
   }
 
   /**

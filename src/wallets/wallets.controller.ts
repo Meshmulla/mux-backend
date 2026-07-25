@@ -7,6 +7,8 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
+  UseGuards,
   UseGuards,
   Headers,
   Query,
@@ -32,6 +34,7 @@ import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator'
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
 import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { PaginationQuery } from '../common/pagination/pagination.util';
 import { RateLimitGuard, SensitiveEndpoint } from '../rate-limit/rate-limit.guard';
 import {
   FeatureFlag,
@@ -68,6 +71,14 @@ export class WalletsController {
 
   @ApiOperation({ summary: 'Create a new wallet' })
   @Post()
+  create(@Body() createWalletDto: CreateWalletDto) {
+    return this.walletsService.create(createWalletDto);
+  }
+
+  @Get()
+  findAll(@Query() query: PaginationQuery) {
+    return this.walletsService.findAll(query);
+  }
   create(
     @Body() createWalletDto: CreateWalletDto,
     @Headers('x-request-id') requestId?: string,
