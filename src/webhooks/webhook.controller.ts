@@ -434,6 +434,60 @@ export class WebhookController {
     };
   }
 
+  /**
+   * Lists dead-lettered deliveries (exhausted all retries)
+   */
+  @Get('deliveries/dead-letter')
+  async getDeadLetters(
+    @Query('projectId') projectId?: string,
+    @Query('endpointId') endpointId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const deadLetters = await this.webhookService.getDeadLetters({
+      projectId,
+      endpointId,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+
+    return {
+      deadLetters: deadLetters.map((d) => ({
+        id: d.id,
+        endpointId: d.endpointId,
+        endpointUrl: (d as any).endpoint?.url,
+        eventId: d.eventId,
+        eventType: d.eventType,
+        attempts: d.attempts,
+        maxAttempts: d.maxAttempts,
+        responseStatus: d.responseStatus,
+        errorMessage: d.errorMessage,
+        firstAttemptAt: d.firstAttemptAt,
+        lastAttemptAt: d.lastAttemptAt,
+        createdAt: d.createdAt,
+      })),
+    };
+  }
+
+  /**
+   * Requeues a dead-lettered delivery and immediately attempts redelivery
+   */
+  @Post('deliveries/:id/replay')
+  @HttpCode(HttpStatus.OK)
+  async replayDeadLetter(@Param('id') id: string) {
+    await this.webhookService.replayDeadLetter(id);
+    const result = await this.webhookDispatcher.processDeliveries();
+
+    return {
+      replayed: id,
+      processed: result.delivered + result.failed + result.retrying,
+      delivered: result.delivered,
+      failed: result.failed,
+      retrying: result.retrying,
+    };
+  }
+
+  /**
+   * Manually triggers webhook delivery processing (admin only)
+   */
   // ---------------------------------------------------------------------------
   // POST /webhooks/process-deliveries
   // ---------------------------------------------------------------------------

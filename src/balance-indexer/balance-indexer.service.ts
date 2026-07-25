@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
+import { WalletNetwork } from '../wallets/domain/wallet.model';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { BalanceRepository } from './balance.repository';
 import { BalanceCacheService } from './balance-cache.service';
@@ -413,8 +414,10 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         throw new NotFoundException(`Wallet ${walletId} not found`);
       }
 
+      // Check if account exists on-chain (on the wallet's own network)
       const accountExists = await this.stellarHorizonService.accountExists(
         wallet.publicKey,
+        wallet.network as WalletNetwork,
       );
 
       if (!accountExists) {
@@ -444,6 +447,11 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         return result;
       }
 
+      // Fetch balances from Horizon
+      const horizonBalances = await this.stellarHorizonService.getAccountBalances(
+        wallet.publicKey,
+        wallet.network as WalletNetwork,
+      );
       const horizonBalances =
         await this.stellarHorizonService.getAccountBalances(wallet.publicKey);
 
@@ -559,6 +567,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
 
     const horizonBalances = await this.stellarHorizonService.getAccountBalances(
       wallet.publicKey,
+      wallet.network as WalletNetwork,
     );
     const onChainBalance = horizonBalances.find((b) =>
       this.assetsMatch(b.asset, asset),
