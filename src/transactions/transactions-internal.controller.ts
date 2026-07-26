@@ -1,6 +1,7 @@
-import { Controller, Post, Query, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery, ApiResponse } from '@nestjs/swagger';
 import { TransactionPollingService } from './transaction-polling.service';
+import { TransactionQueryService } from './transaction-query.service';
 import { CronSecretGuard } from '../common/cron/cron-secret.guard';
 
 /**
@@ -12,7 +13,10 @@ import { CronSecretGuard } from '../common/cron/cron-secret.guard';
 @Controller('transactions/internal')
 @UseGuards(CronSecretGuard)
 export class TransactionsInternalController {
-  constructor(private readonly pollingService: TransactionPollingService) {}
+  constructor(
+    private readonly pollingService: TransactionPollingService,
+    private readonly queryService: TransactionQueryService,
+  ) {}
 
   @ApiOperation({
     summary: 'Poll pending transactions for confirmation',
@@ -47,5 +51,79 @@ export class TransactionsInternalController {
   pollPendingTransactions(@Query('limit') limit?: string) {
     const parsedLimit = limit ? Math.min(parseInt(limit, 10), 1000) : 100;
     return this.pollingService.pollPendingTransactions(parsedLimit);
+  }
+
+  @ApiOperation({
+    summary: 'List admin transactions stuck in PENDING status',
+    description:
+      'Admin endpoint to find transactions that have been in PENDING status longer than threshold. ' +
+      'Useful for monitoring transaction health and identifying stuck operations. ' +
+      'Requires X-Cron-Secret header with the configured cron secret.',
+  })
+  @ApiQuery({
+    name: 'thresholdMinutes',
+    required: false,
+    description:
+      'Consider transactions stuck if pending longer than this (default 60 minutes)',
+    example: 60,
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    description: 'Maximum number of transactions to return (default 100, max 1000)',
+    example: 100,
+  })
+  @ApiQuery({
+    name: 'offset',
+    required: false,
+    description: 'Number of records to skip for pagination (default 0)',
+    example: 0,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Paginated list of stuck pending transactions',
+    schema: {
+      example: {
+        data: [
+          {
+            id: '550e8400-e29b-41d4-a716-446655440002',
+            amount: '10',
+            assetType: 'NATIVE',
+            status: 'PENDING',
+            senderWalletId: '550e8400-e29b-41d4-a716-446655440000',
+            receiverWalletId: '550e8400-e29b-41d4-a716-446655440001',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        total: 1,
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - missing or invalid X-Cron-Secret header',
+  })
+  @Get('stuck-pending')
+  listStuckPendingTransactions(
+    @Query('thresholdMinutes') thresholdMinutes?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    const parsedThreshold = thresholdMinutes
+      ? Math.max(parseInt(thresholdMinutes, 10), 1)
+      : 60;
+    const parsedLimit = limit
+      ? Math.min(Math.max(parseInt(limit, 10), 1), 1000)
+      : 100;
+    const parsedOffset = offset
+      ? Math.max(parseInt(offset, 10), 0)
+      : 0;
+
+    return this.queryService.findStuckPendingTransactions(
+      parsedThreshold,
+      parsedLimit,
+      parsedOffset,
+    );
   }
 }
