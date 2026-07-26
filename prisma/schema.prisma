@@ -862,3 +862,59 @@ model Transaction {
   @@index([createdAt])
   @@index([idempotencyKey])
 }
+
+enum ChangeType {
+  ADDED
+  CHANGED
+  DEPRECATED
+  REMOVED
+  FIXED
+  SECURITY
+}
+
+enum ChangeCategory {
+  WALLETS
+  PAYMENTS
+  LIMITS
+  RECOVERY
+  AUTHENTICATION
+  WEBHOOKS
+  GENERAL
+}
+
+model ApiChangelog {
+  id String @id @default(uuid())
+
+  /// Semantic version (e.g., 1.2.0)
+  version String
+
+  /// Type of change
+  changeType ChangeType
+
+  /// Category of the change
+  category ChangeCategory
+
+  /// Brief title of the change
+  title String
+
+  /// Detailed description of the change
+  description String
+
+  /// List of affected API endpoints (e.g., ["GET /wallets", "POST /payments"])
+  affectedEndpoints String[]
+
+  /// Migration guide for API consumers
+  migrationGuide String?
+
+  /// When this entry was published
+  publishedAt DateTime @default(now())
+
+  /// Operational metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([version])
+  @@index([category])
+  @@index([publishedAt])
+  @@index([changeType])
+}

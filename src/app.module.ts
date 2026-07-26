@@ -26,6 +26,7 @@ import { TransactionsModule } from './transactions/transactions.module';
 import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
+import { ApiChangelogModule } from './api-changelog/api-changelog.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { HealthModule } from './health/health.module';
     DevelopersModule,
     ProjectsModule,
     HealthModule,
+    ApiChangelogModule,
   ],
   controllers: [AppController],
   providers: [
