@@ -149,6 +149,12 @@ export class WalletsController {
     description: 'Number of records to skip (default 0)',
     example: 0,
   })
+  @ApiQuery({
+    name: 'loadTestMode',
+    required: false,
+    description: 'Enable synthetic load test data generation (default false)',
+    example: false,
+  })
   @Get()
   findAll(
     @Query('userId') userId?: string,
@@ -157,6 +163,7 @@ export class WalletsController {
     @Query('includeArchived') includeArchived?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('loadTestMode') loadTestMode?: string,
   ) {
     return this.walletsService.findAll({
       userId,
@@ -165,6 +172,7 @@ export class WalletsController {
       includeArchived: includeArchived === 'true',
       limit: parsePaginationParam(limit, 'limit'),
       offset: parsePaginationParam(offset, 'offset'),
+      loadTestMode: loadTestMode === 'true',
     });
   }
 

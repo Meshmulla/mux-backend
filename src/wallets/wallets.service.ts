@@ -31,6 +31,10 @@ import {
   parsePagination,
   buildPaginatedResponse,
 } from '../common/pagination/pagination.util';
+import {
+  StructuredLogger,
+  LogContext,
+} from '../common/logging/structured-logger';
 
 /** Wallet shape safe to return from the API (no encrypted secret material). */
 export type PublicWallet = Omit<Wallet, 'encryptedSecret'>;
@@ -48,6 +52,8 @@ export interface WalletListFilters {
   includeArchived?: boolean;
   limit?: number;
   offset?: number;
+  /** Enable load test synthetic data generation. */
+  loadTestMode?: boolean;
 }
 
 export interface WalletListResult {
@@ -70,7 +76,7 @@ export interface SigningResult {
 
 @Injectable()
 export class WalletsService implements OnModuleDestroy {
-  private readonly logger = new SafeLogger(WalletsService.name);
+  private readonly logger = new StructuredLogger(WalletsService.name);
   private prisma: PrismaClient;
 
   constructor(
@@ -92,9 +98,10 @@ export class WalletsService implements OnModuleDestroy {
     if (!this.encryptionService.validateConfiguration()) {
       throw new Error('Wallet encryption service configuration is invalid');
     }
-    this.logger.log(
-      'Wallet service initialized with encryption validation passed',
-    );
+    this.logger.logWithContext('Wallet service initialized', {
+      operation: 'init',
+      outcome: 'success',
+    });
   }
 
   async createWallet(
@@ -424,7 +431,12 @@ export class WalletsService implements OnModuleDestroy {
       data: { defaultNetwork: network },
     });
 
-    this.logger.log(`Set network preference for user ${userId} to ${network}`);
+    this.logger.logWithContext('Set network preference', {
+      userId,
+      entityType: 'user',
+      operation: 'set_network_preference',
+      outcome: 'success',
+    });
     return {
       userId: updated.id,
       defaultNetwork: updated.defaultNetwork as WalletNetwork,
@@ -432,6 +444,11 @@ export class WalletsService implements OnModuleDestroy {
   }
 
   async findAll(filters?: WalletListFilters): Promise<WalletListResult> {
+    // Load test mode returns synthetic data for performance testing
+    if (filters?.loadTestMode) {
+      return this.generateTestData(filters);
+    }
+
     const where: Record<string, unknown> = {};
 
     if (filters?.userId) {
@@ -499,6 +516,41 @@ export class WalletsService implements OnModuleDestroy {
       WalletStatus.ARCHIVED,
       reason ?? 'Wallet archived',
     );
+  }
+
+  private generateTestData(filters: WalletListFilters): WalletListResult {
+    const limit = filters?.limit ?? 20;
+    const offset = filters?.offset ?? 0;
+    const totalTestWallets = 1000;
+
+    // Generate synthetic wallet data for load testing
+    const testWallets: PublicWallet[] = Array.from({ length: limit }, (_, i) => {
+      const index = offset + i;
+      return {
+        id: `test-wallet-${index}`,
+        userId: `test-user-${index % 100}`,
+        publicKey: `0x${'a'.repeat(64)}${index.toString().padStart(2, '0')}`,
+        encryptionVersion: 1,
+        secretVersion: 1,
+        keyVersion: 1,
+        network: (index % 2 === 0 ? WalletNetwork.MAINNET : WalletNetwork.TESTNET) as WalletNetwork,
+        status: WalletStatus.ACTIVE as WalletStatus,
+        statusReason: 'Test wallet',
+        statusChangedAt: new Date(Date.now() - index * 1000),
+        rotatedFromId: null,
+        successorId: null,
+        createdAt: new Date(Date.now() - index * 1000),
+        updatedAt: new Date(Date.now() - index * 1000),
+      };
+    });
+
+    return {
+      data: testWallets,
+      total: totalTestWallets,
+      limit,
+      offset,
+      hasMore: offset + limit < totalTestWallets,
+    };
   }
 
   private toPublicWallet(wallet: Wallet): PublicWallet {
