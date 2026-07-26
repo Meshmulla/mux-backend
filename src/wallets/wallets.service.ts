@@ -31,6 +31,10 @@ import {
   parsePagination,
   buildPaginatedResponse,
 } from '../common/pagination/pagination.util';
+import {
+  StructuredLogger,
+  LogContext,
+} from '../common/logging/structured-logger';
 
 /** Wallet shape safe to return from the API (no encrypted secret material). */
 export type PublicWallet = Omit<Wallet, 'encryptedSecret'>;
@@ -72,7 +76,7 @@ export interface SigningResult {
 
 @Injectable()
 export class WalletsService implements OnModuleDestroy {
-  private readonly logger = new SafeLogger(WalletsService.name);
+  private readonly logger = new StructuredLogger(WalletsService.name);
   private prisma: PrismaClient;
 
   constructor(
@@ -94,9 +98,10 @@ export class WalletsService implements OnModuleDestroy {
     if (!this.encryptionService.validateConfiguration()) {
       throw new Error('Wallet encryption service configuration is invalid');
     }
-    this.logger.log(
-      'Wallet service initialized with encryption validation passed',
-    );
+    this.logger.logWithContext('Wallet service initialized', {
+      operation: 'init',
+      outcome: 'success',
+    });
   }
 
   async createWallet(
@@ -426,7 +431,12 @@ export class WalletsService implements OnModuleDestroy {
       data: { defaultNetwork: network },
     });
 
-    this.logger.log(`Set network preference for user ${userId} to ${network}`);
+    this.logger.logWithContext('Set network preference', {
+      userId,
+      entityType: 'user',
+      operation: 'set_network_preference',
+      outcome: 'success',
+    });
     return {
       userId: updated.id,
       defaultNetwork: updated.defaultNetwork as WalletNetwork,

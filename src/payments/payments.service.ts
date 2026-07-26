@@ -32,6 +32,10 @@ import { retryWithBackoff } from '../common/utils/retry';
 import { MetricsService } from '../metrics/metrics.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
 import { PaymentMetricsService } from './payment-metrics.service';
+import {
+  StructuredLogger,
+  LogContext,
+} from '../common/logging/structured-logger';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -42,7 +46,7 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
 
 @Injectable()
 export class PaymentsService {
-  private readonly logger = new Logger(PaymentsService.name);
+  private readonly logger = new StructuredLogger(PaymentsService.name);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -76,9 +80,13 @@ export class PaymentsService {
         where: { idempotencyKey },
       });
       if (existing) {
-        this.logger.log(
-          `Idempotency hit for key ${idempotencyKey}, returning existing payment ${existing.id} requestId=${requestId}`,
-        );
+        this.logger.logWithContext('Idempotency hit, returning existing payment', {
+          requestId,
+          entityId: existing.id.toString(),
+          entityType: 'payment',
+          operation: 'create',
+          outcome: 'idempotent',
+        });
         this.metrics.incrementPaymentIdempotencyHit();
         this.paymentMetrics.record({
           operation: 'create',
@@ -222,9 +230,12 @@ export class PaymentsService {
     const requestId = this.requestContext.getRequestId();
     const paymentId = parseInt(id, 10);
 
-    this.logger.log(
-      `Updating payment id=${paymentId} requestId=${requestId}`,
-    );
+    this.logger.logWithContext('Updating payment', {
+      requestId,
+      entityId: paymentId.toString(),
+      entityType: 'payment',
+      operation: 'update',
+    });
 
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
