@@ -143,7 +143,6 @@ export class PaymentsService {
           payment.amount,
           payment.currency,
           payment.userId,
-          new Date(),
         ),
       );
 
@@ -244,7 +243,6 @@ export class PaymentsService {
           updatedPayment.amount,
           updatedPayment.currency,
           updatedPayment.userId,
-          new Date(),
         ),
       );
     } else if (updatePaymentDto.status === PaymentStatus.FAILED) {
@@ -256,7 +254,6 @@ export class PaymentsService {
           updatedPayment.amount,
           updatedPayment.currency,
           updatedPayment.userId,
-          new Date(),
         ),
       );
     }
