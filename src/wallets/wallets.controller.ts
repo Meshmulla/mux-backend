@@ -20,6 +20,7 @@ import {
   ApiOperation,
   ApiParam,
   ApiQuery,
+  ApiResponse,
 } from '@nestjs/swagger';
 import {
   WalletCreationOrchestrator,
@@ -29,6 +30,7 @@ import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
 import { SetNetworkPreferenceDto } from './dto/set-network-preference.dto';
+import { WalletResponseDto } from './dto/wallet-response.dto';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator';
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
@@ -70,15 +72,12 @@ export class WalletsController {
   ) {}
 
   @ApiOperation({ summary: 'Create a new wallet' })
+  @ApiResponse({
+    status: 201,
+    description: 'Wallet created successfully',
+    type: WalletResponseDto,
+  })
   @Post()
-  create(@Body() createWalletDto: CreateWalletDto) {
-    return this.walletsService.create(createWalletDto);
-  }
-
-  @Get()
-  findAll(@Query() query: PaginationQuery) {
-    return this.walletsService.findAll(query);
-  }
   create(
     @Body() createWalletDto: CreateWalletDto,
     @Headers('x-request-id') requestId?: string,
@@ -97,6 +96,23 @@ export class WalletsController {
 
   @ApiOperation({
     summary: 'List wallets with optional filters and pagination',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallets retrieved successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        data: {
+          type: 'array',
+          items: { $ref: '#/components/schemas/WalletResponseDto' },
+        },
+        total: { type: 'number' },
+        limit: { type: 'number' },
+        offset: { type: 'number' },
+        hasMore: { type: 'boolean' },
+      },
+    },
   })
   @ApiQuery({
     name: 'userId',
@@ -212,6 +228,13 @@ export class WalletsController {
     return this.walletsService.setNetworkPreference(userId, dto.network);
   }
 
+  @ApiOperation({ summary: 'Get a wallet by ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet retrieved successfully',
+    type: WalletResponseDto,
+  })
+  @ApiParam({ name: 'id', description: 'Wallet ID' })
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.walletsService.findOne(id);
