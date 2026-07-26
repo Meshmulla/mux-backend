@@ -7,6 +7,7 @@ import {
   Param,
   Query,
   UseGuards,
+  UseInterceptors,
   BadRequestException,
 } from '@nestjs/common';
 import {
@@ -35,6 +36,7 @@ import {
 } from '../common/feature-flags/feature-flag.guard';
 import { TransactionStatus } from './domain/transaction.model';
 import { PaginationQuery } from '../common/pagination/pagination.util';
+import { IdempotencyReplayInterceptor } from '../common/interceptors/idempotency-replay.interceptor';
 
 /** Parse a pagination query param, throwing 400 on invalid input */
 function parsePaginationParam(
@@ -125,6 +127,7 @@ export class TransactionsController {
   @ApiResponse({ status: 201, description: 'Transaction created in PENDING state' })
   @Post()
   @SensitiveEndpoint()
+  @UseInterceptors(IdempotencyReplayInterceptor)
   create(@Body() createTransactionDto: CreateTransactionDto) {
     return this.transactionsService.create(createTransactionDto);
   }
