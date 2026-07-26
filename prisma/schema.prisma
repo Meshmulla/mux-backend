@@ -345,6 +345,9 @@ model ApiKey {
   projectId       String
   project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
+  /// Network scope for this key (null = all networks, MAINNET/TESTNET = specific network)
+  network         WalletNetwork?
+
   /// Key status
   status          ApiKeyStatus @default(ACTIVE)
 
@@ -373,6 +376,7 @@ model ApiKey {
   @@index([projectId])
   @@index([status])
   @@index([keyPrefix])
+  @@index([network])
 }
 
 /// Sliding-window rate limit tracking per API key and endpoint
