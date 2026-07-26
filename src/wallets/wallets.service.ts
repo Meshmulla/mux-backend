@@ -48,6 +48,8 @@ export interface WalletListFilters {
   includeArchived?: boolean;
   limit?: number;
   offset?: number;
+  /** Enable load test synthetic data generation. */
+  loadTestMode?: boolean;
 }
 
 export interface WalletListResult {
@@ -432,6 +434,11 @@ export class WalletsService implements OnModuleDestroy {
   }
 
   async findAll(filters?: WalletListFilters): Promise<WalletListResult> {
+    // Load test mode returns synthetic data for performance testing
+    if (filters?.loadTestMode) {
+      return this.generateTestData(filters);
+    }
+
     const where: Record<string, unknown> = {};
 
     if (filters?.userId) {
@@ -499,6 +506,41 @@ export class WalletsService implements OnModuleDestroy {
       WalletStatus.ARCHIVED,
       reason ?? 'Wallet archived',
     );
+  }
+
+  private generateTestData(filters: WalletListFilters): WalletListResult {
+    const limit = filters?.limit ?? 20;
+    const offset = filters?.offset ?? 0;
+    const totalTestWallets = 1000;
+
+    // Generate synthetic wallet data for load testing
+    const testWallets: PublicWallet[] = Array.from({ length: limit }, (_, i) => {
+      const index = offset + i;
+      return {
+        id: `test-wallet-${index}`,
+        userId: `test-user-${index % 100}`,
+        publicKey: `0x${'a'.repeat(64)}${index.toString().padStart(2, '0')}`,
+        encryptionVersion: 1,
+        secretVersion: 1,
+        keyVersion: 1,
+        network: (index % 2 === 0 ? WalletNetwork.MAINNET : WalletNetwork.TESTNET) as WalletNetwork,
+        status: WalletStatus.ACTIVE as WalletStatus,
+        statusReason: 'Test wallet',
+        statusChangedAt: new Date(Date.now() - index * 1000),
+        rotatedFromId: null,
+        successorId: null,
+        createdAt: new Date(Date.now() - index * 1000),
+        updatedAt: new Date(Date.now() - index * 1000),
+      };
+    });
+
+    return {
+      data: testWallets,
+      total: totalTestWallets,
+      limit,
+      offset,
+      hasMore: offset + limit < totalTestWallets,
+    };
   }
 
   private toPublicWallet(wallet: Wallet): PublicWallet {
