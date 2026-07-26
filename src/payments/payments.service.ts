@@ -5,6 +5,7 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
@@ -52,6 +53,7 @@ export class PaymentsService {
     private readonly metrics: MetricsService,
     private readonly requestContext: RequestContextService,
     private readonly paymentMetrics: PaymentMetricsService,
+    private readonly configService: ConfigService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
@@ -98,6 +100,16 @@ export class PaymentsService {
       if (senderWallet.status !== WalletStatus.ACTIVE) {
         throw new BadRequestException(
           `Sender wallet is not active (status: ${senderWallet.status})`,
+        );
+      }
+
+      const blockSelfPayments = this.configService.get<boolean>(
+        'BLOCK_SELF_PAYMENTS',
+        false,
+      );
+      if (blockSelfPayments && fromId === toId) {
+        throw new BadRequestException(
+          'Payments to self are not allowed',
         );
       }
 
