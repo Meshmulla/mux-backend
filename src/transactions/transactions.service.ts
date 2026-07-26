@@ -77,7 +77,12 @@ export class TransactionsService {
           `Idempotency hit for key ${idempotencyKey}, returning existing transaction ${existing.id}`,
         );
         this.metrics?.incrementIdempotencyHit();
-        return this.mapPrismaToEntity(existing);
+        const entity = this.mapPrismaToEntity(existing);
+        // Attach idempotency metadata for response headers
+        (entity as any)._idempotencyKey = idempotencyKey;
+        (entity as any)._isReplay = true;
+        (entity as any)._createdAt = existing.createdAt;
+        return entity;
       }
     }
 
@@ -151,7 +156,14 @@ export class TransactionsService {
       }),
     );
 
-    return this.mapPrismaToEntity(created);
+    const entity = this.mapPrismaToEntity(created);
+    // Attach idempotency metadata for response headers
+    if (idempotencyKey) {
+      (entity as any)._idempotencyKey = idempotencyKey;
+      (entity as any)._isReplay = false;
+      (entity as any)._createdAt = created.createdAt;
+    }
+    return entity;
   }
 
   /**
