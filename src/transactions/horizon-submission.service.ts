@@ -46,16 +46,26 @@ export class HorizonSubmissionService {
     transactionId: string,
     signedXdr: string,
   ): Promise<SubmissionResult> {
+    this.logger.debug(
+      `Submitting transaction ${transactionId} to Horizon (${this.horizonUrl})`,
+    );
+
     let horizonResult: HorizonTransactionResult;
 
     try {
       const response = await this.postToHorizon(signedXdr);
       horizonResult = response.data;
+
+      // Log comprehensive Horizon response summary in debug mode
+      this.logHorizonResponseSummary(transactionId, horizonResult, response.status);
     } catch (err) {
       const axiosErr = err as AxiosError<any>;
 
       if (!axiosErr.response) {
         // Network / timeout error
+        this.logger.debug(
+          `Horizon network error for transaction ${transactionId}: ${axiosErr.message}`,
+        );
         throw new ServiceUnavailableException(
           `Horizon network error: ${axiosErr.message}`,
         );
@@ -63,6 +73,13 @@ export class HorizonSubmissionService {
 
       const status = axiosErr.response.status;
       const body = axiosErr.response.data ?? {};
+
+      // Log error response summary
+      this.logHorizonErrorSummary(
+        transactionId,
+        status,
+        body as HorizonTransactionResult,
+      );
 
       if (status >= 400 && status < 500) {
         // Horizon rejected the transaction — extract result codes
@@ -138,5 +155,71 @@ export class HorizonSubmissionService {
       ...(stellarLedger !== undefined && { stellarLedger }),
       ...(stellarFee !== undefined && { stellarFee }),
     });
+  }
+
+  /**
+   * Logs comprehensive Horizon response summary in debug mode.
+   * Includes transaction hash, ledger, fee, and operation result codes.
+   */
+  private logHorizonResponseSummary(
+    transactionId: string,
+    result: HorizonTransactionResult,
+    statusCode: number,
+  ): void {
+    if (!this.logger.isDebugEnabled?.()) return;
+
+    const summary = {
+      transactionId,
+      statusCode,
+      hash: result.hash,
+      ledger: result.ledger,
+      createdAt: result.created_at,
+      feeCharged: result.fee_charged,
+      resultCode: result.result_code,
+      operationResultCodes: result.extras?.result_codes?.operations || [],
+      envelopeXdr: result.envelope_xdr ? '[REDACTED]' : undefined,
+      resultXdr: result.result_xdr ? '[REDACTED]' : undefined,
+      source: result.source_account,
+      sequenceNumber: result.sequence,
+      preconditions: result.preconditions
+        ? {
+            timebounds: result.preconditions.timebounds,
+            sorobanData: result.preconditions.soroban_data ? '[REDACTED]' : undefined,
+          }
+        : undefined,
+    };
+
+    this.logger.debug(
+      `Horizon response for transaction ${transactionId}: ${JSON.stringify(summary)}`,
+    );
+  }
+
+  /**
+   * Logs comprehensive Horizon error response summary in debug mode.
+   * Includes HTTP status, error codes, and failure reasons.
+   */
+  private logHorizonErrorSummary(
+    transactionId: string,
+    statusCode: number,
+    errorBody: HorizonTransactionResult,
+  ): void {
+    if (!this.logger.isDebugEnabled?.()) return;
+
+    const summary = {
+      transactionId,
+      statusCode,
+      type: errorBody.type,
+      title: errorBody.title,
+      detail: errorBody.detail,
+      resultCode: errorBody.result_code,
+      transactionResultCode: errorBody.extras?.result_codes?.transaction,
+      operationResultCodes: errorBody.extras?.result_codes?.operations || [],
+      envelopeXdr: errorBody.envelope_xdr ? '[REDACTED]' : undefined,
+      resultXdr: errorBody.result_xdr ? '[REDACTED]' : undefined,
+    };
+
+    this.logger.debug(
+      `Horizon error for transaction ${transactionId}: ${JSON.stringify(summary)}`,
+    );
   }
 }
