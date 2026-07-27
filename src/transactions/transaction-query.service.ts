@@ -8,6 +8,7 @@ export interface TransactionFilters {
   senderWalletId?: string;
   receiverWalletId?: string;
   status?: TransactionStatus;
+  memo?: string;
   limit?: number;
   offset?: number;
 }
@@ -41,6 +42,10 @@ export class TransactionQueryService {
 
     if (filters?.status) {
       where.status = filters.status;
+    }
+
+    if (filters?.memo) {
+      where.memo = { contains: filters.memo, mode: 'insensitive' };
     }
 
     const transactions = await this.prisma.transaction.findMany({
@@ -108,6 +113,42 @@ export class TransactionQueryService {
     return transaction ? this.mapPrismaToEntity(transaction) : null;
   }
 
+  /**
+   * Find transactions stuck in PENDING status for longer than the specified threshold.
+   * Useful for admin monitoring and recovery operations.
+   * Returns paginated results, sorted by createdAt ascending (oldest first).
+   */
+  async findStuckPendingTransactions(
+    thresholdMinutes: number = 60,
+    limit: number = 100,
+    offset: number = 0,
+  ): Promise<{ data: TransactionEntity[]; total: number }> {
+    const thresholdDate = new Date(Date.now() - thresholdMinutes * 60 * 1000);
+
+    const [transactions, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where: {
+          status: TransactionStatus.PENDING,
+          createdAt: { lt: thresholdDate },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.transaction.count({
+        where: {
+          status: TransactionStatus.PENDING,
+          createdAt: { lt: thresholdDate },
+        },
+      }),
+    ]);
+
+    return {
+      data: transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+    };
+  }
+
   invalidateCache(id: string): void {
     this.cache.delete(`${TransactionQueryService.CACHE_KEY_PREFIX}:${id}`);
   }
@@ -121,6 +162,7 @@ export class TransactionQueryService {
       assetIssuer: prismaTransaction.assetIssuer,
       senderWalletId: prismaTransaction.senderWalletId,
       receiverWalletId: prismaTransaction.receiverWalletId,
+      memo: prismaTransaction.memo,
       status: prismaTransaction.status as TransactionStatus,
       stellarHash: prismaTransaction.stellarHash,
       stellarLedger: prismaTransaction.stellarLedger,

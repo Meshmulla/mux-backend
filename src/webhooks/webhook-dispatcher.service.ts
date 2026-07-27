@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookDispatchService } from './webhook-dispatch.service';
 import { WebhookRetryService } from './webhook-retry.service';
 import { MetricsService } from '../common/metrics/metrics.service';
+import { SafeLogger } from '../common/safe-logger';
 import {
   WebhookEvent,
   DeliveryStatus,
@@ -24,7 +25,7 @@ export interface DispatchEventRequest {
  */
 @Injectable()
 export class WebhookDispatcherService {
-  private readonly logger = new Logger(WebhookDispatcherService.name);
+  private readonly logger = new SafeLogger(WebhookDispatcherService.name);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -32,6 +33,22 @@ export class WebhookDispatcherService {
     private readonly retryService: WebhookRetryService,
     private readonly metrics: MetricsService,
   ) {}
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
+  }
+
+  /**
+   * Structured logging helper: routes to the matching SafeLogger level with
+   * a redacted metadata payload attached.
+   */
+  private log(
+    level: 'log' | 'warn' | 'error',
+    message: string,
+    meta?: Record<string, unknown>,
+  ): void {
+    this.logger[level](message, meta ?? {});
+  }
 
   /**
    * Dispatches an event to all registered webhooks
@@ -96,7 +113,7 @@ export class WebhookDispatcherService {
             nextRetryAt: { lte: new Date() },
           },
         ],
-        attempts: { lt: this.maxRetries },
+        attempts: { lt: this.retryService.getMaxRetries() },
       },
       include: {
         endpoint: true,
@@ -249,7 +266,6 @@ export class WebhookDispatcherService {
     return DeliveryStatus.FAILED;
   }
 
-
   /**
    * Finds endpoints subscribed to an event type
    */
@@ -278,7 +294,7 @@ export class WebhookDispatcherService {
         payload: JSON.parse(JSON.stringify(event)),
         status: DeliveryStatus.PENDING,
         attempts: 0,
-        maxAttempts: this.maxRetries,
+        maxAttempts: this.retryService.getMaxRetries(),
       },
     });
   }
@@ -304,5 +320,4 @@ export class WebhookDispatcherService {
       },
     });
   }
-
 }

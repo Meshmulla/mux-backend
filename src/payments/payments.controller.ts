@@ -6,6 +6,7 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
   UseGuards,
   Query,
 } from '@nestjs/common';
@@ -18,6 +19,7 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service';
+import { PaginationQuery } from '../common/pagination/pagination.util';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PaymentsFilterDto } from './dto/payments-filter.dto';
@@ -41,7 +43,7 @@ export class PaymentsController {
 
   @ApiOperation({
     summary: 'Create a new payment',
-    description: 'Create a new payment between wallets. Requires API key authentication. Rate limited to prevent abuse. Emits payment.created event on success.',
+    description: 'Create a new payment between wallets. Requires API key authentication. Rate limited to prevent abuse. Emits payment.created event on success. Pass an idempotencyKey to safely retry without creating a duplicate payment — replaying the same key returns the original payment.',
   })
   @ApiBody({
     type: CreatePaymentDto,
@@ -55,6 +57,7 @@ export class PaymentsController {
           description: 'Payment for services',
           fromId: 1,
           toId: 2,
+          idempotencyKey: 'a1b2c3d4-e5f6-4789-a012-3456789abcde',
         },
       },
     },
@@ -97,6 +100,17 @@ export class PaymentsController {
       method: 'POST',
       message: 'Unauthorized',
       error: 'Unauthorized',
+    },
+  })
+  @ApiResponse({
+    status: 422,
+    description:
+      "Daily spending limit exceeded for the sender wallet - payment rejected before submission",
+    example: {
+      statusCode: 422,
+      message: 'Daily limit exceeded. Limit: 5000, Used: 4900',
+      errorCode: 'LIMIT_DAILY_EXCEEDED',
+      error: 'Unprocessable Entity',
     },
   })
   @Post()
@@ -160,6 +174,8 @@ export class PaymentsController {
     },
   })
   @Get()
+  findAll(@Query() query: PaginationQuery) {
+    return this.paymentsService.findAll(query);
   findAll(
     @Query() pagination: PaginationDto,
     @Query() filters: PaymentsFilterDto,

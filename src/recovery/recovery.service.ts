@@ -146,11 +146,65 @@ export class RecoveryService {
     return recovery;
   }
 
+  async initiate(id: string): Promise<RecoveryRequest> {
+    const recovery = await this.findOne(id);
+
+    if (recovery.status !== RecoveryStatus.PENDING) {
+      throw new BadRequestException(
+        `Recovery request cannot be initiated from status ${recovery.status}; it must be PENDING`,
+      );
+    }
+
+    const transitioned = transitionRecoveryStatus(
+      recovery,
+      RecoveryStatus.IN_REVIEW,
+    );
+
+    const result = await this.prisma.recoveryRequest.update({
+      where: { id },
+      data: { status: transitioned.status },
+    });
+
+    return this.mapPrismaToEntity(result);
+  }
+
   async remove(id: string): Promise<void> {
     await this.findOne(id);
     await this.prisma.recoveryRequest.delete({
       where: { id },
     });
+  }
+
+  async getWalletRecoveryStatus(walletId: string) {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+
+    if (!wallet) {
+      throw new NotFoundException('Wallet not found');
+    }
+
+    const recovery = await this.prisma.recoveryRequest.findFirst({
+      where: {
+        walletId,
+        status: {
+          notIn: [
+            RecoveryStatus.REJECTED,
+            RecoveryStatus.COMPLETED,
+            RecoveryStatus.CANCELLED,
+          ],
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      walletId,
+      hasActiveRecovery: !!recovery,
+      currentStatus: recovery?.status as RecoveryStatus,
+      recoveryRequestId: recovery?.id,
+      lastUpdatedAt: recovery?.updatedAt,
+    };
   }
 
   private mapPrismaToEntity(prismaRecovery: any): RecoveryRequest {

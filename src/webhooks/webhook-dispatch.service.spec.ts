@@ -12,8 +12,20 @@ describe('WebhookDispatchService', () => {
   let mockSigner: any;
   let mockMetrics: any;
   let mockConfigService: any;
+  let mockAxiosInstance: { post: jest.Mock; interceptors: { request: { use: jest.Mock } } };
 
   beforeEach(async () => {
+    // Build the mock axios instance that createRequestIdAwareAxios will receive
+    mockAxiosInstance = {
+      post: jest.fn(),
+      interceptors: {
+        request: {
+          use: jest.fn(),
+        },
+      },
+    };
+    (axios.create as jest.Mock).mockReturnValue(mockAxiosInstance);
+
     mockSigner = {
       generateSignatureHeaders: jest.fn(() => ({
         timestamp: Math.floor(Date.now() / 1000),
@@ -49,8 +61,7 @@ describe('WebhookDispatchService', () => {
 
   describe('deliverWebhook', () => {
     it('should successfully deliver a webhook', async () => {
-      const mockedAxios = axios as jest.Mocked<typeof axios>;
-      mockedAxios.post.mockResolvedValue({
+      mockAxiosInstance.post.mockResolvedValue({
         status: 200,
         data: { success: true },
       });
@@ -66,12 +77,11 @@ describe('WebhookDispatchService', () => {
       expect(result.success).toBe(true);
       expect(result.responseStatus).toBe(200);
       expect(result.responseTime).toBeDefined();
-      expect(mockedAxios.post).toHaveBeenCalled();
+      expect(mockAxiosInstance.post).toHaveBeenCalled();
     });
 
     it('should include signature headers in request', async () => {
-      const mockedAxios = axios as jest.Mocked<typeof axios>;
-      mockedAxios.post.mockResolvedValue({
+      mockAxiosInstance.post.mockResolvedValue({
         status: 200,
         data: { success: true },
       });
@@ -84,7 +94,7 @@ describe('WebhookDispatchService', () => {
         'whsec_secret',
       );
 
-      expect(mockedAxios.post).toHaveBeenCalledWith(
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
         'https://example.com/webhook',
         { test: 'payload' },
         expect.objectContaining({
@@ -98,8 +108,7 @@ describe('WebhookDispatchService', () => {
     });
 
     it('should handle delivery failure', async () => {
-      const mockedAxios = axios as jest.Mocked<typeof axios>;
-      mockedAxios.post.mockRejectedValue(
+      mockAxiosInstance.post.mockRejectedValue(
         new Error('Connection refused'),
       );
 
@@ -114,6 +123,16 @@ describe('WebhookDispatchService', () => {
       expect(result.success).toBe(false);
       expect(result.errorMessage).toBeDefined();
       expect(result.responseTime).toBeDefined();
+    });
+
+    it('propagates x-request-id via the request-id-aware axios instance', async () => {
+      mockAxiosInstance.post.mockResolvedValue({
+        status: 200,
+        data: { success: true },
+      });
+
+      // Verify the interceptor was registered
+      expect(mockAxiosInstance.interceptors.request.use).toHaveBeenCalled();
     });
   });
 

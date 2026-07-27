@@ -2,7 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebhookSignerService } from './webhook-signer.service';
 import { MetricsService } from '../common/metrics/metrics.service';
-import axios, { AxiosError } from 'axios';
+import { createRequestIdAwareAxios } from '../common/http/request-id-axios';
+import { AxiosError } from 'axios';
 
 export interface WebhookDispatchResult {
   success: boolean;
@@ -24,6 +25,7 @@ export interface WebhookDispatchResult {
 export class WebhookDispatchService {
   private readonly logger = new Logger(WebhookDispatchService.name);
   private readonly requestTimeoutMs: number;
+  private readonly http = createRequestIdAwareAxios();
 
   constructor(
     private readonly webhookSigner: WebhookSignerService,
@@ -55,8 +57,8 @@ export class WebhookDispatchService {
       const { timestamp, signature } =
         this.webhookSigner.generateSignatureHeaders(payload, secret);
 
-      // Make HTTP request
-      const response = await axios.post(url, payload, {
+      // Make HTTP request (x-request-id is automatically propagated)
+      const response = await this.http.post(url, payload, {
         headers: {
           'Content-Type': 'application/json',
           'X-Webhook-Event-Type': eventType,

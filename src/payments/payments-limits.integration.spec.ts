@@ -7,6 +7,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PaymentStatus } from './entities/payment.entity';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 import { RequestContextService } from '../common/request-context/request-context.service';
+import { PAYMENT_LIMITS_PORT } from './ports/payment-limits.port';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { MetricsService } from '../metrics/metrics.service';
 
 describe('Payments and Limits Integration', () => {
   let paymentsService: PaymentsService;
@@ -46,6 +49,18 @@ describe('Payments and Limits Integration', () => {
         { provide: PAYMENT_LIMITS_PORT, useExisting: LimitsService },
         { provide: WalletsService, useValue: mockWalletsService },
         { provide: RequestContextService, useValue: mockRequestContext },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        {
+          provide: MetricsService,
+          useValue: {
+            incrementPaymentsCreated: jest.fn(),
+            incrementPaymentsFailed: jest.fn(),
+            recordPaymentProcessingDuration: jest.fn(),
+            incrementPaymentIdempotencyHit: jest.fn(),
+            incrementLimitExceeded: jest.fn(),
+            incrementLimitChecks: jest.fn(),
+          },
+        },
       ],
     }).compile();
 

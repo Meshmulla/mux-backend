@@ -2,10 +2,13 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Body,
   Patch,
   Param,
   Delete,
+  Query,
+  UseGuards,
   UseGuards,
   Headers,
   Query,
@@ -17,6 +20,7 @@ import {
   ApiOperation,
   ApiParam,
   ApiQuery,
+  ApiResponse,
 } from '@nestjs/swagger';
 import {
   WalletCreationOrchestrator,
@@ -25,12 +29,19 @@ import {
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
+import { SetNetworkPreferenceDto } from './dto/set-network-preference.dto';
+import { WalletResponseDto } from './dto/wallet-response.dto';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator';
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
 import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
-import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
+import { PaginationQuery } from '../common/pagination/pagination.util';
+import { RateLimitGuard, SensitiveEndpoint } from '../rate-limit/rate-limit.guard';
+import {
+  FeatureFlag,
+  FeatureFlagGuard,
+} from '../common/feature-flags/feature-flag.guard';
 
 /** Parse a pagination query param, throwing 400 on invalid input */
 function parsePaginationParam(
@@ -41,9 +52,7 @@ function parsePaginationParam(
   if (value === undefined) return undefined;
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0) {
-    throw new BadRequestException(
-      `${name} must be a non-negative integer`,
-    );
+    throw new BadRequestException(`${name} must be a non-negative integer`);
   }
   if (name === 'limit' && n > max) {
     throw new BadRequestException(`limit must not exceed ${max}`);
@@ -54,7 +63,8 @@ function parsePaginationParam(
 @ApiTags('wallets')
 @ApiSecurity('api-key')
 @Controller('wallets')
-@UseGuards(ApiKeyGuard, RateLimitGuard)
+@UseGuards(FeatureFlagGuard, ApiKeyGuard, RateLimitGuard)
+@FeatureFlag('wallets_enabled')
 export class WalletsController {
   constructor(
     private readonly walletsService: WalletsService,
@@ -62,6 +72,11 @@ export class WalletsController {
   ) {}
 
   @ApiOperation({ summary: 'Create a new wallet' })
+  @ApiResponse({
+    status: 201,
+    description: 'Wallet created successfully',
+    type: WalletResponseDto,
+  })
   @Post()
   create(
     @Body() createWalletDto: CreateWalletDto,
@@ -73,30 +88,98 @@ export class WalletsController {
       idempotencyKey: createWalletDto.idempotencyKey,
     };
 
-    return this.walletCreationOrchestrator.createWallet(createRequest, requestId);
+    return this.walletCreationOrchestrator.createWallet(
+      createRequest,
+      requestId,
+    );
   }
 
-  @ApiOperation({ summary: 'List wallets with optional filters and pagination' })
-  @ApiQuery({ name: 'userId', required: false, description: 'Filter by owning user ID' })
-  @ApiQuery({ name: 'network', required: false, enum: WalletNetwork, description: 'Filter by network' })
-  @ApiQuery({ name: 'status', required: false, enum: WalletStatus, description: 'Filter by wallet status' })
-  @ApiQuery({ name: 'limit', required: false, description: 'Max records to return (1-100, default 20)', example: 20 })
-  @ApiQuery({ name: 'offset', required: false, description: 'Number of records to skip (default 0)', example: 0 })
+  @ApiOperation({
+    summary: 'List wallets with optional filters and pagination',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallets retrieved successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        data: {
+          type: 'array',
+          items: { $ref: '#/components/schemas/WalletResponseDto' },
+        },
+        total: { type: 'number' },
+        limit: { type: 'number' },
+        offset: { type: 'number' },
+        hasMore: { type: 'boolean' },
+      },
+    },
+  })
+  @ApiQuery({
+    name: 'userId',
+    required: false,
+    description: 'Filter by owning user ID',
+  })
+  @ApiQuery({
+    name: 'network',
+    required: false,
+    enum: WalletNetwork,
+    description: 'Filter by network',
+  })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: WalletStatus,
+    description: 'Filter by wallet status',
+  })
+  @ApiQuery({
+    name: 'includeArchived',
+    required: false,
+    description: 'Include archived wallets in the results (excluded by default)',
+    example: false,
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    description: 'Max records to return (1-100, default 20)',
+    example: 20,
+  })
+  @ApiQuery({
+    name: 'offset',
+    required: false,
+    description: 'Number of records to skip (default 0)',
+    example: 0,
+  })
+  @ApiQuery({
+    name: 'loadTestMode',
+    required: false,
+    description: 'Enable synthetic load test data generation (default false)',
+    example: false,
+  })
   @Get()
   findAll(
     @Query('userId') userId?: string,
     @Query('network') network?: WalletNetwork,
     @Query('status') status?: WalletStatus,
+    @Query('includeArchived') includeArchived?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('loadTestMode') loadTestMode?: string,
   ) {
     return this.walletsService.findAll({
       userId,
       network,
       status,
+      includeArchived: includeArchived === 'true',
       limit: parsePaginationParam(limit, 'limit'),
       offset: parsePaginationParam(offset, 'offset'),
+      loadTestMode: loadTestMode === 'true',
     });
+  }
+
+  @Patch(':id/archive')
+  @SensitiveEndpoint()
+  archive(@Param('id') id: string, @Body('reason') reason?: string) {
+    return this.walletsService.archive(id, reason);
   }
 
   @RequireApiKey()
@@ -128,6 +211,38 @@ export class WalletsController {
     return this.walletsService.findWalletsByUserId(userId);
   }
 
+  @ApiOperation({
+    summary: "Get a user's default network preference",
+    description:
+      'Retrieve the persisted mainnet/testnet preference for a user. Requires API key authentication.',
+  })
+  @ApiParam({ name: 'userId', description: 'User ID (UUID)' })
+  @Get('users/:userId/network-preference')
+  async getNetworkPreference(@Param('userId') userId: string) {
+    return this.walletsService.getNetworkPreference(userId);
+  }
+
+  @ApiOperation({
+    summary: "Set a user's default network preference",
+    description:
+      'Persist the mainnet/testnet preference for a user, used by wallet operations that do not explicitly specify a network. Requires API key authentication.',
+  })
+  @ApiParam({ name: 'userId', description: 'User ID (UUID)' })
+  @Put('users/:userId/network-preference')
+  async setNetworkPreference(
+    @Param('userId') userId: string,
+    @Body() dto: SetNetworkPreferenceDto,
+  ) {
+    return this.walletsService.setNetworkPreference(userId, dto.network);
+  }
+
+  @ApiOperation({ summary: 'Get a wallet by ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet retrieved successfully',
+    type: WalletResponseDto,
+  })
+  @ApiParam({ name: 'id', description: 'Wallet ID' })
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.walletsService.findOne(id);

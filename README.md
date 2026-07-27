@@ -33,6 +33,8 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 
 ## API Endpoints
 
+All routes below are served under the `/v1` prefix (e.g. `GET /v1/health`). See [docs/API-VERSIONING.md](docs/API-VERSIONING.md) for the versioning strategy.
+
 ### Health & Monitoring
 
 #### `GET /health`

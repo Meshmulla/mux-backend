@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  Optional,
 } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -15,23 +16,31 @@ import {
   canTransitionTransactionStatus,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
+import {
+  parsePagination,
+  buildPaginatedResponse,
+} from '../common/pagination/pagination.util';
+import { validateMemo } from '../common/stellar/memo.util';
 import { PaginatedTransactionsDto } from './dto/paginated-transactions.dto';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CacheService } from '../common/cache/cache.service';
 import { TransactionMetricsService } from './transaction-metrics.service';
+import { TransactionQueryService } from './transaction-query.service';
 
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
+  private readonly TRANSACTION_CACHE_TTL = 300000; // 5 minutes
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly balanceIndexer: BalanceIndexerService,
-    @Optional()
-    private readonly webhookEventEmitter: WebhookEventEmitterService,
     private readonly cache: CacheService,
-    private readonly metrics: TransactionMetricsService,
+    @Optional()
+    private readonly webhookEventEmitter?: WebhookEventEmitterService,
+    @Optional()
+    private readonly metrics?: TransactionMetricsService,
   ) {}
 
   /**
@@ -39,6 +48,12 @@ export class TransactionsService {
    * If an idempotencyKey is supplied and a transaction with that key already
    * exists, the existing transaction is returned without creating a duplicate.
    */
+  async create(createTransactionDto: CreateTransactionDto): Promise<TransactionEntity> {
+    const { amount, asset, senderWalletId, receiverWalletId, memo, metadata } =
+      createTransactionDto;
+
+    // Validate memo length/type against Stellar protocol constraints before touching persistence
+    validateMemo(memo);
   async create(
     createTransactionDto: CreateTransactionDto,
   ): Promise<TransactionEntity> {
@@ -47,6 +62,7 @@ export class TransactionsService {
       asset,
       senderWalletId,
       receiverWalletId,
+      memo,
       metadata,
       idempotencyKey,
     } = createTransactionDto;
@@ -60,8 +76,13 @@ export class TransactionsService {
         this.logger.log(
           `Idempotency hit for key ${idempotencyKey}, returning existing transaction ${existing.id}`,
         );
-        this.metrics.incrementIdempotencyHit();
-        return this.mapPrismaToEntity(existing);
+        this.metrics?.incrementIdempotencyHit();
+        const entity = this.mapPrismaToEntity(existing);
+        // Attach idempotency metadata for response headers
+        (entity as any)._idempotencyKey = idempotencyKey;
+        (entity as any)._isReplay = true;
+        (entity as any)._createdAt = existing.createdAt;
+        return entity;
       }
     }
 
@@ -115,16 +136,18 @@ export class TransactionsService {
         assetIssuer: asset.issuer ?? null,
         senderWalletId,
         receiverWalletId: receiverWalletId ?? null,
+        memo: memo ?? null,
         status: TransactionStatus.PENDING,
+        metadata: memo ? { ...metadata, memo } : (metadata ?? null),
         metadata: metadata ?? undefined,
         idempotencyKey: idempotencyKey ?? null,
       },
     });
 
-    this.metrics.incrementTransactionCreated(asset.type);
+    this.metrics?.incrementTransactionCreated(asset.type);
 
-    this.webhookEventEmitter
-      .emitTransactionCreated({
+    this.emitDomainEvent('transaction.created', () =>
+      this.webhookEventEmitter?.emitTransactionCreated({
         transactionId: created.id,
         walletId: created.senderWalletId,
         amount: created.amount,
@@ -133,7 +156,14 @@ export class TransactionsService {
       }),
     );
 
-    return this.mapPrismaToEntity(created);
+    const entity = this.mapPrismaToEntity(created);
+    // Attach idempotency metadata for response headers
+    if (idempotencyKey) {
+      (entity as any)._idempotencyKey = idempotencyKey;
+      (entity as any)._isReplay = false;
+      (entity as any)._createdAt = created.createdAt;
+    }
+    return entity;
   }
 
   /**
@@ -143,12 +173,16 @@ export class TransactionsService {
     senderWalletId?: string;
     receiverWalletId?: string;
     status?: TransactionStatus;
+    page?: string;
+    limit?: string;
+  }) {
     assetType?: string;
     assetCode?: string;
     minAmount?: string;
     maxAmount?: string;
     createdAfter?: Date;
     createdBefore?: Date;
+    memo?: string;
     limit?: number;
     offset?: number;
   }): Promise<PaginatedTransactionsDto> {
@@ -166,6 +200,10 @@ export class TransactionsService {
       where.status = filters.status;
     }
 
+    const { page, limit, skip } = parsePagination({
+      page: filters?.page,
+      limit: filters?.limit,
+    });
     const limit = filters?.limit ?? 20;
     const offset = filters?.offset ?? 0;
 
@@ -174,11 +212,18 @@ export class TransactionsService {
         where,
         orderBy: { createdAt: 'desc' },
         take: limit,
+        skip,
         skip: offset,
       }),
       this.prisma.transaction.count({ where }),
     ]);
 
+    return buildPaginatedResponse(
+      transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+      page,
+      limit,
+    );
     return {
       data: transactions.map((t) => this.mapPrismaToEntity(t)),
       total,
@@ -198,10 +243,10 @@ export class TransactionsService {
     const cachedTransaction = this.cache.get<TransactionEntity>(cacheKey);
     if (cachedTransaction) {
       this.logger.debug(`Cache hit for transaction ${id}`);
-      this.metrics.incrementCacheHit();
+      this.metrics?.incrementCacheHit();
       return cachedTransaction;
     }
-    this.metrics.incrementCacheMiss();
+    this.metrics?.incrementCacheMiss();
 
     const transaction = await this.prisma.transaction.findUnique({
       where: { id },
@@ -284,9 +329,9 @@ export class TransactionsService {
     });
 
     // Invalidate read cache so next findOne fetches fresh data
-    this.queryService.invalidateCache(id);
+    this.cache.delete(`transaction:${id}`);
 
-    this.metrics.incrementStatusUpdated(existing.status, updateDto.status);
+    this.metrics?.incrementStatusUpdated(existing.status, updateDto.status);
 
     this.logger.log(
       `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,
@@ -383,6 +428,21 @@ export class TransactionsService {
     }
   }
 
+  /**
+   * Fire-and-forget domain event emission: failures are logged as warnings
+   * and never surface to callers.
+   */
+  private emitDomainEvent(
+    eventName: string,
+    emit: () => Promise<void> | undefined,
+  ): void {
+    void Promise.resolve(emit()).catch((error: unknown) =>
+      this.logger.warn(
+        `Unable to emit ${eventName} domain event: ${String(error)}`,
+      ),
+    );
+  }
+
   private mapPrismaToEntity(prismaTransaction: any): TransactionEntity {
     return {
       id: prismaTransaction.id,
@@ -392,6 +452,7 @@ export class TransactionsService {
       assetIssuer: prismaTransaction.assetIssuer,
       senderWalletId: prismaTransaction.senderWalletId,
       receiverWalletId: prismaTransaction.receiverWalletId,
+      memo: prismaTransaction.memo,
       status: prismaTransaction.status as TransactionStatus,
       stellarHash: prismaTransaction.stellarHash,
       stellarLedger: prismaTransaction.stellarLedger,

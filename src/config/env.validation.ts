@@ -34,6 +34,9 @@ export interface ValidatedEnv {
   RATE_LIMIT_SENSITIVE_WINDOW_MS: number;
   RATE_LIMIT_SENSITIVE_MAX_REQUESTS: number;
   API_KEY_ROTATION_GRACE_SECONDS: number;
+  KEY_MGMT_MAX_RETRIES: number;
+  KEY_MGMT_RETRY_BACKOFF_MS: number;
+  BLOCK_SELF_PAYMENTS: boolean;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -141,6 +144,30 @@ function requireMinLength(
     });
   }
   return val;
+}
+
+function optionalBoolean(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  defaultValue: boolean,
+  violations: EnvViolation[],
+): boolean {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === '') {
+    return defaultValue;
+  }
+  const lower = raw.trim().toLowerCase();
+  if (lower === 'true' || lower === '1' || lower === 'yes') {
+    return true;
+  }
+  if (lower === 'false' || lower === '0' || lower === 'no') {
+    return false;
+  }
+  violations.push({
+    variable: key,
+    message: `${key} must be a boolean (true/false, received "${raw}")`,
+  });
+  return defaultValue;
 }
 
 // ─── Main validation function ─────────────────────────────────────────────────
@@ -257,6 +284,26 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     { min: 0 },
     violations,
   );
+  const KEY_MGMT_MAX_RETRIES = optionalInt(
+    env,
+    'KEY_MGMT_MAX_RETRIES',
+    3,
+    { min: 1, max: 10 },
+    violations,
+  );
+  const KEY_MGMT_RETRY_BACKOFF_MS = optionalInt(
+    env,
+    'KEY_MGMT_RETRY_BACKOFF_MS',
+    200,
+    { min: 0 },
+    violations,
+  );
+  const BLOCK_SELF_PAYMENTS = optionalBoolean(
+    env,
+    'BLOCK_SELF_PAYMENTS',
+    false,
+    violations,
+  );
 
   // ── Report violations ─────────────────────────────────────────────────────
   if (violations.length > 0) {
@@ -293,5 +340,8 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     RATE_LIMIT_SENSITIVE_WINDOW_MS,
     RATE_LIMIT_SENSITIVE_MAX_REQUESTS,
     API_KEY_ROTATION_GRACE_SECONDS,
+    KEY_MGMT_MAX_RETRIES,
+    KEY_MGMT_RETRY_BACKOFF_MS,
+    BLOCK_SELF_PAYMENTS,
   };
 }

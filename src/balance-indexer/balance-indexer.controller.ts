@@ -9,6 +9,7 @@ import {
   HttpStatus,
   NotFoundException,
   ValidationPipe,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -18,6 +19,10 @@ import {
   ApiQuery,
   ApiBody,
 } from '@nestjs/swagger';
+import {
+  FeatureFlagGuard,
+  FeatureFlag,
+} from '../common/feature-flags/feature-flag.guard';
 import {
   BalanceIndexerService,
   SyncBalancesRequest,
@@ -47,6 +52,8 @@ import { PaginationDto } from '../common/dto/pagination.dto';
  */
 @ApiTags('balances')
 @Controller('balances')
+@UseGuards(FeatureFlagGuard)
+@FeatureFlag('BALANCE_INDEXER')
 export class BalanceIndexerController {
   constructor(private readonly balanceIndexerService: BalanceIndexerService) {}
 
@@ -135,17 +142,17 @@ export class BalanceIndexerController {
     @Query(ValidationPipe) pagination: PaginationDto,
     @Query(ValidationPipe) filters: BalanceFilterDto,
   ) {
-    if (assetType) {
+    if (filters.assetType) {
       const asset: Asset = {
-        type: (assetType as AssetType) || AssetType.NATIVE,
-        code: assetCode,
-        issuer: assetIssuer,
+        type: filters.assetType,
+        code: filters.assetCode,
+        issuer: filters.assetIssuer,
       };
       const balance = await this.balanceIndexerService.getBalance(
         walletId,
         asset,
       );
-      return balance ?? { balance: '0', assetType, assetCode, assetIssuer };
+      return balance ?? { balance: '0', assetType: filters.assetType, assetCode: filters.assetCode, assetIssuer: filters.assetIssuer };
     }
 
     const balances = await this.balanceIndexerService.getAllBalances(walletId);
@@ -350,8 +357,7 @@ export class BalanceIndexerController {
    * - When a mismatch is found: updates the index, increments
    *   `reconciliationAttempts`, and emits a `balance.mismatch` webhook event.
    * - When balances match: clears any prior `mismatchDetectedAt` timestamp.
-    return await this.balanceIndexerService.syncWalletBalances(request);
-  }
+   */
 
   /**
    * Manually triggers a full balance sync across all active wallets.
@@ -462,8 +468,7 @@ export class BalanceIndexerController {
    * - Emits `balance.mismatch` events for every divergence found.
    * - Recommended: protect this endpoint with an admin-level API key scope
    *   in a future iteration.
-    return await this.balanceIndexerService.reconcileBalance(walletId, asset);
-  }
+   */
 
   /**
    * Reconciles all balances for all active wallets.

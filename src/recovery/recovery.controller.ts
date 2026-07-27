@@ -19,6 +19,7 @@ import {
   ApiResponse,
 } from '@nestjs/swagger';
 import { RecoveryService } from './recovery.service';
+import { AdminRecoveryService } from './admin-recovery.service';
 import { CreateRecoveryDto } from './dto/create-recovery.dto';
 import { UpdateRecoveryDto } from './dto/update-recovery.dto';
 import { RecoveryStatus } from './domain/recovery.model';
@@ -44,7 +45,10 @@ function parsePaginationParam(
 @ApiTags('recovery')
 @Controller('recovery')
 export class RecoveryController {
-  constructor(private readonly recoveryService: RecoveryService) {}
+  constructor(
+    private readonly recoveryService: RecoveryService,
+    private readonly adminRecoveryService: AdminRecoveryService,
+  ) {}
 
   @ApiOperation({
     summary: 'Create a recovery request',
@@ -364,6 +368,60 @@ export class RecoveryController {
   }
 
   @ApiOperation({
+    summary: 'Initiate a recovery request',
+    description:
+      'Initiate review of a PENDING recovery request, moving it to IN_REVIEW. Only requests currently in PENDING status can be initiated.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Recovery request UUID',
+    example: '660e8400-e29b-41d4-a716-446655440001',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Recovery request initiated and moved to IN_REVIEW',
+    schema: {
+      example: {
+        id: '660e8400-e29b-41d4-a716-446655440001',
+        walletId: '550e8400-e29b-41d4-a716-446655440000',
+        requester: 'user_abc123',
+        status: 'IN_REVIEW',
+        metadata: { reason: 'lost_access' },
+        createdAt: '2026-06-29T12:00:00.000Z',
+        updatedAt: '2026-06-29T12:00:00.000Z',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Bad request - invalid UUID or recovery request is not in PENDING status',
+    schema: {
+      example: {
+        statusCode: 400,
+        message:
+          'Recovery request cannot be initiated from status IN_REVIEW; it must be PENDING',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Recovery request not found',
+    schema: {
+      example: {
+        statusCode: 404,
+        message: 'Recovery request not found',
+        error: 'Not Found',
+      },
+    },
+  })
+  @Post(':id/initiate')
+  initiate(@Param('id', ParseUUIDPipe) id: string) {
+    return this.recoveryService.initiate(id);
+  }
+
+  @ApiOperation({
     summary: 'Delete a recovery request',
     description: 'Permanently delete a recovery request by ID.',
   })
@@ -405,5 +463,102 @@ export class RecoveryController {
   async remove(@Param('id', ParseUUIDPipe) id: string) {
     await this.recoveryService.remove(id);
     return { message: 'Recovery request deleted successfully' };
+  }
+
+  @ApiOperation({
+    summary: 'Get recovery status for a wallet',
+    description: 'Retrieve the recovery status for a specific wallet, including information about any active recovery requests.',
+  })
+  @ApiParam({
+    name: 'walletId',
+    description: 'Wallet UUID',
+    example: '550e8400-e29b-41d4-a716-446655440000',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet recovery status retrieved',
+    schema: {
+      example: {
+        walletId: '550e8400-e29b-41d4-a716-446655440000',
+        hasActiveRecovery: true,
+        currentStatus: 'IN_REVIEW',
+        recoveryRequestId: '660e8400-e29b-41d4-a716-446655440001',
+        lastUpdatedAt: '2026-06-29T12:00:00.000Z',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - invalid UUID',
+    schema: {
+      example: {
+        statusCode: 400,
+        message: 'Validation failed (uuid is expected)',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Wallet not found',
+    schema: {
+      example: {
+        statusCode: 404,
+        message: 'Wallet not found',
+        error: 'Not Found',
+      },
+    },
+  })
+  @Get('wallet/:walletId/status')
+  async getWalletRecoveryStatus(@Param('walletId', ParseUUIDPipe) walletId: string) {
+    return this.recoveryService.getWalletRecoveryStatus(walletId);
+  }
+
+  /**
+   * Admin endpoint: Approve a recovery request
+   */
+  @Post('admin/approve/:id')
+  @HttpCode(HttpStatus.OK)
+  async approveRecovery(
+    @Param('id') recoveryId: string,
+    @Body() request: { adminId: string; approvalNotes?: string },
+  ) {
+    return this.adminRecoveryService.approveRecovery({
+      recoveryId,
+      adminId: request.adminId,
+      approvalNotes: request.approvalNotes,
+    });
+  }
+
+  /**
+   * Admin endpoint: Reject a recovery request
+   */
+  @Post('admin/reject/:id')
+  @HttpCode(HttpStatus.OK)
+  async rejectRecovery(
+    @Param('id') recoveryId: string,
+    @Body() request: { adminId: string; rejectionReason: string },
+  ) {
+    return this.adminRecoveryService.rejectRecovery({
+      recoveryId,
+      adminId: request.adminId,
+      rejectionReason: request.rejectionReason,
+    });
+  }
+
+  /**
+   * Admin endpoint: Get all pending recovery requests
+   */
+  @Get('admin/pending')
+  async getPendingRecoveries() {
+    return this.adminRecoveryService.getPendingRecoveries();
+  }
+
+  /**
+   * Admin endpoint: Get recovery request history
+   */
+  @Get('admin/history/:id')
+  async getRecoveryHistory(@Param('id') recoveryId: string) {
+    return this.adminRecoveryService.getRecoveryHistory(recoveryId);
   }
 }

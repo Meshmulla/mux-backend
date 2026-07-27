@@ -7,6 +7,7 @@ import {
   Get,
   Param,
   Headers,
+  Req,
   Res,
   UseGuards,
   Query,
@@ -20,7 +21,7 @@ import {
   ApiQuery,
   ApiHeader,
 } from '@nestjs/swagger';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import {
   AuthOrchestrator,
   type AuthenticationRequest,
@@ -40,7 +41,10 @@ import {
 @FeatureFlag('auth_api')
 @UseGuards(FeatureFlagGuard)
 export class AuthOrchestratorController {
-  constructor(private readonly authOrchestrator: AuthOrchestrator) {}
+  constructor(
+    private readonly authOrchestrator: AuthOrchestrator,
+    private readonly refreshTokenService: RefreshTokenService,
+  ) {}
 
   /**
    * Main authentication endpoint - handles both first-time and returning users.
@@ -174,11 +178,14 @@ export class AuthOrchestratorController {
   async authenticate(
     @Body() request: AuthenticationRequest,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() httpRequest: Request,
     @Res() response: Response,
   ): Promise<void> {
     const requestWithIdempotency: AuthenticationRequestWithIdempotency = {
       ...request,
       idempotencyKey,
+      ipAddress: httpRequest.ip,
+      userAgent: httpRequest.headers['user-agent'],
     };
 
     const result = await this.authOrchestrator.handleAuthentication(
@@ -302,6 +309,7 @@ export class AuthOrchestratorController {
     },
   })
   @Get('validate/:authId')
+  @UseGuards(AuthRateLimitGuard)
   async validateAuthentication(@Param('authId') authId: string) {
     const isValid = await this.authOrchestrator.validateAuthentication(authId);
     return { valid: isValid };

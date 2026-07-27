@@ -7,6 +7,7 @@ import {
   Param,
   Query,
   UseGuards,
+  UseInterceptors,
   BadRequestException,
 } from '@nestjs/common';
 import {
@@ -34,6 +35,8 @@ import {
   FeatureFlag,
 } from '../common/feature-flags/feature-flag.guard';
 import { TransactionStatus } from './domain/transaction.model';
+import { PaginationQuery } from '../common/pagination/pagination.util';
+import { IdempotencyReplayInterceptor } from '../common/interceptors/idempotency-replay.interceptor';
 
 /** Parse a pagination query param, throwing 400 on invalid input */
 function parsePaginationParam(
@@ -124,6 +127,7 @@ export class TransactionsController {
   @ApiResponse({ status: 201, description: 'Transaction created in PENDING state' })
   @Post()
   @SensitiveEndpoint()
+  @UseInterceptors(IdempotencyReplayInterceptor)
   create(@Body() createTransactionDto: CreateTransactionDto) {
     return this.transactionsService.create(createTransactionDto);
   }
@@ -132,6 +136,7 @@ export class TransactionsController {
   @ApiQuery({ name: 'senderWalletId', required: false, description: 'Filter by sender wallet ID' })
   @ApiQuery({ name: 'receiverWalletId', required: false, description: 'Filter by receiver wallet ID' })
   @ApiQuery({ name: 'status', required: false, enum: TransactionStatus, description: 'Filter by transaction status' })
+  @ApiQuery({ name: 'memo', required: false, description: 'Case-insensitive substring search on transaction memo' })
   @ApiQuery({ name: 'limit', required: false, description: 'Max records to return (1-100, default 20)', example: 20 })
   @ApiQuery({ name: 'offset', required: false, description: 'Number of records to skip (default 0)', example: 0 })
   @ApiResponse({
@@ -163,12 +168,14 @@ export class TransactionsController {
     @Query('senderWalletId') senderWalletId?: string,
     @Query('receiverWalletId') receiverWalletId?: string,
     @Query('status') status?: TransactionStatus,
+    @Query() pagination?: PaginationQuery,
     @Query('assetType') assetType?: string,
     @Query('assetCode') assetCode?: string,
     @Query('minAmount') minAmount?: string,
     @Query('maxAmount') maxAmount?: string,
     @Query('createdAfter') createdAfter?: string,
     @Query('createdBefore') createdBefore?: string,
+    @Query('memo') memo?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
@@ -176,6 +183,8 @@ export class TransactionsController {
       senderWalletId,
       receiverWalletId,
       status: status as TransactionStatus,
+      page: pagination?.page,
+      limit: pagination?.limit,
       limit: parsePaginationParam(limit, 'limit'),
       offset: parsePaginationParam(offset, 'offset'),
     });

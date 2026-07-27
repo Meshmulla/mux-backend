@@ -5,6 +5,8 @@ import { PaymentsService } from './payments.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { MetricsService } from '../metrics/metrics.service';
+import { PAYMENT_LIMITS_PORT } from './ports/payment-limits.port';
+import { RequestContextService } from '../common/request-context/request-context.service';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 import { PaymentCreatedEvent } from './events/payment-created.event';
@@ -34,6 +36,7 @@ describe('PaymentsService', () => {
   let walletsService: any;
   let eventEmitter: any;
   let metrics: any;
+  let requestContext: any;
 
   beforeEach(async () => {
     prisma = {
@@ -52,7 +55,9 @@ describe('PaymentsService', () => {
       incrementPaymentsCreated: jest.fn(),
       incrementPaymentsFailed: jest.fn(),
       recordPaymentProcessingDuration: jest.fn(),
+      incrementPaymentIdempotencyHit: jest.fn(),
     };
+    requestContext = { getRequestId: jest.fn().mockReturnValue('req-1') };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -62,6 +67,7 @@ describe('PaymentsService', () => {
         { provide: WalletsService, useValue: walletsService },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: MetricsService, useValue: metrics },
+        { provide: RequestContextService, useValue: requestContext },
       ],
     }).compile();
 
@@ -102,12 +108,43 @@ describe('PaymentsService', () => {
           toId: BASE_DTO.toId,
           amount: BASE_DTO.amount,
           currency: BASE_DTO.currency,
+          assetCode: undefined,
           description: BASE_DTO.description,
           userId: BASE_DTO.fromId,
           status: PaymentStatus.PENDING,
+          idempotencyKey: null,
         },
       });
       expect(result.status).toBe(PaymentStatus.PENDING);
+    });
+
+    it('should create payment with assetCode when provided', async () => {
+      walletsService.findWalletById
+        .mockResolvedValueOnce(ACTIVE_WALLET)
+        .mockResolvedValueOnce(RECEIVER_WALLET);
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
+      const dtoWithAsset = { ...BASE_DTO, assetCode: 'EUR' };
+      prisma.payment.create.mockResolvedValue({
+        id: 1,
+        ...dtoWithAsset,
+        status: PaymentStatus.PENDING,
+      });
+
+      const result = await service.create(dtoWithAsset);
+
+      expect(prisma.payment.create).toHaveBeenCalledWith({
+        data: {
+          fromId: dtoWithAsset.fromId,
+          toId: dtoWithAsset.toId,
+          amount: dtoWithAsset.amount,
+          currency: dtoWithAsset.currency,
+          assetCode: 'EUR',
+          description: dtoWithAsset.description,
+          userId: dtoWithAsset.fromId,
+          status: PaymentStatus.PENDING,
+        },
+      });
+      expect(result.assetCode).toBe('EUR');
     });
 
     it('should throw BadRequestException when sender wallet is not ACTIVE', async () => {
@@ -219,7 +256,7 @@ describe('PaymentsService', () => {
       walletsService.findWalletById
         .mockResolvedValueOnce(ACTIVE_WALLET)
         .mockResolvedValueOnce(RECEIVER_WALLET);
-      limitsService.checkLimits.mockResolvedValue(undefined);
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
       prisma.payment.create.mockResolvedValue({
         id: 1,
         ...BASE_DTO,
@@ -288,7 +325,7 @@ describe('PaymentsService', () => {
       walletsService.findWalletById
         .mockResolvedValueOnce(ACTIVE_WALLET)
         .mockResolvedValueOnce(RECEIVER_WALLET);
-      limitsService.checkLimits.mockResolvedValue(undefined);
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
       const payment = {
         id: 1,
         ...BASE_DTO,
@@ -388,6 +425,76 @@ describe('PaymentsService', () => {
       await service.update('1', { description: 'Updated' });
 
       expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('idempotency', () => {
+    const idempotencyKey = 'idem-key-1';
+
+    it('returns the existing payment without creating a duplicate when the key was already used', async () => {
+      const existingPayment = {
+        id: 1,
+        ...BASE_DTO,
+        idempotencyKey,
+        status: PaymentStatus.PENDING,
+      };
+      prisma.payment.findUnique.mockResolvedValue(existingPayment);
+
+      const result = await service.create({ ...BASE_DTO, idempotencyKey });
+
+      expect(prisma.payment.findUnique).toHaveBeenCalledWith({
+        where: { idempotencyKey },
+      });
+      expect(walletsService.findWalletById).not.toHaveBeenCalled();
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+      expect(metrics.incrementPaymentIdempotencyHit).toHaveBeenCalled();
+      expect(result).toBe(existingPayment);
+    });
+
+    it('creates a new payment and stores the key when it has not been used before', async () => {
+      prisma.payment.findUnique.mockResolvedValue(null);
+      walletsService.findWalletById
+        .mockResolvedValueOnce(ACTIVE_WALLET)
+        .mockResolvedValueOnce(RECEIVER_WALLET);
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
+      prisma.payment.create.mockResolvedValue({
+        id: 1,
+        ...BASE_DTO,
+        idempotencyKey,
+        status: PaymentStatus.PENDING,
+      });
+
+      await service.create({ ...BASE_DTO, idempotencyKey });
+
+      expect(prisma.payment.create).toHaveBeenCalledWith({
+        data: {
+          fromId: BASE_DTO.fromId,
+          toId: BASE_DTO.toId,
+          amount: BASE_DTO.amount,
+          currency: BASE_DTO.currency,
+          description: BASE_DTO.description,
+          userId: BASE_DTO.fromId,
+          status: PaymentStatus.PENDING,
+          idempotencyKey,
+        },
+      });
+      expect(metrics.incrementPaymentIdempotencyHit).not.toHaveBeenCalled();
+    });
+
+    it('does not check for an existing payment when no key is provided', async () => {
+      walletsService.findWalletById
+        .mockResolvedValueOnce(ACTIVE_WALLET)
+        .mockResolvedValueOnce(RECEIVER_WALLET);
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
+      prisma.payment.create.mockResolvedValue({
+        id: 1,
+        ...BASE_DTO,
+        status: PaymentStatus.PENDING,
+      });
+
+      await service.create(BASE_DTO);
+
+      expect(prisma.payment.findUnique).not.toHaveBeenCalled();
     });
   });
 });

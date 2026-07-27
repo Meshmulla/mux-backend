@@ -5,10 +5,17 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { LimitsService } from '../limits/limits.service';
+import {
+  PaginationQuery,
+  parsePagination,
+  buildPaginatedResponse,
+} from '../common/pagination/pagination.util';
 import { WalletsService } from '../wallets/wallets.service';
 import {
   PAYMENT_LIMITS_PORT,
@@ -23,7 +30,12 @@ import { PaymentCompletedEvent } from './events/payment-completed.event';
 import { PaymentFailedEvent } from './events/payment-failed.event';
 import { retryWithBackoff } from '../common/utils/retry';
 import { MetricsService } from '../metrics/metrics.service';
-import { PaymentStatusHistoryService } from './payment-status-history.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { PaymentMetricsService } from './payment-metrics.service';
+import {
+  StructuredLogger,
+  LogContext,
+} from '../common/logging/structured-logger';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -34,7 +46,7 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
 
 @Injectable()
 export class PaymentsService {
-  private readonly logger = new Logger(PaymentsService.name);
+  private readonly logger = new StructuredLogger(PaymentsService.name);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -43,11 +55,14 @@ export class PaymentsService {
     private readonly walletsService: WalletsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly metrics: MetricsService,
-    private readonly statusHistory: PaymentStatusHistoryService,
+    private readonly requestContext: RequestContextService,
+    private readonly paymentMetrics: PaymentMetricsService,
+    private readonly configService: ConfigService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
     const requestId = this.requestContext.getRequestId();
+    const start = Date.now();
     const {
       walletId,
       receiverWalletId,
@@ -55,62 +70,128 @@ export class PaymentsService {
       toId,
       amount,
       currency,
+      assetCode,
       description,
+      idempotencyKey,
     } = createPaymentDto;
 
-    const senderWallet = await retryWithBackoff(
-      () => this.walletsService.findWalletById(walletId),
-      3,
-      100,
-      this.logger,
-    );
-    if (senderWallet.status !== WalletStatus.ACTIVE) {
-      throw new BadRequestException(
-        `Sender wallet is not active (status: ${senderWallet.status})`,
-      );
+    if (idempotencyKey) {
+      const existing = await this.prisma.payment.findUnique({
+        where: { idempotencyKey },
+      });
+      if (existing) {
+        this.logger.logWithContext('Idempotency hit, returning existing payment', {
+          requestId,
+          entityId: existing.id.toString(),
+          entityType: 'payment',
+          operation: 'create',
+          outcome: 'idempotent',
+        });
+        this.metrics.incrementPaymentIdempotencyHit();
+        this.paymentMetrics.record({
+          operation: 'create',
+          outcome: 'idempotent',
+          durationMs: Date.now() - start,
+          currency,
+        });
+        return existing;
+      }
     }
 
-    await retryWithBackoff(
-      () => this.walletsService.findWalletById(receiverWalletId),
-      3,
-      100,
-      this.logger,
-    );
-    await retryWithBackoff(
-      () => this.limitsService.checkLimits(walletId, amount),
-      3,
-      100,
-      this.logger,
-    );
+    try {
+      const senderWallet = await retryWithBackoff(
+        () => this.walletsService.findWalletById(walletId),
+        3,
+        100,
+        this.logger,
+      );
+      if (senderWallet.status !== WalletStatus.ACTIVE) {
+        throw new BadRequestException(
+          `Sender wallet is not active (status: ${senderWallet.status})`,
+        );
+      }
 
-    const payment = await this.prisma.payment.create({
-      data: {
-        fromId,
-        toId,
-        amount,
+      const blockSelfPayments = this.configService.get<boolean>(
+        'BLOCK_SELF_PAYMENTS',
+        false,
+      );
+      if (blockSelfPayments && fromId === toId) {
+        throw new BadRequestException(
+          'Payments to self are not allowed',
+        );
+      }
+
+      await retryWithBackoff(
+        () => this.walletsService.findWalletById(receiverWalletId),
+        3,
+        100,
+        this.logger,
+      );
+      await retryWithBackoff(
+        () => this.paymentLimitsPort.checkLimits(walletId, amount),
+        3,
+        100,
+        this.logger,
+      );
+
+      const payment = await this.prisma.payment.create({
+        data: {
+          fromId,
+          toId,
+          amount,
+          currency,
+          assetCode,
+          description,
+          userId: fromId,
+          status: PaymentStatus.PENDING,
+          idempotencyKey: idempotencyKey ?? null,
+        },
+      });
+
+      this.metrics.incrementPaymentsCreated();
+      this.paymentMetrics.record({
+        operation: 'create',
+        outcome: 'success',
+        durationMs: Date.now() - start,
         currency,
-        description,
-        userId: fromId,
-        status: PaymentStatus.PENDING,
-      },
-    });
+      });
 
-    this.metrics.incrementPaymentsCreated();
+      this.eventEmitter.emit(
+        'payment.created',
+        new PaymentCreatedEvent(
+          payment.id,
+          payment.amount,
+          payment.currency,
+          payment.userId,
+        ),
+      );
 
-    this.eventEmitter.emit(
-      'payment.created',
-      new PaymentCreatedEvent(
-        payment.id,
-        payment.amount,
-        payment.currency,
-        payment.userId,
-        new Date(),
-      ),
-    );
-
-    return payment;
+      return payment;
+    } catch (err) {
+      this.paymentMetrics.record({
+        operation: 'create',
+        outcome: 'failure',
+        durationMs: Date.now() - start,
+        currency,
+        failureReason: err?.constructor?.name ?? 'unknown',
+      });
+      throw err;
+    }
   }
 
+  async findAll(query: PaginationQuery = {}) {
+    const { page, limit, skip } = parsePagination(query);
+
+    const [data, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.payment.count(),
+    ]);
+
+    return buildPaginatedResponse(data, total, page, limit);
   async findAll(
     pagination: PaginationDto,
     filters: PaymentsFilterDto,
@@ -149,9 +230,12 @@ export class PaymentsService {
     const requestId = this.requestContext.getRequestId();
     const paymentId = parseInt(id, 10);
 
-    this.logger.log(
-      `Updating payment id=${paymentId} requestId=${requestId}`,
-    );
+    this.logger.logWithContext('Updating payment', {
+      requestId,
+      entityId: paymentId.toString(),
+      entityType: 'payment',
+      operation: 'update',
+    });
 
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
@@ -193,7 +277,6 @@ export class PaymentsService {
           updatedPayment.amount,
           updatedPayment.currency,
           updatedPayment.userId,
-          new Date(),
         ),
       );
     } else if (updatePaymentDto.status === PaymentStatus.FAILED) {
@@ -205,7 +288,6 @@ export class PaymentsService {
           updatedPayment.amount,
           updatedPayment.currency,
           updatedPayment.userId,
-          new Date(),
         ),
       );
     }
