@@ -875,7 +875,6 @@ enum ChangeType {
   FIXED
   SECURITY
 }
-
 enum ChangeCategory {
   WALLETS
   PAYMENTS
@@ -921,4 +920,50 @@ model ApiChangelog {
   @@index([category])
   @@index([publishedAt])
   @@index([changeType])
+}
+
+/// Async export job for transaction data
+/// Tracks status, progress, and result location for large exports
+model TransactionExportJob {
+  id        String @id @default(uuid())
+
+  /// Project scope for the export (tenant isolation)
+  projectId String
+
+  /// Who initiated the export (optional — API key ID)
+  requestedBy String?
+
+  /// Filter parameters used for this export (stored as JSON)
+  filters   Json?
+
+  /// Export format: CSV or JSON
+  format    String @default("CSV")
+
+  /// Job lifecycle status
+  status    String @default("PENDING") // PENDING | RUNNING | COMPLETED | FAILED | EXPIRED
+
+  /// Number of rows exported
+  rowCount  Int @default(0)
+
+  /// Signed URL or file path where the export result can be downloaded
+  downloadUrl String?
+
+  /// When this download link expires
+  expiresAt DateTime?
+
+  /// Error details if job failed
+  errorMessage String?
+
+  /// Timing
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([expiresAt])
 }

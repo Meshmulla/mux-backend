@@ -21,20 +21,26 @@ import {
 } from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
+import { WebhookDlqAlertService } from './webhook-dlq-alert.service';
 import { CreateWebhookEndpointDto } from './dto/create-webhook-endpoint.dto';
 import { UpdateWebhookEndpointDto } from './dto/update-webhook-endpoint.dto';
 import { WebhookFilterDto } from './dto/webhook-filter.dto';
 import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 import { FeatureFlag } from '../common/feature-flags/feature-flag.guard';
+import {
+  TenantScopeGuard,
+  TenantScoped,
+} from '../common/guards/tenant-scope.guard';
 
 @ApiTags('webhooks')
 @Controller('webhooks')
-@UseGuards(FeatureFlagGuard)
+@UseGuards(FeatureFlagGuard, TenantScopeGuard)
 @FeatureFlag('webhooks_enabled')
 export class WebhookController {
   constructor(
     private readonly webhookService: WebhookService,
     private readonly webhookDispatcher: WebhookDispatcherService,
+    private readonly dlqAlertService: WebhookDlqAlertService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -153,6 +159,7 @@ export class WebhookController {
     },
   })
   @Get('endpoints/project/:projectId')
+  @TenantScoped('projectId')
   async listEndpoints(
     @Param('projectId') projectId: string,
     @Query() filter: WebhookFilterDto,
@@ -567,6 +574,82 @@ export class WebhookController {
       failed: result.failed,
       retrying: result.retrying,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /webhooks/dlq/status  — DLQ depth + alert check (admin)
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Check DLQ depth and evaluate alert thresholds (admin)',
+    description:
+      'Returns the current dead-letter queue depth, percentage of failed deliveries, ' +
+      'age of the oldest item, and whether any alert thresholds have been breached. ' +
+      'This also triggers an immediate threshold evaluation identical to the background poller.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'DLQ status with alert information',
+    schema: {
+      example: {
+        dlqDepth: 3,
+        totalDeliveries: 120,
+        dlqPercentage: 2.5,
+        oldestDlqItemAgeMs: 450000,
+        thresholdBreached: false,
+        alerts: [],
+        checkedAt: '2026-07-27T05:00:00.000Z',
+        thresholds: {
+          absoluteThreshold: 50,
+          percentageThreshold: 10,
+          ageThresholdMs: 3600000,
+        },
+      },
+    },
+  })
+  @Get('dlq/status')
+  async getDlqStatus() {
+    const [status, thresholds] = await Promise.all([
+      this.dlqAlertService.checkDlqDepth(),
+      Promise.resolve(this.dlqAlertService.getThresholds()),
+    ]);
+
+    return {
+      dlqDepth: status.dlqDepth,
+      totalDeliveries: status.totalDeliveries,
+      dlqPercentage: Number(status.dlqPercentage.toFixed(4)),
+      oldestDlqItemAgeMs: status.oldestDlqItemAgeMs,
+      thresholdBreached: status.thresholdBreached,
+      alerts: status.alerts,
+      checkedAt: status.checkedAt,
+      thresholds,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /webhooks/dlq/depth  — lightweight depth-only probe
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Get current DLQ depth (lightweight probe)',
+    description:
+      'Returns only the count of dead-lettered deliveries without triggering ' +
+      'the full alert evaluation. Suitable for health probes and dashboards.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'DLQ depth metrics',
+    schema: {
+      example: {
+        depth: 3,
+        total: 120,
+        percentage: 2.5,
+      },
+    },
+  })
+  @Get('dlq/depth')
+  async getDlqDepth() {
+    return this.dlqAlertService.getDlqDepth();
   }
 
 }
