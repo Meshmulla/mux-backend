@@ -46,6 +46,40 @@ model Payment {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  /// Status history records for audit and observability
+  statusHistory PaymentStatusHistory[]
+}
+
+/// Immutable audit log tracking every payment status transition.
+/// Used for compliance, debugging, and operational observability.
+model PaymentStatusHistory {
+  id        String        @id @default(uuid())
+
+  /// Payment reference
+  paymentId Int
+  payment   Payment       @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  /// Status transition details
+  fromStatus PaymentStatus?
+  toStatus   PaymentStatus
+
+  /// Optional reason for the status change
+  reason     String?
+
+  /// Actor who initiated the change (userId, system, etc.)
+  changedBy  String?
+
+  /// When the status change occurred
+  changedAt  DateTime      @default(now())
+
+  /// Additional metadata (request ID, IP, etc.)
+  metadata   Json?
+
+  @@index([paymentId])
+  @@index([paymentId, changedAt])
+  @@index([toStatus])
+  @@index([changedAt])
 }
 
 model UserLimit {
