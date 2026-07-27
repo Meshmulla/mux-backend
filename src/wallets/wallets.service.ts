@@ -328,7 +328,19 @@ export class WalletsService {
 
   create(createWalletDto: any) { return this.createWallet(createWalletDto); }
   findOne(id: string) { return this.findWalletById(id); }
-  update(id: string, updateWalletDto: any) { return this.updateWalletStatus(id, updateWalletDto.status); }
+  /**
+   * Rejects requests that attempt to change the wallet network.
+   * Once a wallet is created with a network (MAINNET/TESTNET), it cannot be changed.
+   */
+  update(id: string, updateWalletDto: any) {
+    // Enforce network immutability: reject any attempt to change network
+    if (updateWalletDto.network !== undefined) {
+      throw new Error(
+        'Wallet network is immutable after creation and cannot be changed.',
+      );
+    }
+    return this.updateWalletStatus(id, updateWalletDto.status);
+  }
   remove(id: string) { return this.prisma.wallet.delete({ where: { id } }); }
 
   private signWithPrivateKey(privateKey: string, data: string): string {
