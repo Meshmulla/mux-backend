@@ -10,7 +10,11 @@ import { WebhookDeliveryQueueWorker } from './webhook-delivery-queue.worker';
 import { WebhookController } from './webhook.controller';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { WebhookConfigService } from './webhook-config.service';
+import { WebhookDlqAlertService } from './webhook-dlq-alert.service';
 import { CacheService } from '../common/cache/cache.service';
+import { TenantScopeGuard } from '../common/guards/tenant-scope.guard';
+import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 
 @Module({
   imports: [ConfigModule],
@@ -25,8 +29,12 @@ import { CacheService } from '../common/cache/cache.service';
     WebhookDeliveryQueueWorker,
     MetricsService,
     WebhookConfigService,
+    WebhookDlqAlertService,
     CacheService,
+    TenantScopeGuard,
+    FeatureFlagService,
+    FeatureFlagGuard,
   ],
-  exports: [WebhookEventEmitterService, WebhookDispatcherService],
+  exports: [WebhookEventEmitterService, WebhookDispatcherService, WebhookDlqAlertService],
 })
 export class WebhookModule {}

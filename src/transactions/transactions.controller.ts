@@ -34,6 +34,10 @@ import {
   FeatureFlagGuard,
   FeatureFlag,
 } from '../common/feature-flags/feature-flag.guard';
+import {
+  TenantScopeGuard,
+  TenantScoped,
+} from '../common/guards/tenant-scope.guard';
 import { TransactionStatus } from './domain/transaction.model';
 import { PaginationQuery } from '../common/pagination/pagination.util';
 import { IdempotencyReplayInterceptor } from '../common/interceptors/idempotency-replay.interceptor';
@@ -58,7 +62,7 @@ function parsePaginationParam(
 }
 
 @Controller('transactions')
-@UseGuards(ApiKeyGuard, RateLimitGuard, FeatureFlagGuard)
+@UseGuards(ApiKeyGuard, RateLimitGuard, FeatureFlagGuard, TenantScopeGuard)
 @FeatureFlag('transactions_enabled')
 export class TransactionsController {
   constructor(
