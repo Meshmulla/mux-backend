@@ -117,7 +117,7 @@ function requireDatabaseUrl(
   const val = requireString(env, key, violations);
   if (!val) return '';
   // Accept postgresql:// or postgres:// schemes
-  if (!/^postgre?s:\/\//i.test(val)) {
+  if (!/^postgres(ql)?:\/\//i.test(val)) {
     violations.push({
       variable: key,
       message: `${key} must be a PostgreSQL connection string starting with postgresql:// or postgres:// (received scheme: "${val.split(':')[0]}")`,

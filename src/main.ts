@@ -2,13 +2,10 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import requestLogger from './common/middleware/request-logging.middleware';
-import { validateEnv } from './config/env.validation';
 
 async function bootstrap() {
-  // Validate all required environment variables before anything else starts.
-  // This will exit the process with a clear error message if any variable is
-  // missing or invalid, preventing silent runtime failures later.
-  validateEnv(process.env);
+  // Environment validation is handled by ConfigModule (src/config/config.module.ts)
+  // which calls validateEnv() at startup with detailed error messages.
 
   const app = await NestFactory.create(AppModule);
   // Attach request logging middleware early in the pipeline
