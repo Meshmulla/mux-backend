@@ -23,7 +23,9 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "preinstall": "npx only-allow pnpm"
+    "preinstall": "npx only-allow pnpm",
+    "openapi:generate": "ts-node -r tsconfig-paths/register scripts/generate-openapi.ts",
+    "openapi:lint": "npx @redocly/cli@latest lint openapi.json --config redocly.yaml"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
