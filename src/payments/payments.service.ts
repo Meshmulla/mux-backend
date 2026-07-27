@@ -8,14 +8,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { BatchPaymentDto } from './dto/batch-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from '../limits/limits.service';
-import {
-  PaginationQuery,
-  parsePagination,
-  buildPaginatedResponse,
-} from '../common/pagination/pagination.util';
 import { WalletsService } from '../wallets/wallets.service';
 import {
   PAYMENT_LIMITS_PORT,
@@ -179,19 +175,15 @@ export class PaymentsService {
     }
   }
 
-  async findAll(query: PaginationQuery = {}) {
-    const { page, limit, skip } = parsePagination(query);
+  async createBatch(dto: BatchPaymentDto) {
+    // The BatchPaymentDto enforces ArrayMinSize(1) via class-validator so this
+    // guard is a safety net for callers that bypass the validation pipe.
+    if (!dto.payments || dto.payments.length === 0) {
+      throw new BadRequestException('payments must not be empty');
+    }
+    return Promise.all(dto.payments.map((p) => this.create(p)));
+  }
 
-    const [data, total] = await Promise.all([
-      this.prisma.payment.findMany({
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.payment.count(),
-    ]);
-
-    return buildPaginatedResponse(data, total, page, limit);
   async findAll(
     pagination: PaginationDto,
     filters: PaymentsFilterDto,
