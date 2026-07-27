@@ -258,6 +258,17 @@ export class PaymentsService {
       data: updatePaymentDto,
     });
 
+    // Record status change in history table (best-effort, non-blocking)
+    if (updatePaymentDto.status !== undefined) {
+      void this.statusHistory.recordStatusChange({
+        paymentId: payment.id,
+        fromStatus: payment.status,
+        toStatus: updatePaymentDto.status,
+        changedBy: 'api',
+        metadata: { requestId },
+      });
+    }
+
     if (updatePaymentDto.status === PaymentStatus.CONFIRMED) {
       this.eventEmitter.emit(
         'payment.completed',
