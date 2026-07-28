@@ -9,9 +9,7 @@ import {
   Delete,
   Query,
   UseGuards,
-  UseGuards,
   Headers,
-  Query,
   BadRequestException,
 } from '@nestjs/common';
 import {
@@ -36,7 +34,6 @@ import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator'
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
 import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
-import { PaginationQuery } from '../common/pagination/pagination.util';
 import { RateLimitGuard, SensitiveEndpoint } from '../rate-limit/rate-limit.guard';
 import {
   FeatureFlag,
@@ -94,6 +91,9 @@ export class WalletsController {
     );
   }
 
+  /**
+   * #496: List wallets with optional filters and offset-based pagination.
+   */
   @ApiOperation({
     summary: 'List wallets with optional filters and pagination',
   })
@@ -185,7 +185,6 @@ export class WalletsController {
   @RequireApiKey()
   @Get('protected')
   async protectedEndpoint(@ApiKeyCtx() context: ApiKeyContext) {
-    // context contains developer, project, and apiKey info
     return {
       message: 'This endpoint is protected by API key',
       developer: context.developer.email,
