@@ -190,6 +190,10 @@ model Wallet {
   network WalletNetwork
   status  WalletStatus  @default(PROVISIONING)
 
+  /// Optional user-defined label for the wallet (e.g. "Savings", "Hot wallet").
+  /// Max 100 characters; enforced in the application layer.
+  nickname        String?
+
   /// Operational metadata for audits/debugging.
   statusReason    String?
   statusChangedAt DateTime @default(now())

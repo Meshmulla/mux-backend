@@ -522,6 +522,42 @@ export class WalletsService implements OnModuleDestroy {
     return this.toPublicWallet(wallet);
   }
 
+  /**
+   * Set or clear the human-readable nickname for a wallet.
+   *
+   * @param walletId  ID of the wallet to update.
+   * @param nickname  New label (max 100 chars), or null/undefined to clear.
+   * @returns Updated public wallet (without encrypted secret).
+   */
+  async updateNickname(
+    walletId: string,
+    nickname: string | null | undefined,
+  ): Promise<PublicWallet> {
+    const existing = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    }
+
+    const updated = await this.prisma.wallet.update({
+      where: { id: walletId },
+      data: {
+        nickname: nickname ?? null,
+        updatedAt: new Date(),
+      },
+    });
+
+    this.logger.logWithContext('Updated wallet nickname', {
+      operation: 'update_nickname',
+      entityType: 'wallet',
+      entityId: walletId,
+      outcome: 'success',
+    });
+
+    return this.toPublicWallet(this.mapPrismaWalletToDomain(updated));
+  }
+
   remove(id: string) {
     return this.prisma.wallet.delete({ where: { id } });
   }
@@ -638,6 +674,7 @@ export class WalletsService implements OnModuleDestroy {
       statusChangedAt: prismaWallet.statusChangedAt,
       rotatedFromId: prismaWallet.rotatedFromId,
       successorId: prismaWallet.successorId,
+      nickname: prismaWallet.nickname ?? null,
       createdAt: prismaWallet.createdAt,
       updatedAt: prismaWallet.updatedAt,
     };

@@ -489,6 +489,18 @@ metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 - `PATCH /wallets/:id/activate` - activate wallet (PROVISIONING -> ACTIVE) (#188)
 - `DELETE /wallets/:id` - remove wallet
 
+### Wallet Nickname
+
+Wallets can carry a short, optional human-readable label.
+
+- `PATCH /wallets/:id/nickname` - set or clear the wallet nickname
+
+**Request body**:
+```json
+{ "nickname": "Savings wallet" }
+```
+Pass `null` (or omit the field) to clear an existing nickname. The label is capped at 100 characters. The `nickname` field is included in all wallet responses.
+
 ### Orchestration Endpoints
 
 - `POST /wallets/orchestration/create` - creates wallet with PROVISIONING -> ACTIVE flow, funds testnet account on TESTNET (#187, #188)

@@ -27,6 +27,7 @@ import {
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
+import { UpdateWalletNicknameDto } from './dto/update-wallet-nickname.dto';
 import { SetNetworkPreferenceDto } from './dto/set-network-preference.dto';
 import { WalletResponseDto } from './dto/wallet-response.dto';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
@@ -252,6 +253,22 @@ export class WalletsController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateWalletDto: UpdateWalletDto) {
     return this.walletsService.update(id, updateWalletDto);
+  }
+
+  @ApiOperation({ summary: 'Set or clear the nickname for a wallet' })
+  @ApiParam({ name: 'id', description: 'Wallet ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet nickname updated',
+    type: WalletResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'Wallet not found' })
+  @Patch(':id/nickname')
+  updateNickname(
+    @Param('id') id: string,
+    @Body() dto: UpdateWalletNicknameDto,
+  ) {
+    return this.walletsService.updateNickname(id, dto.nickname);
   }
 
   @ApiOperation({ summary: 'Delete a wallet' })
