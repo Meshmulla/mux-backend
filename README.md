@@ -35,6 +35,20 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 
 All routes below are served under the `/v1` prefix (e.g. `GET /v1/health`). See [docs/API-VERSIONING.md](docs/API-VERSIONING.md) for the versioning strategy.
 
+### Request body size
+
+JSON and URL-encoded request bodies are limited to 100 KiB by default. Set
+`JSON_BODY_LIMIT_BYTES` to a value from 1 byte through 10 MiB to change the
+limit. Requests over the configured limit return `413 Payload Too Large`:
+
+```json
+{
+  "statusCode": 413,
+  "error": "Payload Too Large",
+  "message": "Request body exceeds the maximum allowed size"
+}
+```
+
 ### Health & Monitoring
 
 #### `GET /health`

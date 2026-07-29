@@ -110,6 +110,7 @@ describe('validateEnv()', () => {
     it('defaults to 3000 when not set', () => {
       const result = validateEnv(env());
       expect(result.PORT).toBe(3000);
+      expect(result.JSON_BODY_LIMIT_BYTES).toBe(102_400);
     });
 
     it('accepts a valid port number', () => {
@@ -127,6 +128,26 @@ describe('validateEnv()', () => {
 
     it('rejects a non-integer string', () => {
       expectError(env({ PORT: 'abc' }), 'PORT must be an integer');
+    });
+  });
+
+  describe('JSON_BODY_LIMIT_BYTES', () => {
+    it('defaults to 100 KiB', () => {
+      expect(validateEnv(env()).JSON_BODY_LIMIT_BYTES).toBe(102_400);
+    });
+
+    it('accepts a custom byte limit', () => {
+      expect(
+        validateEnv(env({ JSON_BODY_LIMIT_BYTES: '1048576' }))
+          .JSON_BODY_LIMIT_BYTES,
+      ).toBe(1_048_576);
+    });
+
+    it('rejects values above 10 MiB', () => {
+      expectError(
+        env({ JSON_BODY_LIMIT_BYTES: '10485761' }),
+        'JSON_BODY_LIMIT_BYTES must be <= 10485760',
+      );
     });
   });
 

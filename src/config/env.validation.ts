@@ -20,6 +20,7 @@ export interface EnvViolation {
 export interface ValidatedEnv {
   DATABASE_URL: string;
   PORT: number;
+  JSON_BODY_LIMIT_BYTES: number;
   WALLET_ENCRYPTION_KEY: string;
   STELLAR_HORIZON_URL: string;
   BALANCE_STALE_THRESHOLD_MS: number;
@@ -200,6 +201,13 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
 
   // ── Optional numeric fields ───────────────────────────────────────────────
   const PORT = optionalInt(env, 'PORT', 3000, { min: 1, max: 65535 }, violations);
+  const JSON_BODY_LIMIT_BYTES = optionalInt(
+    env,
+    'JSON_BODY_LIMIT_BYTES',
+    102_400,
+    { min: 1, max: 10_485_760 },
+    violations,
+  );
   const BALANCE_STALE_THRESHOLD_MS = optionalInt(
     env,
     'BALANCE_STALE_THRESHOLD_MS',
@@ -326,6 +334,7 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
   return {
     DATABASE_URL,
     PORT,
+    JSON_BODY_LIMIT_BYTES,
     WALLET_ENCRYPTION_KEY,
     STELLAR_HORIZON_URL,
     BALANCE_STALE_THRESHOLD_MS,

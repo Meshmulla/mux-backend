@@ -3,6 +3,8 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import requestLogger from './common/middleware/request-logging.middleware';
+import { configureBodySizeLimit } from './common/http/body-size-limit';
+import { validateEnv } from './config/env.validation';
 
 /**
  * Parses the CORS_ALLOWED_ORIGINS env var into an array of allowed origins.
@@ -20,9 +22,11 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
 
   // Validate all required environment variables before anything else starts.
-  validateEnv(process.env);
+  const env = validateEnv(process.env);
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
+
+  configureBodySizeLimit(app, env.JSON_BODY_LIMIT_BYTES);
 
   // Configure CORS with credentials support
   // Only allow credentials when explicitly whitelisted origins are used
@@ -62,9 +66,8 @@ async function bootstrap() {
   // so in-flight requests can finish and connections (Prisma, etc.) close cleanly.
   app.enableShutdownHooks();
 
-  const port = process.env.PORT ?? 3000;
-  await app.listen(port);
-  logger.log(`Application listening on port ${port}`);
+  await app.listen(env.PORT);
+  logger.log(`Application listening on port ${env.PORT}`);
 }
 
 bootstrap();
