@@ -27,6 +27,8 @@ import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
 import { ApiChangelogModule } from './api-changelog/api-changelog.module';
+import { MaintenanceModule } from './maintenance/maintenance.module';
+import { MaintenanceGuard } from './maintenance/maintenance.guard';
 
 @Module({
   imports: [
@@ -53,6 +55,7 @@ import { ApiChangelogModule } from './api-changelog/api-changelog.module';
     ProjectsModule,
     HealthModule,
     ApiChangelogModule,
+    MaintenanceModule,
   ],
   controllers: [AppController],
   providers: [
@@ -61,6 +64,10 @@ import { ApiChangelogModule } from './api-changelog/api-changelog.module';
     {
       provide: APP_GUARD,
       useClass: ApiKeyGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: MaintenanceGuard,
     },
     {
       provide: APP_GUARD,

@@ -111,6 +111,7 @@ describe('validateEnv()', () => {
       const result = validateEnv(env());
       expect(result.PORT).toBe(3000);
       expect(result.JSON_BODY_LIMIT_BYTES).toBe(102_400);
+      expect(result.MAINTENANCE_ADMIN_SECRET).toBe('');
     });
 
     it('accepts a valid port number', () => {

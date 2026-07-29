@@ -49,6 +49,29 @@ limit. Requests over the configured limit return `413 Payload Too Large`:
 }
 ```
 
+### Maintenance mode
+
+Maintenance mode is persisted in PostgreSQL and shared by every API instance.
+While enabled, `POST`, `PUT`, `PATCH`, and `DELETE` routes return `503 Service
+Unavailable`; `GET`, `HEAD`, and `OPTIONS` remain available. A configured retry
+delay is returned in the `Retry-After` header.
+
+Authenticated callers can inspect `GET /v1/maintenance`. To change the state,
+send `PATCH /v1/maintenance` with normal API-key authentication plus the
+`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`:
+
+```json
+{
+  "enabled": true,
+  "message": "Scheduled ledger maintenance",
+  "retryAfterSeconds": 300
+}
+```
+
+The maintenance endpoint itself remains available while maintenance mode is on
+so an authorized operator can disable it. If the persisted state cannot be read,
+mutating requests fail closed with `503 Service Unavailable`.
+
 ### Health & Monitoring
 
 #### `GET /health`
