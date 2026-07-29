@@ -501,6 +501,54 @@ describe('WalletsService', () => {
     });
   });
 
+  // Network immutability: wallet network cannot be changed after creation
+  describe('network immutability', () => {
+    it('should reject update when network is provided in the DTO', () => {
+      expect(() =>
+        service.update('wallet-123', {
+          status: 'ACTIVE',
+          network: WalletNetwork.MAINNET,
+        }),
+      ).toThrow(
+        'Wallet network is immutable after creation and cannot be changed.',
+      );
+    });
+
+    it('should allow update when only status is provided (no network)', async () => {
+      const wallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
+        encryptedSecret: 'secret',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: 'ACTIVE',
+        statusReason: null,
+        statusChangedAt: new Date(),
+        rotatedFromId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockPrismaWallet.findUnique.mockResolvedValue(wallet);
+      mockPrismaWallet.update.mockResolvedValue({
+        ...wallet,
+        status: 'SUSPENDED',
+      });
+
+      const result = await service.update('wallet-123', {
+        status: 'SUSPENDED',
+      });
+
+      expect(result).toBeDefined();
+      expect(mockPrismaWallet.update).toHaveBeenCalledWith({
+        where: { id: 'wallet-123' },
+        data: expect.objectContaining({ status: 'SUSPENDED' }),
+      });
+    });
+  });
+
   // #188: Activate Wallet (PROVISIONING -> ACTIVE)
   describe('activateWallet', () => {
     it('should transition PROVISIONING to ACTIVE', async () => {

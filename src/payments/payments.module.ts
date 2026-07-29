@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PaymentsService } from './payments.service';
 import { PaymentsController } from './payments.controller';
+import { PaymentStatusHistoryService } from './payment-status-history.service';
 import { LimitsModule } from '../limits/limits.module';
 import { LimitsService } from '../limits/limits.service';
 import { WalletsModule } from '../wallets/wallets.module';
