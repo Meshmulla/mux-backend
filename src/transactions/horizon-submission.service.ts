@@ -13,8 +13,10 @@ import { TransactionRetryService } from './transaction-retry.service';
 import { TransactionStatus } from './domain/transaction.model';
 import {
   mapHorizonResultToStatus,
+  isInsufficientBalanceResult,
   HorizonTransactionResult,
 } from './horizon-result.mapper';
+import { HorizonInsufficientBalanceException } from './domain/insufficient-balance.exception';
 
 export interface SubmissionResult {
   transactionId: string;
@@ -94,6 +96,11 @@ export class HorizonSubmissionService {
           TransactionStatus.FAILED,
           txCode,
         );
+
+        if (isInsufficientBalanceResult(horizonResult, txCode)) {
+          throw new HorizonInsufficientBalanceException(transactionId, txCode);
+        }
+
         throw new BadRequestException(
           `Horizon rejected transaction: ${txCode}`,
         );

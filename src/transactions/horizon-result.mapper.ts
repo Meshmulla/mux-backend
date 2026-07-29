@@ -25,6 +25,28 @@ export interface HorizonTransactionResult {
   };
 }
 
+/** Transaction-level code Horizon returns when the source can't cover amount + fee. */
+const TX_INSUFFICIENT_BALANCE_CODE = 'tx_insufficient_balance';
+/** Operation-level code Horizon returns when a payment op exceeds the sender's spendable balance. */
+const OP_UNDERFUNDED_CODE = 'op_underfunded';
+
+/**
+ * True when a Horizon rejection is specifically due to the source account
+ * lacking sufficient balance, as opposed to any other rejection reason
+ * (bad sequence, bad auth, malformed envelope, etc.).
+ */
+export function isInsufficientBalanceResult(
+  result: HorizonTransactionResult,
+  txCode: string,
+): boolean {
+  if (txCode === TX_INSUFFICIENT_BALANCE_CODE) {
+    return true;
+  }
+  return (result.extras?.result_codes?.operations ?? []).includes(
+    OP_UNDERFUNDED_CODE,
+  );
+}
+
 /**
  * Maps a Horizon transaction result to an internal TransactionStatus.
  *
