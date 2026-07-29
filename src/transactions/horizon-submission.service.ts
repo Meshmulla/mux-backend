@@ -106,6 +106,13 @@ export class HorizonSubmissionService {
     const mappedStatus = mapHorizonResultToStatus(horizonResult);
     const stellarHash = horizonResult.hash ?? '';
 
+    if (mappedStatus === TransactionStatus.CONFIRMED) {
+      // Horizon's classic /transactions endpoint is synchronous and can return
+      // the final ledger result in one call, but PENDING can't transition
+      // directly to CONFIRMED — persist the SUBMITTED milestone first.
+      await this.persistStatus(transactionId, TransactionStatus.SUBMITTED);
+    }
+
     await this.persistStatus(
       transactionId,
       mappedStatus,
