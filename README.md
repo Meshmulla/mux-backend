@@ -485,6 +485,7 @@ metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 - `GET /wallets/user/:userId` - list wallets by userId (#189)
 - `GET /wallets/:id` - get wallet by id
 - `GET /wallets/:id/status` - get wallet status (#185)
+- `GET /wallets/address/:publicKey?network=TESTNET` - find wallet by Stellar public key (address uniqueness lookup)
 - `PATCH /wallets/:id` - update wallet status
 - `PATCH /wallets/:id/activate` - activate wallet (PROVISIONING -> ACTIVE) (#188)
 - `DELETE /wallets/:id` - remove wallet

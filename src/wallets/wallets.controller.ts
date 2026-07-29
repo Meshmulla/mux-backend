@@ -212,6 +212,37 @@ export class WalletsController {
   }
 
   @ApiOperation({
+    summary: 'Find a wallet by its Stellar public key (address) and network',
+    description:
+      'Looks up the wallet associated with a given Stellar public key on a specific network. ' +
+      'Address uniqueness is enforced at the DB level (@@unique([network, publicKey])); ' +
+      'this endpoint surfaces that constraint as a human-readable query.',
+  })
+  @ApiParam({ name: 'publicKey', description: 'Stellar public key (G-address)' })
+  @ApiQuery({
+    name: 'network',
+    enum: WalletNetwork,
+    required: true,
+    description: 'Network (MAINNET or TESTNET)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet found',
+    type: WalletResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'No wallet found for this public key on the given network' })
+  @Get('address/:publicKey')
+  async findByPublicKey(
+    @Param('publicKey') publicKey: string,
+    @Query('network') network: WalletNetwork,
+  ) {
+    if (!network) {
+      throw new BadRequestException('network query parameter is required');
+    }
+    return this.walletsService.findByPublicKey(publicKey, network);
+  }
+
+  @ApiOperation({
     summary: "Get a user's default network preference",
     description:
       'Retrieve the persisted mainnet/testnet preference for a user. Requires API key authentication.',

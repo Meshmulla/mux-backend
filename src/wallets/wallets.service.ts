@@ -153,6 +153,23 @@ export class WalletsService implements OnModuleDestroy {
 
       wallet = this.mapPrismaWalletToDomain(created);
     } catch (error) {
+      // Prisma P2002: unique constraint violation on (network, publicKey)
+      // This should be extraordinarily rare (key-space collision) but must be
+      // handled explicitly so callers receive a clear 409 rather than a 500.
+      if (
+        error &&
+        typeof error === 'object' &&
+        (error as any).code === 'P2002' &&
+        (error as any).meta?.target?.includes('publicKey')
+      ) {
+        this.logger.error(
+          `Public key collision detected during wallet creation for user ${userId} on ${network}`,
+        );
+        this.recordMetric('create', 'failure', startedAt, network);
+        throw new ConflictException(
+          `The generated public key already exists on ${network}. Please retry — a new unique key will be generated.`,
+        );
+      }
       this.logger.error('Failed to create wallet:', error);
       this.recordMetric('create', 'failure', startedAt, network);
       throw new Error('Wallet creation failed');
@@ -178,6 +195,49 @@ export class WalletsService implements OnModuleDestroy {
     if (!wallet)
       throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     return this.mapPrismaWalletToDomain(wallet);
+  }
+
+  /**
+   * Look up a wallet by its Stellar public key (address) and network.
+   *
+   * Address uniqueness is enforced at the DB level via the
+   * @@unique([network, publicKey]) constraint.  This method provides an
+   * explicit, human-readable lookup path for consumers who know the on-chain
+   * address but not the internal wallet ID.
+   *
+   * @param publicKey  Stellar public key (G-address or M-address).
+   * @param network    Network the key lives on (MAINNET / TESTNET).
+   * @throws NotFoundException when no wallet with that key exists on the network.
+   */
+  async findByPublicKey(
+    publicKey: string,
+    network: WalletNetwork,
+  ): Promise<PublicWallet> {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { network_publicKey: { network, publicKey } },
+    });
+    if (!wallet) {
+      throw new NotFoundException(
+        `No wallet found for public key ${publicKey} on ${network}`,
+      );
+    }
+    return this.toPublicWallet(this.mapPrismaWalletToDomain(wallet));
+  }
+
+  /**
+   * Check whether a public key is already registered on a given network.
+   *
+   * Returns true if the address is taken, false if it is available.
+   * Useful for pre-creation validation before key generation.
+   */
+  async isPublicKeyTaken(
+    publicKey: string,
+    network: WalletNetwork,
+  ): Promise<boolean> {
+    const count = await this.prisma.wallet.count({
+      where: { publicKey, network },
+    });
+    return count > 0;
   }
 
   async findWalletByUser(
