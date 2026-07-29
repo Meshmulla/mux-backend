@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { ConfigModule } from './config/config.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
@@ -27,6 +27,8 @@ import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
 import { ApiChangelogModule } from './api-changelog/api-changelog.module';
+import { SloModule } from './common/slo/slo.module';
+import { LatencySloInterceptor } from './common/slo/latency-slo.interceptor';
 
 @Module({
   imports: [
@@ -53,6 +55,7 @@ import { ApiChangelogModule } from './api-changelog/api-changelog.module';
     ProjectsModule,
     HealthModule,
     ApiChangelogModule,
+    SloModule,
   ],
   controllers: [AppController],
   providers: [
@@ -65,6 +68,11 @@ import { ApiChangelogModule } from './api-changelog/api-changelog.module';
     {
       provide: APP_GUARD,
       useClass: RateLimitGuard,
+    },
+    // Apply latency SLO tracking globally
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: LatencySloInterceptor,
     },
   ],
 })
