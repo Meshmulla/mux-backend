@@ -4,12 +4,22 @@ import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import requestLogger from './common/middleware/request-logging.middleware';
 
+/**
+ * Parses the CORS_ALLOWED_ORIGINS env var into an array of allowed origins.
+ * Falls back to localhost:3000 for local development.
+ *
+ * Format: comma-separated list, e.g.
+ *   CORS_ALLOWED_ORIGINS=https://app.mux.finance,https://partner.example.com
+ */
+function parseCorsOrigins(raw: string | undefined): string[] {
+  if (!raw) return ['http://localhost:3000'];
+  return raw.split(',').map((o) => o.trim()).filter(Boolean);
+}
+
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
 
   // Validate all required environment variables before anything else starts.
-  // This will exit the process with a clear error message if any variable is
-  // missing or invalid, preventing silent runtime failures later.
   validateEnv(process.env);
 
   const app = await NestFactory.create(AppModule);

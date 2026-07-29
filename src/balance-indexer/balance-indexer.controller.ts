@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Controller,
   Get,
   Post,
@@ -155,8 +156,21 @@ export class BalanceIndexerController {
       return balance ?? { balance: '0', assetType: filters.assetType, assetCode: filters.assetCode, assetIssuer: filters.assetIssuer };
     }
 
-    const balances = await this.balanceIndexerService.getAllBalances(walletId);
-    return { walletId, balances };
+    const asset: Asset = {
+      type: assetType as AssetType,
+      code: assetCode,
+      issuer: assetIssuer,
+    };
+
+    const balance = await this.balanceIndexerService.getBalance(walletId, asset);
+
+    if (!balance) {
+      throw new NotFoundException(
+        `No balance record found for wallet '${walletId}' and asset '${assetType}'`,
+      );
+    }
+
+    return this.toMultiAssetResponse(walletId, [balance]);
   }
 
   /**
