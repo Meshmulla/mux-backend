@@ -22,9 +22,11 @@ import {
 import { TransactionsService } from './transactions.service';
 import { TransactionQueryService } from './transaction-query.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
+import { FeeBumpService } from './fee-bump.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
 import { BuildTransactionDto } from './dto/build-transaction.dto';
+import { FeeBumpTransactionDto } from './dto/fee-bump-transaction.dto';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import {
   RateLimitGuard,
@@ -79,6 +81,7 @@ export class TransactionsController {
     private readonly transactionsService: TransactionsService,
     private readonly queryService: TransactionQueryService,
     private readonly stellarBuildService: StellarTransactionBuildService,
+    private readonly feeBumpService: FeeBumpService,
   ) {}
 
   /**
@@ -105,6 +108,55 @@ export class TransactionsController {
   @SensitiveEndpoint()
   buildTransaction(@Body() dto: BuildTransactionDto) {
     return this.stellarBuildService.buildPayment(dto);
+  }
+
+  /**
+   * Submit a fee-bump transaction to Stellar Horizon.
+   *
+   * Wraps an already-signed inner transaction with a new fee-source account
+   * so that the sponsor pays the network fee.  Optionally updates the status
+   * of an existing internal Transaction record.
+   */
+  @ApiOperation({
+    summary: 'Submit a fee-bump transaction to Stellar',
+    description:
+      'Wraps an inner signed transaction XDR with a fee-source account that sponsors ' +
+      'the network fee.  The fee-source wallet must be registered in Mux ' +
+      '(feeSourceWalletId) so the service can retrieve the signing key.',
+  })
+  @ApiBody({
+    type: FeeBumpTransactionDto,
+    examples: {
+      testnet: {
+        summary: 'Fee-bump on testnet',
+        value: {
+          innerTransactionXdr: 'AAAAAgAAAABiZ3gQ...',
+          feeSourcePublicKey: 'GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEF',
+          feeSourceWalletId: '550e8400-e29b-41d4-a716-446655440000',
+          transactionId: '550e8400-e29b-41d4-a716-446655440001',
+          network: 'TESTNET',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Fee-bump transaction submitted successfully',
+    schema: {
+      example: {
+        stellarHash: 'a1b2c3d4...',
+        status: 'SUBMITTED',
+        transactionId: '550e8400-e29b-41d4-a716-446655440001',
+        feeCharged: '1000',
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Invalid XDR or Horizon rejection' })
+  @ApiResponse({ status: 503, description: 'Horizon unavailable' })
+  @Post('fee-bump')
+  @SensitiveEndpoint()
+  submitFeeBump(@Body() dto: FeeBumpTransactionDto) {
+    return this.feeBumpService.submitFeeBump(dto);
   }
 
   @ApiOperation({ summary: 'Create a new transaction' })

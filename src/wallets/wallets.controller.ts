@@ -27,6 +27,7 @@ import {
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
+import { UpdateWalletNicknameDto } from './dto/update-wallet-nickname.dto';
 import { SetNetworkPreferenceDto } from './dto/set-network-preference.dto';
 import { WalletResponseDto } from './dto/wallet-response.dto';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
@@ -211,6 +212,37 @@ export class WalletsController {
   }
 
   @ApiOperation({
+    summary: 'Find a wallet by its Stellar public key (address) and network',
+    description:
+      'Looks up the wallet associated with a given Stellar public key on a specific network. ' +
+      'Address uniqueness is enforced at the DB level (@@unique([network, publicKey])); ' +
+      'this endpoint surfaces that constraint as a human-readable query.',
+  })
+  @ApiParam({ name: 'publicKey', description: 'Stellar public key (G-address)' })
+  @ApiQuery({
+    name: 'network',
+    enum: WalletNetwork,
+    required: true,
+    description: 'Network (MAINNET or TESTNET)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet found',
+    type: WalletResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'No wallet found for this public key on the given network' })
+  @Get('address/:publicKey')
+  async findByPublicKey(
+    @Param('publicKey') publicKey: string,
+    @Query('network') network: WalletNetwork,
+  ) {
+    if (!network) {
+      throw new BadRequestException('network query parameter is required');
+    }
+    return this.walletsService.findByPublicKey(publicKey, network);
+  }
+
+  @ApiOperation({
     summary: "Get a user's default network preference",
     description:
       'Retrieve the persisted mainnet/testnet preference for a user. Requires API key authentication.',
@@ -252,6 +284,22 @@ export class WalletsController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateWalletDto: UpdateWalletDto) {
     return this.walletsService.update(id, updateWalletDto);
+  }
+
+  @ApiOperation({ summary: 'Set or clear the nickname for a wallet' })
+  @ApiParam({ name: 'id', description: 'Wallet ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet nickname updated',
+    type: WalletResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'Wallet not found' })
+  @Patch(':id/nickname')
+  updateNickname(
+    @Param('id') id: string,
+    @Body() dto: UpdateWalletNicknameDto,
+  ) {
+    return this.walletsService.updateNickname(id, dto.nickname);
   }
 
   @ApiOperation({ summary: 'Delete a wallet' })
