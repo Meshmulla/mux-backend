@@ -13,6 +13,8 @@ export interface FindOrCreateUserRequest {
   email?: string;
   displayName?: string;
   authProvider?: string;
+  lastLoginIp?: string;
+  lastLoginUserAgent?: string;
 }
 
 export interface User {
@@ -23,6 +25,8 @@ export interface User {
   status?: UserStatus;
   authProvider: string;
   lastLoginAt?: Date;
+  lastLoginIp?: string;
+  lastLoginUserAgent?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -30,6 +34,22 @@ export interface User {
 export interface FindOrCreateUserResult {
   user: User;
   isNewUser: boolean;
+}
+
+export interface SessionListOptions {
+  page?: number;
+  limit?: number;
+  status?: string;
+  authProvider?: string;
+  dateFrom?: Date;
+  dateTo?: Date;
+}
+
+export interface SessionListResult {
+  data: User[];
+  total: number;
+  page: number;
+  limit: number;
 }
 
 @Injectable()
@@ -50,7 +70,14 @@ export class IdempotentUserService {
   async findOrCreateUser(
     request: FindOrCreateUserRequest,
   ): Promise<FindOrCreateUserResult> {
-    const { authId, email, displayName, authProvider = 'UNKNOWN' } = request;
+    const {
+      authId,
+      email,
+      displayName,
+      authProvider = 'UNKNOWN',
+      lastLoginIp,
+      lastLoginUserAgent,
+    } = request;
 
     this.logger.log(`Looking up user with authId: ${authId}`);
 
@@ -64,7 +91,11 @@ export class IdempotentUserService {
 
         const updatedUser = await this.prisma.user.update({
           where: { id: existingUser.id },
-          data: { lastLoginAt: new Date() },
+          data: {
+            lastLoginAt: new Date(),
+            lastLoginIp,
+            lastLoginUserAgent,
+          },
         });
 
         this.logger.log(
@@ -84,6 +115,8 @@ export class IdempotentUserService {
           displayName,
           authProvider,
           lastLoginAt: new Date(),
+          lastLoginIp,
+          lastLoginUserAgent,
           status: 'ACTIVE',
         },
       });
@@ -116,7 +149,11 @@ export class IdempotentUserService {
         if (retryUser) {
           const updatedRetryUser = await this.prisma.user.update({
             where: { id: retryUser.id },
-            data: { lastLoginAt: new Date() },
+            data: {
+              lastLoginAt: new Date(),
+              lastLoginIp,
+              lastLoginUserAgent,
+            },
           });
 
           return {
@@ -128,6 +165,42 @@ export class IdempotentUserService {
 
       throw new Error(`User creation failed for authId: ${authId}`);
     }
+  }
+
+  /**
+   * Lists authenticated sessions (users with lastLoginAt) with optional filters.
+   * Filters: status, authProvider, dateFrom/dateTo against lastLoginAt.
+   * Results are ordered by lastLoginAt descending, with pagination.
+   */
+  async listSessions(options: SessionListOptions = {}): Promise<SessionListResult> {
+    const { page = 1, status, authProvider, dateFrom, dateTo } = options;
+    const limit = Math.min(options.limit ?? 20, 100);
+
+    const where: Record<string, any> = { deletedAt: null };
+    if (status) where.status = status;
+    if (authProvider) where.authProvider = authProvider;
+    if (dateFrom || dateTo) {
+      where.lastLoginAt = {};
+      if (dateFrom) where.lastLoginAt.gte = dateFrom;
+      if (dateTo) where.lastLoginAt.lte = dateTo;
+    }
+
+    const [users, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        orderBy: { lastLoginAt: 'desc' },
+        take: limit,
+        skip: (page - 1) * limit,
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+
+    return {
+      data: users.map((u) => this.mapPrismaUserToDomain(u)),
+      total,
+      page,
+      limit,
+    };
   }
 
   /**
@@ -195,6 +268,8 @@ export class IdempotentUserService {
       status: prismaUser.status,
       authProvider: prismaUser.authProvider,
       lastLoginAt: prismaUser.lastLoginAt,
+      lastLoginIp: prismaUser.lastLoginIp,
+      lastLoginUserAgent: prismaUser.lastLoginUserAgent,
       createdAt: prismaUser.createdAt,
       updatedAt: prismaUser.updatedAt,
     };

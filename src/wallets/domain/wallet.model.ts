@@ -17,6 +17,7 @@ export enum WalletStatus {
   SUSPENDED = 'SUSPENDED',
   DISABLED = 'DISABLED',
   COMPROMISED = 'COMPROMISED',
+  ARCHIVED = 'ARCHIVED',
 }
 
 export type WalletId = string;
@@ -79,6 +80,7 @@ const ALLOWED_TRANSITIONS: Readonly<
     WalletStatus.SUSPENDED,
     WalletStatus.DISABLED,
     WalletStatus.COMPROMISED,
+    WalletStatus.ARCHIVED,
   ]),
   [WalletStatus.ROTATING]: new Set([
     WalletStatus.ACTIVE,
@@ -90,9 +92,11 @@ const ALLOWED_TRANSITIONS: Readonly<
     WalletStatus.ACTIVE,
     WalletStatus.DISABLED,
     WalletStatus.COMPROMISED,
+    WalletStatus.ARCHIVED,
   ]),
-  [WalletStatus.DISABLED]: new Set([]),
+  [WalletStatus.DISABLED]: new Set([WalletStatus.ARCHIVED]),
   [WalletStatus.COMPROMISED]: new Set([]),
+  [WalletStatus.ARCHIVED]: new Set([]),
 };
 
 export function canTransitionWalletStatus(

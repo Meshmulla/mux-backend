@@ -1,8 +1,11 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule } from './config/config.module';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { PrismaModule } from './prisma/prisma.module';
+import { MetricsModule } from './metrics/metrics.module';
+import { TracingModule } from './tracing/tracing.module';
 import { AppService } from './app.service';
 import { UsersModule } from './users/users.module';
 import { IdempotentUserModule } from './users/idempotent-user.module';
@@ -23,13 +26,14 @@ import { TransactionsModule } from './transactions/transactions.module';
 import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
+import { ApiChangelogModule } from './api-changelog/api-changelog.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      envFilePath: '.env',
-    }),
+    ConfigModule,
+    EventEmitterModule.forRoot(),
+    MetricsModule,
+    TracingModule.forRoot(),
     PrismaModule,
     AuthModule,
     RateLimitModule,
@@ -48,6 +52,7 @@ import { HealthModule } from './health/health.module';
     DevelopersModule,
     ProjectsModule,
     HealthModule,
+    ApiChangelogModule,
   ],
   controllers: [AppController],
   providers: [

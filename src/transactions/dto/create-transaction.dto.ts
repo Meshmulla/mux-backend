@@ -1,3 +1,4 @@
+import { MemoType } from '../../common/stellar/memo.util';
 import {
   IsEnum,
   IsNotEmpty,
@@ -39,6 +40,11 @@ export class TransactionAssetDto {
   issuer?: string;
 }
 
+export class TransactionMemoDto {
+  type: MemoType;
+  value?: string;
+}
+
 export class CreateTransactionDto {
   /** Positive decimal string, up to 7 decimal places (Stellar precision) */
   @IsString()
@@ -57,6 +63,7 @@ export class CreateTransactionDto {
   @IsOptional()
   @IsUUID()
   receiverWalletId?: string;
+  memo?: TransactionMemoDto;
 
   /** Optional memo — max 28 bytes (Stellar text memo limit) */
   @IsOptional()

@@ -1,8 +1,8 @@
+import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import requestLogger from './common/middleware/request-logging.middleware';
-import { validateEnv } from './config/env.validation';
 
 /**
  * Parses the CORS_ALLOWED_ORIGINS env var into an array of allowed origins.
@@ -17,55 +17,37 @@ function parseCorsOrigins(raw: string | undefined): string[] {
 }
 
 async function bootstrap() {
+  const logger = new Logger('Bootstrap');
+
   // Validate all required environment variables before anything else starts.
   validateEnv(process.env);
 
   const app = await NestFactory.create(AppModule);
 
-  // ── CORS ──────────────────────────────────────────────────────────────────
-  // Only allow explicitly listed origins. Credentials (cookies / Authorization
-  // headers) are enabled so frontend SDKs can attach API keys via Bearer tokens.
-  // Pre-flight OPTIONS responses are cached for 24 hours to reduce round-trips.
-  const allowedOrigins = parseCorsOrigins(process.env.CORS_ALLOWED_ORIGINS);
+  // Configure CORS with credentials support
+  // Only allow credentials when explicitly whitelisted origins are used
+  const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000').split(',').map(o => o.trim());
   app.enableCors({
-    origin: (origin, callback) => {
-      // Allow server-to-server calls (no Origin header) and listed origins.
-      if (!origin || allowedOrigins.includes(origin)) {
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+      if (!origin || corsOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error(`CORS: origin '${origin}' not allowed`));
+        callback(new Error('Not allowed by CORS'), false);
       }
     },
-    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Api-Version'],
-    exposedHeaders: ['X-Request-Id', 'X-RateLimit-Limit', 'X-RateLimit-Remaining'],
     credentials: true,
-    maxAge: 86400, // 24 h preflight cache
-  });
-
-  // ── Security headers ──────────────────────────────────────────────────────
-  // Applied to every response. No helmet dependency — set directly to keep the
-  // dependency surface small and avoid version-skew issues.
-  app.use((_req: any, res: any, next: () => void) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-XSS-Protection', '1; mode=block');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader(
-      'Strict-Transport-Security',
-      'max-age=31536000; includeSubDomains; preload',
-    );
-    res.setHeader(
-      'Permissions-Policy',
-      'camera=(), microphone=(), geolocation=()',
-    );
-    // Prevent response bodies from leaking sensitive data through caching.
-    res.setHeader('Cache-Control', 'no-store');
-    next();
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Request-ID'],
+    exposedHeaders: ['X-Request-ID', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
+    maxAge: 3600,
   });
 
   // Attach request logging middleware early in the pipeline
   app.use(requestLogger as any);
+
+  // All routes are served under /v1. See docs/API-VERSIONING.md for the
+  // versioning strategy and how future breaking changes will be introduced.
+  app.setGlobalPrefix('v1');
 
   // Validate incoming requests for DTOs globally
   app.useGlobalPipes(
@@ -76,7 +58,13 @@ async function bootstrap() {
     }),
   );
 
-  await app.listen(process.env.PORT ?? 3000);
+  // Let Nest call onModuleDestroy/beforeApplicationShutdown on SIGTERM/SIGINT
+  // so in-flight requests can finish and connections (Prisma, etc.) close cleanly.
+  app.enableShutdownHooks();
+
+  const port = process.env.PORT ?? 3000;
+  await app.listen(port);
+  logger.log(`Application listening on port ${port}`);
 }
 
 bootstrap();

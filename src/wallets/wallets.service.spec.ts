@@ -21,12 +21,26 @@ const mockPrismaWallet = {
   update: jest.fn(),
   delete: jest.fn(),
   findMany: jest.fn(),
+  count: jest.fn(),
 };
+
+// Shared mock Prisma user methods (used by network preference lookups)
+const mockPrismaUser = {
+  findUnique: jest.fn(),
+  update: jest.fn(),
+};
+
+// $transaction mock – executes the callback and passes the wallet mock as the tx client
+const mockPrismaTransaction = jest.fn(async (cb: (tx: any) => Promise<any>) =>
+  cb({ wallet: mockPrismaWallet }),
+);
 
 // Mock the PrismaClient module so new PrismaClient() returns our mock
 jest.mock('../generated/prisma/client', () => ({
   PrismaClient: jest.fn(() => ({
     wallet: mockPrismaWallet,
+    user: mockPrismaUser,
+    $transaction: mockPrismaTransaction,
   })),
 }));
 
@@ -493,6 +507,54 @@ describe('WalletsService', () => {
     });
   });
 
+  // Network immutability: wallet network cannot be changed after creation
+  describe('network immutability', () => {
+    it('should reject update when network is provided in the DTO', () => {
+      expect(() =>
+        service.update('wallet-123', {
+          status: 'ACTIVE',
+          network: WalletNetwork.MAINNET,
+        }),
+      ).toThrow(
+        'Wallet network is immutable after creation and cannot be changed.',
+      );
+    });
+
+    it('should allow update when only status is provided (no network)', async () => {
+      const wallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
+        encryptedSecret: 'secret',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: 'ACTIVE',
+        statusReason: null,
+        statusChangedAt: new Date(),
+        rotatedFromId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockPrismaWallet.findUnique.mockResolvedValue(wallet);
+      mockPrismaWallet.update.mockResolvedValue({
+        ...wallet,
+        status: 'SUSPENDED',
+      });
+
+      const result = await service.update('wallet-123', {
+        status: 'SUSPENDED',
+      });
+
+      expect(result).toBeDefined();
+      expect(mockPrismaWallet.update).toHaveBeenCalledWith({
+        where: { id: 'wallet-123' },
+        data: expect.objectContaining({ status: 'SUSPENDED' }),
+      });
+    });
+  });
+
   // #188: Activate Wallet (PROVISIONING -> ACTIVE)
   describe('activateWallet', () => {
     it('should transition PROVISIONING to ACTIVE', async () => {
@@ -628,6 +690,173 @@ describe('WalletsService', () => {
       const result = await service.findWalletsByUserId('user-no-wallets');
 
       expect(result).toEqual([]);
+    });
+  });
+
+  // #325 / #326: pagination + filtering on the wallet list endpoint
+  describe('findAll', () => {
+    const walletRow = {
+      id: 'wallet-1',
+      userId: 'user-123',
+      publicKey: 'GABC1',
+      encryptedSecret: 'secret1',
+      encryptionVersion: 1,
+      secretVersion: 1,
+      network: WalletNetwork.TESTNET,
+      status: 'ACTIVE',
+      statusReason: null,
+      statusChangedAt: new Date(),
+      rotatedFromId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    it('defaults to limit=20 and offset=0 with no filters (excludes ARCHIVED by default)', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([walletRow]);
+      mockPrismaWallet.count.mockResolvedValue(1);
+
+      const result = await service.findAll();
+
+      // #496: archived wallets are excluded by default
+      const expectedWhere = { status: { not: WalletStatus.ARCHIVED } };
+      expect(mockPrismaWallet.findMany).toHaveBeenCalledWith({
+        where: expectedWhere,
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        skip: 0,
+      });
+      expect(mockPrismaWallet.count).toHaveBeenCalledWith({ where: expectedWhere });
+      expect(result).toEqual({
+        data: [expect.objectContaining({ id: 'wallet-1' })],
+        total: 1,
+        limit: 20,
+        offset: 0,
+        hasMore: false,
+      });
+    });
+
+    it('applies network, status, and userId filters', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([]);
+      mockPrismaWallet.count.mockResolvedValue(0);
+
+      await service.findAll({
+        userId: 'user-123',
+        network: WalletNetwork.MAINNET,
+        status: WalletStatus.ACTIVE,
+      });
+
+      expect(mockPrismaWallet.findMany).toHaveBeenCalledWith({
+        where: {
+          userId: 'user-123',
+          network: WalletNetwork.MAINNET,
+          status: WalletStatus.ACTIVE,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        skip: 0,
+      });
+    });
+
+    it('passes a custom limit and offset through to Prisma', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([]);
+      mockPrismaWallet.count.mockResolvedValue(0);
+
+      await service.findAll({ limit: 5, offset: 10 });
+
+      expect(mockPrismaWallet.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 5, skip: 10 }),
+      );
+    });
+
+    it('sets hasMore=true when more records remain after this page', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([walletRow]);
+      mockPrismaWallet.count.mockResolvedValue(5);
+
+      const result = await service.findAll({ limit: 1, offset: 0 });
+
+      expect(result.hasMore).toBe(true);
+      expect(result.total).toBe(5);
+    });
+
+    it('sets hasMore=false on the last page', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([walletRow]);
+      mockPrismaWallet.count.mockResolvedValue(5);
+
+      const result = await service.findAll({ limit: 20, offset: 4 });
+
+      expect(result.hasMore).toBe(false);
+    });
+  });
+
+  describe('getNetworkPreference', () => {
+    it('returns the persisted preference for an existing user', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        defaultNetwork: 'TESTNET',
+      });
+
+      const result = await service.getNetworkPreference('user-1');
+
+      expect(mockPrismaUser.findUnique).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+      });
+      expect(result).toEqual({
+        userId: 'user-1',
+        defaultNetwork: WalletNetwork.TESTNET,
+      });
+    });
+
+    it('returns null defaultNetwork when the user has no preference set', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        defaultNetwork: null,
+      });
+
+      const result = await service.getNetworkPreference('user-1');
+
+      expect(result).toEqual({ userId: 'user-1', defaultNetwork: null });
+    });
+
+    it('throws NotFoundException when the user does not exist', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.getNetworkPreference('missing-user'),
+      ).rejects.toThrow('User with ID missing-user not found');
+    });
+  });
+
+  describe('setNetworkPreference', () => {
+    it('persists the network preference for an existing user', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue({ id: 'user-1' });
+      mockPrismaUser.update.mockResolvedValue({
+        id: 'user-1',
+        defaultNetwork: 'MAINNET',
+      });
+
+      const result = await service.setNetworkPreference(
+        'user-1',
+        WalletNetwork.MAINNET,
+      );
+
+      expect(mockPrismaUser.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { defaultNetwork: WalletNetwork.MAINNET },
+      });
+      expect(result).toEqual({
+        userId: 'user-1',
+        defaultNetwork: WalletNetwork.MAINNET,
+      });
+    });
+
+    it('throws NotFoundException when the user does not exist', async () => {
+      mockPrismaUser.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.setNetworkPreference('missing-user', WalletNetwork.MAINNET),
+      ).rejects.toThrow('User with ID missing-user not found');
+
+      expect(mockPrismaUser.update).not.toHaveBeenCalled();
     });
   });
 });

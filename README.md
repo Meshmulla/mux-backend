@@ -33,6 +33,8 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 
 ## API Endpoints
 
+All routes below are served under the `/v1` prefix (e.g. `GET /v1/health`). See [docs/API-VERSIONING.md](docs/API-VERSIONING.md) for the versioning strategy.
+
 ### Health & Monitoring
 
 #### `GET /health`
@@ -518,3 +520,85 @@ Testing
 
 - Unit tests are under `src/**/*spec.ts`.
 - E2E tests are under `test/` and use Jest + Supertest.
+
+---
+
+## Transactions API
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/transactions` | Create a transaction (PENDING state) |
+| `GET` | `/transactions` | List transactions with filters and pagination (#497) |
+| `GET` | `/transactions/:id` | Get a transaction by ID |
+| `GET` | `/transactions/wallet/:walletId` | List transactions for a wallet |
+| `GET` | `/transactions/stellar/:hash` | Find a transaction by Stellar hash |
+| `PATCH` | `/transactions/:id/status` | Update transaction status |
+| `POST` | `/transactions/build` | Build an unsigned Stellar transaction XDR |
+
+### Filtering Transactions (#497)
+
+`GET /transactions` accepts the following query parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `senderWalletId` | string | Filter by sender wallet ID |
+| `receiverWalletId` | string | Filter by receiver wallet ID |
+| `status` | enum | Filter by status: `PENDING`, `SUBMITTED`, `CONFIRMED`, `FAILED` |
+| `assetType` | string | Filter by asset type (e.g. `NATIVE`, `CREDIT_ALPHANUM4`) |
+| `assetCode` | string | Filter by asset code (e.g. `USDC`) |
+| `minAmount` | string | Minimum amount, inclusive |
+| `maxAmount` | string | Maximum amount, inclusive |
+| `createdAfter` | ISO 8601 | Return transactions created on or after this timestamp |
+| `createdBefore` | ISO 8601 | Return transactions created on or before this timestamp |
+| `memo` | string | Case-insensitive substring search on memo field |
+| `limit` | number | Max records to return (1–100, default 20) |
+| `offset` | number | Records to skip for pagination (default 0) |
+
+Results are ordered newest-first. The response envelope includes `data`, `total`, `limit`, `offset`, and `hasMore`.
+
+### Transaction Status Lifecycle (#498)
+
+Internal transaction statuses and their Horizon result mappings:
+
+| Status | Description | Horizon mapping |
+|--------|-------------|-----------------|
+| `PENDING` | Created, not yet submitted | — |
+| `SUBMITTED` | Submitted to Stellar, awaiting ledger inclusion | HTTP 202, `result_code: tx_queued` |
+| `CONFIRMED` | Included in a ledger | `successful: true`, `result_code: tx_success` / `tx_fee_bump_inner_success` |
+| `FAILED` | Rejected or expired | `successful: false`, any other `result_code` |
+
+`mapHorizonResultToStatus()` in `src/transactions/horizon-result.mapper.ts` performs the mapping. Priority order:
+
+1. HTTP 202 → `SUBMITTED` (Horizon accepted, not yet ledger-confirmed)
+2. `successful: true` → `CONFIRMED`
+3. `result_code` switch (see mapper for full list)
+4. Default → `FAILED`
+
+### Wallet Create Rollback (#494)
+
+`WalletsService.createWallet()` and `WalletCreationOrchestrator.createWallet()` use a two-phase write inside a Prisma transaction:
+
+1. Wallet is inserted with status `PROVISIONING`.
+2. Status is transitioned to `ACTIVE` within the same transaction.
+
+If key generation, DB persistence, or activation throws, the Prisma transaction rolls back automatically — no partial wallet record is left in the database. Stale `PROVISIONING` wallets (from crashed processes) are cleaned up via `cleanupStaleProvisioningWallets()`.
+
+Testnet Friendbot funding is performed outside the transaction and is non-blocking; a Friendbot failure does not roll back the wallet.
+
+### Wallet List Pagination (#496)
+
+`GET /wallets` returns a paginated envelope:
+
+```json
+{
+  "data": [...],
+  "total": 42,
+  "limit": 20,
+  "offset": 0,
+  "hasMore": true
+}
+```
+
+Query parameters: `userId`, `network`, `status`, `includeArchived` (default `false`), `limit` (max 100, default 20), `offset` (default 0). Archived wallets are excluded by default; pass `includeArchived=true` to include them. `encryptedSecret` is never present in list responses.

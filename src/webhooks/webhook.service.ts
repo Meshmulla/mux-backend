@@ -1,7 +1,21 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { WebhookEndpoint, EndpointStatus } from './domain/webhook-events';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
+import { PrismaClient } from '../generated/prisma/client';
+import {
+  WebhookEndpoint,
+  EndpointStatus,
+  DeliveryStatus,
+} from './domain/webhook-events';
+import { SafeLogger } from '../common/safe-logger';
+import { WebhookFilterDto } from './dto/webhook-filter.dto';
 import * as crypto from 'crypto';
+
+export const WEBHOOK_CACHE_TTL = 60_000;
+export const WEBHOOK_ENDPOINT_CACHE_PREFIX = 'webhook:endpoint:';
 
 export interface CreateWebhookEndpointRequest {
   projectId: string;
@@ -17,6 +31,20 @@ export interface UpdateWebhookEndpointRequest {
   status?: string;
 }
 
+export interface PaginatedEndpointsResponse {
+  endpoints: WebhookEndpoint[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface PaginatedDeliveriesResponse {
+  deliveries: any[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 /**
  * Webhook Management Service
  *
@@ -30,9 +58,16 @@ export interface UpdateWebhookEndpointRequest {
  */
 @Injectable()
 export class WebhookService {
-  private readonly logger = new Logger(WebhookService.name);
+  private readonly logger = new SafeLogger(WebhookService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: CacheService,
+  ) {}
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
+  }
 
   /**
    * Creates a new webhook endpoint
@@ -40,10 +75,6 @@ export class WebhookService {
   async createEndpoint(
     request: CreateWebhookEndpointRequest,
   ): Promise<WebhookEndpoint> {
-    this.logger.log(
-      `Creating webhook endpoint for project ${request.projectId}`,
-    );
-
     // Generate secret for signing
     const secret = this.generateSecret();
 
@@ -58,26 +89,81 @@ export class WebhookService {
       },
     });
 
-    this.logger.log(`Created webhook endpoint ${endpoint.id}`);
     return this.mapPrismaEndpointToDomain(endpoint);
   }
 
   /**
-   * Lists webhook endpoints for a project
+   * Lists webhook endpoints for a project, with optional status/event
+   * filters and pagination.
    */
-  async listEndpoints(projectId: string): Promise<WebhookEndpoint[]> {
-    const endpoints = await this.prisma.webhookEndpoint.findMany({
-      where: { projectId },
-      orderBy: { createdAt: 'desc' },
-    });
+  async listEndpoints(
+    projectId: string,
+    filterOrPage?: WebhookFilterDto | number,
+    limit?: number,
+  ): Promise<{
+    endpoints: WebhookEndpoint[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    let page = 1;
+    let take = 20;
+    let statusFilter: string | undefined;
+    let eventFilter: string | undefined;
 
-    return endpoints.map((e) => this.mapPrismaEndpointToDomain(e));
+    if (typeof filterOrPage === 'object' && filterOrPage !== null) {
+      const filter = filterOrPage as WebhookFilterDto;
+      page = filter.page ?? 1;
+      take = filter.limit ?? 20;
+      statusFilter = filter.status;
+      eventFilter = filter.event;
+    } else if (typeof filterOrPage === 'number') {
+      page = filterOrPage;
+      take = limit ?? 20;
+    }
+
+    const skip = (page - 1) * take;
+
+    const where: any = { projectId };
+    if (statusFilter) where.status = statusFilter;
+    if (eventFilter) where.events = { has: eventFilter };
+
+    const where: Record<string, unknown> = { projectId };
+    if (filter.status) {
+      where.status = filter.status;
+    }
+    if (filter.event) {
+      where.events = { has: filter.event };
+    }
+
+    const [endpoints, total] = await Promise.all([
+      this.prisma.webhookEndpoint.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+      }),
+      this.prisma.webhookEndpoint.count({ where }),
+    ]);
+
+    return {
+      endpoints: endpoints.map((e) => this.mapPrismaEndpointToDomain(e)),
+      total,
+      page,
+      limit: take,
+    };
   }
 
   /**
-   * Gets a webhook endpoint by ID
+   * Gets a webhook endpoint by ID, serving from cache when available.
    */
   async getEndpoint(endpointId: string): Promise<WebhookEndpoint> {
+    const cacheKey = `${WEBHOOK_ENDPOINT_CACHE_PREFIX}${endpointId}`;
+    const cached = this.cache.get<WebhookEndpoint>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const endpoint = await this.prisma.webhookEndpoint.findUnique({
       where: { id: endpointId },
     });
@@ -86,7 +172,10 @@ export class WebhookService {
       throw new NotFoundException(`Webhook endpoint ${endpointId} not found`);
     }
 
-    return this.mapPrismaEndpointToDomain(endpoint);
+    const mapped = this.mapPrismaEndpointToDomain(endpoint);
+    this.cache.set(cacheKey, mapped, WEBHOOK_CACHE_TTL);
+
+    return mapped;
   }
 
   /**
@@ -101,7 +190,8 @@ export class WebhookService {
       data: updates,
     });
 
-    this.logger.log(`Updated webhook endpoint ${endpointId}`);
+    this.invalidateEndpointCache(endpointId);
+
     return this.mapPrismaEndpointToDomain(endpoint);
   }
 
@@ -113,7 +203,7 @@ export class WebhookService {
       where: { id: endpointId },
     });
 
-    this.logger.log(`Deleted webhook endpoint ${endpointId}`);
+    this.invalidateEndpointCache(endpointId);
   }
 
   /**
@@ -127,19 +217,96 @@ export class WebhookService {
       data: { secret: newSecret },
     });
 
-    this.logger.log(`Rotated secret for webhook endpoint ${endpointId}`);
+    this.invalidateEndpointCache(endpointId);
+
     return { secret: newSecret };
   }
 
   /**
-   * Gets delivery attempts for an endpoint
+   * Gets delivery attempts for an endpoint with pagination
    */
-  async getDeliveries(endpointId: string, limit: number = 50) {
+  async getDeliveries(
+    endpointId: string,
+    page: number = 1,
+    limit: number = 50,
+  ) {
+    // Ensure the endpoint exists so callers get a clear 404 instead of an
+    // empty list when they pass an unknown/mistyped id.
+    await this.getEndpoint(endpointId);
+
+    const skip = (page - 1) * limit;
+
+    const [deliveries, total] = await Promise.all([
+      this.prisma.webhookDelivery.findMany({
+        where: { endpointId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.webhookDelivery.count({
+        where: { endpointId },
+      }),
+    ]);
+
+    return {
+      deliveries,
+      page,
+      limit,
+      total,
+      page,
+      limit,
+    };
+  }
+
+  /**
+   * Lists dead-lettered deliveries (exhausted all retries) for inspection.
+   */
+  async getDeadLetters(
+    params: { projectId?: string; endpointId?: string; limit?: number } = {},
+  ) {
+    const { projectId, endpointId, limit = 50 } = params;
+
     return await this.prisma.webhookDelivery.findMany({
-      where: { endpointId },
-      orderBy: { createdAt: 'desc' },
+      where: {
+        status: DeliveryStatus.FAILED,
+        ...(endpointId ? { endpointId } : {}),
+        ...(projectId ? { endpoint: { projectId } } : {}),
+      },
+      include: { endpoint: true },
+      orderBy: { lastAttemptAt: 'desc' },
       take: limit,
     });
+  }
+
+  /**
+   * Requeues a dead-lettered delivery for redelivery by resetting its attempt count.
+   * Actual delivery happens on the next dispatcher processing pass.
+   */
+  async replayDeadLetter(deliveryId: string): Promise<void> {
+    const delivery = await this.prisma.webhookDelivery.findUnique({
+      where: { id: deliveryId },
+    });
+
+    if (!delivery) {
+      throw new NotFoundException(`Webhook delivery ${deliveryId} not found`);
+    }
+
+    if (delivery.status !== DeliveryStatus.FAILED) {
+      throw new BadRequestException(
+        `Delivery ${deliveryId} is not dead-lettered (status: ${delivery.status})`,
+      );
+    }
+
+    await this.prisma.webhookDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        status: DeliveryStatus.PENDING,
+        attempts: 0,
+        nextRetryAt: null,
+      },
+    });
+
+    this.logger.log(`Requeued dead-lettered delivery ${deliveryId}`);
   }
 
   /**
@@ -147,6 +314,10 @@ export class WebhookService {
    */
   private generateSecret(): string {
     return `whsec_${crypto.randomBytes(32).toString('base64url')}`;
+  }
+
+  private invalidateEndpointCache(endpointId: string): void {
+    this.cache.delete(`${WEBHOOK_ENDPOINT_CACHE_PREFIX}${endpointId}`);
   }
 
   /**
