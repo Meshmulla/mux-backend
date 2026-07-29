@@ -30,11 +30,17 @@ const mockPrismaUser = {
   update: jest.fn(),
 };
 
+// $transaction mock – executes the callback and passes the wallet mock as the tx client
+const mockPrismaTransaction = jest.fn(async (cb: (tx: any) => Promise<any>) =>
+  cb({ wallet: mockPrismaWallet }),
+);
+
 // Mock the PrismaClient module so new PrismaClient() returns our mock
 jest.mock('../generated/prisma/client', () => ({
   PrismaClient: jest.fn(() => ({
     wallet: mockPrismaWallet,
     user: mockPrismaUser,
+    $transaction: mockPrismaTransaction,
   })),
 }));
 
@@ -705,19 +711,21 @@ describe('WalletsService', () => {
       updatedAt: new Date(),
     };
 
-    it('defaults to limit=20 and offset=0 with no filters', async () => {
+    it('defaults to limit=20 and offset=0 with no filters (excludes ARCHIVED by default)', async () => {
       mockPrismaWallet.findMany.mockResolvedValue([walletRow]);
       mockPrismaWallet.count.mockResolvedValue(1);
 
       const result = await service.findAll();
 
+      // #496: archived wallets are excluded by default
+      const expectedWhere = { status: { not: WalletStatus.ARCHIVED } };
       expect(mockPrismaWallet.findMany).toHaveBeenCalledWith({
-        where: {},
+        where: expectedWhere,
         orderBy: { createdAt: 'desc' },
         take: 20,
         skip: 0,
       });
-      expect(mockPrismaWallet.count).toHaveBeenCalledWith({ where: {} });
+      expect(mockPrismaWallet.count).toHaveBeenCalledWith({ where: expectedWhere });
       expect(result).toEqual({
         data: [expect.objectContaining({ id: 'wallet-1' })],
         total: 1,

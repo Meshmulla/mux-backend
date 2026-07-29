@@ -16,17 +16,12 @@ import {
   canTransitionTransactionStatus,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
-import {
-  parsePagination,
-  buildPaginatedResponse,
-} from '../common/pagination/pagination.util';
 import { validateMemo } from '../common/stellar/memo.util';
 import { PaginatedTransactionsDto } from './dto/paginated-transactions.dto';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CacheService } from '../common/cache/cache.service';
 import { TransactionMetricsService } from './transaction-metrics.service';
-import { TransactionQueryService } from './transaction-query.service';
 
 @Injectable()
 export class TransactionsService {
@@ -49,14 +44,6 @@ export class TransactionsService {
    * exists, the existing transaction is returned without creating a duplicate.
    */
   async create(createTransactionDto: CreateTransactionDto): Promise<TransactionEntity> {
-    const { amount, asset, senderWalletId, receiverWalletId, memo, metadata } =
-      createTransactionDto;
-
-    // Validate memo length/type against Stellar protocol constraints before touching persistence
-    validateMemo(memo);
-  async create(
-    createTransactionDto: CreateTransactionDto,
-  ): Promise<TransactionEntity> {
     const {
       amount,
       asset,
@@ -66,6 +53,9 @@ export class TransactionsService {
       metadata,
       idempotencyKey,
     } = createTransactionDto;
+
+    // Validate memo length/type against Stellar protocol constraints before touching persistence
+    validateMemo(memo);
 
     // Idempotency check: return existing transaction if key already used
     if (idempotencyKey) {
@@ -78,7 +68,6 @@ export class TransactionsService {
         );
         this.metrics?.incrementIdempotencyHit();
         const entity = this.mapPrismaToEntity(existing);
-        // Attach idempotency metadata for response headers
         (entity as any)._idempotencyKey = idempotencyKey;
         (entity as any)._isReplay = true;
         (entity as any)._createdAt = existing.createdAt;
@@ -138,7 +127,6 @@ export class TransactionsService {
         receiverWalletId: receiverWalletId ?? null,
         memo: memo ?? null,
         status: TransactionStatus.PENDING,
-        metadata: memo ? { ...metadata, memo } : (metadata ?? null),
         metadata: metadata ?? undefined,
         idempotencyKey: idempotencyKey ?? null,
       },
@@ -157,7 +145,6 @@ export class TransactionsService {
     );
 
     const entity = this.mapPrismaToEntity(created);
-    // Attach idempotency metadata for response headers
     if (idempotencyKey) {
       (entity as any)._idempotencyKey = idempotencyKey;
       (entity as any)._isReplay = false;
@@ -173,9 +160,6 @@ export class TransactionsService {
     senderWalletId?: string;
     receiverWalletId?: string;
     status?: TransactionStatus;
-    page?: string;
-    limit?: string;
-  }) {
     assetType?: string;
     assetCode?: string;
     minAmount?: string;
@@ -200,10 +184,38 @@ export class TransactionsService {
       where.status = filters.status;
     }
 
-    const { page, limit, skip } = parsePagination({
-      page: filters?.page,
-      limit: filters?.limit,
-    });
+    if (filters?.assetType) {
+      where.assetType = filters.assetType;
+    }
+
+    if (filters?.assetCode) {
+      where.assetCode = filters.assetCode;
+    }
+
+    if (filters?.memo) {
+      where.memo = { contains: filters.memo, mode: 'insensitive' };
+    }
+
+    if (filters?.minAmount !== undefined || filters?.maxAmount !== undefined) {
+      where.amount = {};
+      if (filters.minAmount !== undefined) {
+        where.amount.gte = filters.minAmount;
+      }
+      if (filters.maxAmount !== undefined) {
+        where.amount.lte = filters.maxAmount;
+      }
+    }
+
+    if (filters?.createdAfter !== undefined || filters?.createdBefore !== undefined) {
+      where.createdAt = {};
+      if (filters.createdAfter !== undefined) {
+        where.createdAt.gte = filters.createdAfter;
+      }
+      if (filters.createdBefore !== undefined) {
+        where.createdAt.lte = filters.createdBefore;
+      }
+    }
+
     const limit = filters?.limit ?? 20;
     const offset = filters?.offset ?? 0;
 
@@ -212,18 +224,11 @@ export class TransactionsService {
         where,
         orderBy: { createdAt: 'desc' },
         take: limit,
-        skip,
         skip: offset,
       }),
       this.prisma.transaction.count({ where }),
     ]);
 
-    return buildPaginatedResponse(
-      transactions.map((t) => this.mapPrismaToEntity(t)),
-      total,
-      page,
-      limit,
-    );
     return {
       data: transactions.map((t) => this.mapPrismaToEntity(t)),
       total,
@@ -239,7 +244,6 @@ export class TransactionsService {
   async findOne(id: string): Promise<TransactionEntity> {
     const cacheKey = `transaction:${id}`;
 
-    // Check cache first
     const cachedTransaction = this.cache.get<TransactionEntity>(cacheKey);
     if (cachedTransaction) {
       this.logger.debug(`Cache hit for transaction ${id}`);
@@ -257,8 +261,6 @@ export class TransactionsService {
     }
 
     const entity = this.mapPrismaToEntity(transaction);
-
-    // Store in cache
     this.cache.set(cacheKey, entity, this.TRANSACTION_CACHE_TTL);
 
     return entity;
@@ -279,7 +281,6 @@ export class TransactionsService {
       throw new NotFoundException(`Transaction ${id} not found`);
     }
 
-    // Validate status transition
     if (
       !canTransitionTransactionStatus(
         existing.status as TransactionStatus,
@@ -291,14 +292,12 @@ export class TransactionsService {
       );
     }
 
-    // Build update data
     const updateData: any = {
       status: updateDto.status,
       statusChangedAt: new Date(),
       updatedAt: new Date(),
     };
 
-    // Update status-specific timestamps
     if (updateDto.status === TransactionStatus.SUBMITTED) {
       updateData.submittedAt = new Date();
     } else if (updateDto.status === TransactionStatus.CONFIRMED) {
@@ -307,12 +306,10 @@ export class TransactionsService {
       updateData.failedAt = new Date();
     }
 
-    // Update status reason if provided
     if (updateDto.statusReason !== undefined) {
       updateData.statusReason = updateDto.statusReason;
     }
 
-    // Update Stellar network references if provided
     if (updateDto.stellarHash !== undefined) {
       updateData.stellarHash = updateDto.stellarHash;
     }
@@ -328,7 +325,6 @@ export class TransactionsService {
       data: updateData,
     });
 
-    // Invalidate read cache so next findOne fetches fresh data
     this.cache.delete(`transaction:${id}`);
 
     this.metrics?.incrementStatusUpdated(existing.status, updateDto.status);
@@ -393,10 +389,6 @@ export class TransactionsService {
     };
   }
 
-  /**
-   * Emit the appropriate domain event for a transaction status change.
-   * Fire-and-forget: failures are logged as warnings and never surface to callers.
-   */
   private emitStatusDomainEvent(tx: any): void {
     const status = tx.status as TransactionStatus;
     if (status === TransactionStatus.SUBMITTED) {
@@ -428,10 +420,6 @@ export class TransactionsService {
     }
   }
 
-  /**
-   * Fire-and-forget domain event emission: failures are logged as warnings
-   * and never surface to callers.
-   */
   private emitDomainEvent(
     eventName: string,
     emit: () => Promise<void> | undefined,

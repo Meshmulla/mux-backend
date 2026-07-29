@@ -39,7 +39,6 @@ import {
   TenantScoped,
 } from '../common/guards/tenant-scope.guard';
 import { TransactionStatus } from './domain/transaction.model';
-import { PaginationQuery } from '../common/pagination/pagination.util';
 import { IdempotencyReplayInterceptor } from '../common/interceptors/idempotency-replay.interceptor';
 
 /** Parse a pagination query param, throwing 400 on invalid input */
@@ -51,14 +50,25 @@ function parsePaginationParam(
   if (value === undefined) return undefined;
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0) {
-    throw new BadRequestException(
-      `${name} must be a non-negative integer`,
-    );
+    throw new BadRequestException(`${name} must be a non-negative integer`);
   }
   if (name === 'limit' && n > max) {
     throw new BadRequestException(`limit must not exceed ${max}`);
   }
   return n;
+}
+
+/** Parse an ISO date string query param, throwing 400 on invalid input */
+function parseDateParam(
+  value: string | undefined,
+  name: string,
+): Date | undefined {
+  if (value === undefined) return undefined;
+  const d = new Date(value);
+  if (isNaN(d.getTime())) {
+    throw new BadRequestException(`${name} must be a valid ISO 8601 date`);
+  }
+  return d;
 }
 
 @Controller('transactions')
@@ -73,7 +83,6 @@ export class TransactionsController {
 
   /**
    * Build an unsigned Stellar payment transaction XDR.
-   * The returned XDR must be signed before submission to the network.
    */
   @ApiOperation({ summary: 'Build an unsigned Stellar payment transaction XDR' })
   @ApiBody({
@@ -136,10 +145,20 @@ export class TransactionsController {
     return this.transactionsService.create(createTransactionDto);
   }
 
+  /**
+   * #497: List transactions with extended filters — status, wallet, asset type/code,
+   * amount range, and date range.
+   */
   @ApiOperation({ summary: 'List transactions with optional filters and pagination' })
   @ApiQuery({ name: 'senderWalletId', required: false, description: 'Filter by sender wallet ID' })
   @ApiQuery({ name: 'receiverWalletId', required: false, description: 'Filter by receiver wallet ID' })
   @ApiQuery({ name: 'status', required: false, enum: TransactionStatus, description: 'Filter by transaction status' })
+  @ApiQuery({ name: 'assetType', required: false, description: 'Filter by asset type (e.g. NATIVE, CREDIT_ALPHANUM4)' })
+  @ApiQuery({ name: 'assetCode', required: false, description: 'Filter by asset code (e.g. USDC)' })
+  @ApiQuery({ name: 'minAmount', required: false, description: 'Minimum transaction amount (inclusive)' })
+  @ApiQuery({ name: 'maxAmount', required: false, description: 'Maximum transaction amount (inclusive)' })
+  @ApiQuery({ name: 'createdAfter', required: false, description: 'ISO 8601 date — return transactions created after this timestamp (inclusive)' })
+  @ApiQuery({ name: 'createdBefore', required: false, description: 'ISO 8601 date — return transactions created before this timestamp (inclusive)' })
   @ApiQuery({ name: 'memo', required: false, description: 'Case-insensitive substring search on transaction memo' })
   @ApiQuery({ name: 'limit', required: false, description: 'Max records to return (1-100, default 20)', example: 20 })
   @ApiQuery({ name: 'offset', required: false, description: 'Number of records to skip (default 0)', example: 0 })
@@ -172,7 +191,6 @@ export class TransactionsController {
     @Query('senderWalletId') senderWalletId?: string,
     @Query('receiverWalletId') receiverWalletId?: string,
     @Query('status') status?: TransactionStatus,
-    @Query() pagination?: PaginationQuery,
     @Query('assetType') assetType?: string,
     @Query('assetCode') assetCode?: string,
     @Query('minAmount') minAmount?: string,
@@ -187,8 +205,13 @@ export class TransactionsController {
       senderWalletId,
       receiverWalletId,
       status: status as TransactionStatus,
-      page: pagination?.page,
-      limit: pagination?.limit,
+      assetType,
+      assetCode,
+      minAmount,
+      maxAmount,
+      createdAfter: parseDateParam(createdAfter, 'createdAfter'),
+      createdBefore: parseDateParam(createdBefore, 'createdBefore'),
+      memo,
       limit: parsePaginationParam(limit, 'limit'),
       offset: parsePaginationParam(offset, 'offset'),
     });
@@ -215,7 +238,6 @@ export class TransactionsController {
   @ApiOperation({ summary: 'Find a transaction by Stellar transaction hash' })
   @ApiParam({ name: 'hash', description: 'Stellar transaction hash', example: 'a1b2c3d4e5f6...' })
   @ApiResponse({ status: 200, description: 'Transaction found' })
-  @ApiResponse({ status: 200, description: 'Returns null if not found' })
   @Get('stellar/:hash')
   findByStellarHash(@Param('hash') hash: string) {
     return this.queryService.findByStellarHash(hash);

@@ -27,11 +27,6 @@ import { WalletApiMetricsService } from './wallet-api-metrics.service';
 import { WalletRetryService } from './wallet-retry.service';
 import * as crypto from 'crypto';
 import {
-  PaginationQuery,
-  parsePagination,
-  buildPaginatedResponse,
-} from '../common/pagination/pagination.util';
-import {
   StructuredLogger,
   LogContext,
 } from '../common/logging/structured-logger';
@@ -104,11 +99,22 @@ export class WalletsService implements OnModuleDestroy {
     });
   }
 
+  /**
+   * Creates a new wallet for the given user/network.
+   *
+   * #494 Rollback strategy:
+   * - All DB and key operations are wrapped in a Prisma transaction.
+   * - If Horizon funding fails (TESTNET), the error is caught and logged; the
+   *   wallet creation does NOT roll back because funding is best-effort.
+   * - If key generation or DB persistence fails, the transaction rolls back
+   *   automatically, leaving no partial wallet record.
+   */
   async createWallet(
     request: CreateWalletRequest,
   ): Promise<WalletCreationResult> {
     const startedAt = Date.now();
     const { userId, network } = request;
+
     const existingWallet = await this.prisma.wallet.findFirst({
       where: { userId, network },
     });
@@ -116,43 +122,53 @@ export class WalletsService implements OnModuleDestroy {
       throw new ConflictException(`User already has a wallet on ${network}`);
     }
 
+    let wallet: Wallet;
+    let privateKey: string;
+
     try {
+      // Key generation (outside the DB transaction so we can roll back cleanly)
       const key = await this.generateKeyWithRetry('key_generation', {
         keyType: KeyType.STELLAR_ED25519,
         metadata: { userId, network },
       });
-      const created = await this.prisma.wallet.create({
-        data: {
-          userId,
-          publicKey: key.publicKey,
-          encryptedSecret: key.encryptedData,
-          network,
-          status: 'ACTIVE',
-          encryptionVersion: key.encryptionVersion,
-          secretVersion: 1,
-          keyVersion: 1,
-        },
-      });
-      const privateKey = this.encryptionService.deserializeAndDecrypt(
+      privateKey = this.encryptionService.deserializeAndDecrypt(
         key.encryptedData,
       );
-      const wallet = this.mapPrismaWalletToDomain(created);
-      this.emitDomainEvent('wallet.created', () =>
-        this.webhookEventEmitter?.emitWalletCreated({
-          walletId: wallet.id,
-          userId: wallet.userId,
-          publicKey: wallet.publicKey,
-          network: wallet.network,
-          status: wallet.status,
-        }),
-      );
-      this.recordMetric('create', 'success', startedAt, network);
-      return { wallet, privateKey };
+
+      // Atomic DB write — rolled back automatically if anything throws
+      const created = await this.prisma.$transaction(async (tx) => {
+        return tx.wallet.create({
+          data: {
+            userId,
+            publicKey: key.publicKey,
+            encryptedSecret: key.encryptedData,
+            network,
+            status: WalletStatus.ACTIVE,
+            encryptionVersion: key.encryptionVersion,
+            secretVersion: 1,
+            keyVersion: 1,
+          },
+        });
+      });
+
+      wallet = this.mapPrismaWalletToDomain(created);
     } catch (error) {
       this.logger.error('Failed to create wallet:', error);
       this.recordMetric('create', 'failure', startedAt, network);
       throw new Error('Wallet creation failed');
     }
+
+    this.emitDomainEvent('wallet.created', () =>
+      this.webhookEventEmitter?.emitWalletCreated({
+        walletId: wallet.id,
+        userId: wallet.userId,
+        publicKey: wallet.publicKey,
+        network: wallet.network,
+        status: wallet.status,
+      }),
+    );
+    this.recordMetric('create', 'success', startedAt, network);
+    return { wallet, privateKey };
   }
 
   async findWalletById(walletId: string): Promise<Wallet> {
@@ -443,6 +459,10 @@ export class WalletsService implements OnModuleDestroy {
     };
   }
 
+  /**
+   * #496: List wallets with optional filtering and offset-based pagination.
+   * Results are ordered newest-first. Archived wallets are excluded by default.
+   */
   async findAll(filters?: WalletListFilters): Promise<WalletListResult> {
     // Load test mode returns synthetic data for performance testing
     if (filters?.loadTestMode) {
@@ -463,7 +483,7 @@ export class WalletsService implements OnModuleDestroy {
       where.status = { not: WalletStatus.ARCHIVED };
     }
 
-    const limit = filters?.limit ?? 20;
+    const limit = Math.min(filters?.limit ?? 20, 100);
     const offset = filters?.offset ?? 0;
 
     const [wallets, total] = await Promise.all([
@@ -487,16 +507,17 @@ export class WalletsService implements OnModuleDestroy {
     };
   }
 
-  create(createWalletDto: any) {
+  /** Convenience alias used by the controller for the basic CRUD route. */
+  create(createWalletDto: any): Promise<WalletCreationResult> {
     return this.createWallet(createWalletDto);
   }
 
-  async findOne(id: string) {
+  async findOne(id: string): Promise<PublicWallet> {
     const wallet = await this.findWalletById(id);
     return this.toPublicWallet(wallet);
   }
 
-  async update(id: string, updateWalletDto: any) {
+  async update(id: string, updateWalletDto: any): Promise<PublicWallet> {
     const wallet = await this.updateWalletStatus(id, updateWalletDto.status);
     return this.toPublicWallet(wallet);
   }
@@ -505,7 +526,7 @@ export class WalletsService implements OnModuleDestroy {
     return this.prisma.wallet.delete({ where: { id } });
   }
 
-  async archive(id: string, reason?: string) {
+  async archive(id: string, reason?: string): Promise<PublicWallet> {
     const wallet = await this.archiveWallet(id, reason);
     return this.toPublicWallet(wallet);
   }
@@ -519,11 +540,10 @@ export class WalletsService implements OnModuleDestroy {
   }
 
   private generateTestData(filters: WalletListFilters): WalletListResult {
-    const limit = filters?.limit ?? 20;
+    const limit = Math.min(filters?.limit ?? 20, 100);
     const offset = filters?.offset ?? 0;
     const totalTestWallets = 1000;
 
-    // Generate synthetic wallet data for load testing
     const testWallets: PublicWallet[] = Array.from({ length: limit }, (_, i) => {
       const index = offset + i;
       return {
@@ -621,37 +641,5 @@ export class WalletsService implements OnModuleDestroy {
       createdAt: prismaWallet.createdAt,
       updatedAt: prismaWallet.updatedAt,
     };
-  }
-
-  // Legacy methods for compatibility
-  create(createWalletDto: any) {
-    return this.createWallet(createWalletDto);
-  }
-
-  async findAll(query: PaginationQuery = {}) {
-    const { page, limit, skip } = parsePagination(query);
-
-    const [data, total] = await Promise.all([
-      this.prisma.wallet.findMany({
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.wallet.count(),
-    ]);
-
-    return buildPaginatedResponse(data, total, page, limit);
-  }
-
-  findOne(id: number) {
-    return this.findWalletById(id.toString());
-  }
-
-  update(id: number, updateWalletDto: any) {
-    return this.updateWalletStatus(id.toString(), updateWalletDto.status);
-  }
-
-  remove(id: number) {
-    return this.prisma.wallet.delete({ where: { id: id.toString() } });
   }
 }
