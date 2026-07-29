@@ -971,3 +971,16 @@ model TransactionExportJob {
   @@index([createdAt])
   @@index([expiresAt])
 }
+
+
+/// Global operational switch used to reject mutating HTTP routes during maintenance.
+model MaintenanceState {
+  id                String   @id @default("global")
+  enabled           Boolean  @default(false)
+  message           String?
+  retryAfterSeconds Int?
+  enabledAt         DateTime?
+  updatedBy         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}

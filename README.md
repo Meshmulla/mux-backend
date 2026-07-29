@@ -35,6 +35,43 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 
 All routes below are served under the `/v1` prefix (e.g. `GET /v1/health`). See [docs/API-VERSIONING.md](docs/API-VERSIONING.md) for the versioning strategy.
 
+### Request body size
+
+JSON and URL-encoded request bodies are limited to 100 KiB by default. Set
+`JSON_BODY_LIMIT_BYTES` to a value from 1 byte through 10 MiB to change the
+limit. Requests over the configured limit return `413 Payload Too Large`:
+
+```json
+{
+  "statusCode": 413,
+  "error": "Payload Too Large",
+  "message": "Request body exceeds the maximum allowed size"
+}
+```
+
+### Maintenance mode
+
+Maintenance mode is persisted in PostgreSQL and shared by every API instance.
+While enabled, `POST`, `PUT`, `PATCH`, and `DELETE` routes return `503 Service
+Unavailable`; `GET`, `HEAD`, and `OPTIONS` remain available. A configured retry
+delay is returned in the `Retry-After` header.
+
+Authenticated callers can inspect `GET /v1/maintenance`. To change the state,
+send `PATCH /v1/maintenance` with normal API-key authentication plus the
+`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`:
+
+```json
+{
+  "enabled": true,
+  "message": "Scheduled ledger maintenance",
+  "retryAfterSeconds": 300
+}
+```
+
+The maintenance endpoint itself remains available while maintenance mode is on
+so an authorized operator can disable it. If the persisted state cannot be read,
+mutating requests fail closed with `503 Service Unavailable`.
+
 ### Health & Monitoring
 
 #### `GET /health`

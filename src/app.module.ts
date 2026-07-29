@@ -67,6 +67,10 @@ import { LatencySloInterceptor } from './common/slo/latency-slo.interceptor';
     },
     {
       provide: APP_GUARD,
+      useClass: MaintenanceGuard,
+    },
+    {
+      provide: APP_GUARD,
       useClass: RateLimitGuard,
     },
     // Apply latency SLO tracking globally
