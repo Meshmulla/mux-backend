@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Controller,
   Get,
   Post,
@@ -13,27 +14,57 @@ import {
   BalanceIndexerService,
   SyncBalancesRequest,
 } from './balance-indexer.service';
+import { Asset, AssetType, WalletBalance } from './domain/balance.model';
 
-import { Asset, AssetType } from './domain/balance.model';
+/** Shape returned by the multi-asset balance endpoint. */
+export interface MultiAssetBalanceResponse {
+  walletId: string;
+  /** Total number of distinct assets held by this wallet. */
+  assetCount: number;
+  balances: Array<{
+    assetType: AssetType;
+    /** Human-readable ticker, e.g. "XLM", "USDC". Null for native XLM. */
+    assetCode: string | null;
+    /** Issuer public key. Null for native XLM. */
+    assetIssuer: string | null;
+    /** Decimal string to preserve full Stellar precision (7 dp). */
+    balance: string;
+    syncStatus: string;
+    lastSyncedAt: Date | null;
+  }>;
+}
 
 @Controller('balances')
 export class BalanceIndexerController {
   constructor(private readonly balanceIndexerService: BalanceIndexerService) {}
 
   /**
-   * Gets balance for a specific wallet and asset.
-   * Pass assetType query param for a single asset, or omit for all balances.
+   * GET /balances/wallet/:walletId
+   *
+   * Multi-asset balance response. Returns every asset held by the wallet in a
+   * consistent, typed envelope so frontend and partner integrations can render
+   * XLM, USDC, and any other Stellar asset from a single call.
+   *
+   * Response shape: {@link MultiAssetBalanceResponse}
    */
   @Get('wallet/:walletId')
-  async getWalletBalances(@Param('walletId') walletId: string) {
+  async getWalletBalances(
+    @Param('walletId') walletId: string,
+  ): Promise<MultiAssetBalanceResponse> {
     const balances = await this.balanceIndexerService.getAllBalances(walletId);
-    return { walletId, balances };
+    return this.toMultiAssetResponse(walletId, balances);
   }
 
   /**
    * GET /balances/wallet/:walletId/asset
-   * Returns a specific asset balance for a wallet.
-   * Query params: assetType (required), assetCode, assetIssuer
+   *
+   * Returns a single-asset balance when `assetType` is provided, or falls back
+   * to the full multi-asset response when it is omitted.
+   *
+   * Query params:
+   *   - assetType  (required) – one of NATIVE | CREDIT_ALPHANUM4 | CREDIT_ALPHANUM12
+   *   - assetCode  (optional) – e.g. "USDC"
+   *   - assetIssuer (optional) – issuer public key
    */
   @Get('wallet/:walletId/asset')
   async getWalletAssetBalance(
@@ -41,21 +72,34 @@ export class BalanceIndexerController {
     @Query('assetType') assetType: string,
     @Query('assetCode') assetCode?: string,
     @Query('assetIssuer') assetIssuer?: string,
-  ) {
-    if (assetType) {
-      const asset: Asset = {
-        type: (assetType as AssetType) || AssetType.NATIVE,
-        code: assetCode,
-        issuer: assetIssuer,
-      };
-      const balance = await this.balanceIndexerService.getBalance(
-        walletId,
-        asset,
+  ): Promise<MultiAssetBalanceResponse> {
+    if (!assetType) {
+      // No filter — return all assets.
+      const all = await this.balanceIndexerService.getAllBalances(walletId);
+      return this.toMultiAssetResponse(walletId, all);
+    }
+
+    if (!Object.values(AssetType).includes(assetType as AssetType)) {
+      throw new BadRequestException(
+        `Invalid assetType '${assetType}'. Must be one of: ${Object.values(AssetType).join(', ')}`,
       );
     }
 
-    const balances = await this.balanceIndexerService.getAllBalances(walletId);
-    return { walletId, balances };
+    const asset: Asset = {
+      type: assetType as AssetType,
+      code: assetCode,
+      issuer: assetIssuer,
+    };
+
+    const balance = await this.balanceIndexerService.getBalance(walletId, asset);
+
+    if (!balance) {
+      throw new NotFoundException(
+        `No balance record found for wallet '${walletId}' and asset '${assetType}'`,
+      );
+    }
+
+    return this.toMultiAssetResponse(walletId, [balance]);
   }
 
   /**
@@ -144,5 +188,32 @@ export class BalanceIndexerController {
   async syncAll() {
     await this.balanceIndexerService.runScheduledSync();
     return { status: 'scheduled sync triggered' };
+  }
+
+  // ── Private helpers ────────────────────────────────────────────────────────
+
+  /**
+   * Maps an array of domain WalletBalance records to the typed
+   * {@link MultiAssetBalanceResponse} envelope used by all balance endpoints.
+   *
+   * Private keys and encrypted material are never included — only public
+   * balance data is projected here.
+   */
+  private toMultiAssetResponse(
+    walletId: string,
+    balances: WalletBalance[],
+  ): MultiAssetBalanceResponse {
+    return {
+      walletId,
+      assetCount: balances.length,
+      balances: balances.map((b) => ({
+        assetType: b.assetType,
+        assetCode: b.assetCode ?? null,
+        assetIssuer: b.assetIssuer ?? null,
+        balance: b.balance,
+        syncStatus: b.syncStatus,
+        lastSyncedAt: b.lastSyncedAt ?? null,
+      })),
+    };
   }
 }
