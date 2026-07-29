@@ -21,6 +21,14 @@ export class WalletResponseDto {
   publicKey: string;
 
   @ApiProperty({
+    example: 'Savings wallet',
+    description: 'Optional human-readable label for the wallet',
+    nullable: true,
+    required: false,
+  })
+  nickname?: string | null;
+
+  @ApiProperty({
     enum: WalletNetwork,
     example: WalletNetwork.MAINNET,
     description: 'Network (MAINNET or TESTNET)',

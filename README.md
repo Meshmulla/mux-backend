@@ -522,9 +522,22 @@ metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 - `GET /wallets/user/:userId` - list wallets by userId (#189)
 - `GET /wallets/:id` - get wallet by id
 - `GET /wallets/:id/status` - get wallet status (#185)
+- `GET /wallets/address/:publicKey?network=TESTNET` - find wallet by Stellar public key (address uniqueness lookup)
 - `PATCH /wallets/:id` - update wallet status
 - `PATCH /wallets/:id/activate` - activate wallet (PROVISIONING -> ACTIVE) (#188)
 - `DELETE /wallets/:id` - remove wallet
+
+### Wallet Nickname
+
+Wallets can carry a short, optional human-readable label.
+
+- `PATCH /wallets/:id/nickname` - set or clear the wallet nickname
+
+**Request body**:
+```json
+{ "nickname": "Savings wallet" }
+```
+Pass `null` (or omit the field) to clear an existing nickname. The label is capped at 100 characters. The `nickname` field is included in all wallet responses.
 
 ### Orchestration Endpoints
 
@@ -573,6 +586,7 @@ Testing
 | `GET` | `/transactions/stellar/:hash` | Find a transaction by Stellar hash |
 | `PATCH` | `/transactions/:id/status` | Update transaction status |
 | `POST` | `/transactions/build` | Build an unsigned Stellar transaction XDR |
+| `POST` | `/transactions/fee-bump` | Wrap an inner signed transaction with a fee-bump envelope and submit to Stellar |
 
 ### Filtering Transactions (#497)
 

@@ -9,9 +9,11 @@ import { TransactionRetryService } from './transaction-retry.service';
 import { TransactionPollingService } from './transaction-polling.service';
 import { TransactionExportService } from './transaction-export.service';
 import { TransactionExportController } from './transaction-export.controller';
+import { FeeBumpService } from './fee-bump.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BalanceIndexerModule } from '../balance-indexer/balance-indexer.module';
 import { WebhookModule } from '../webhooks/webhook.module';
+import { WalletsModule } from '../wallets/wallets.module';
 import { CacheService } from '../common/cache/cache.service';
 import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
 import { TransactionMetricsService } from './transaction-metrics.service';
@@ -19,7 +21,7 @@ import { TransactionEnvValidatorService } from './transaction-env-validator.serv
 import { TenantScopeGuard } from '../common/guards/tenant-scope.guard';
 
 @Module({
-  imports: [PrismaModule, BalanceIndexerModule, WebhookModule],
+  imports: [PrismaModule, BalanceIndexerModule, WebhookModule, WalletsModule],
   controllers: [
     TransactionsController,
     TransactionsInternalController,
@@ -29,6 +31,7 @@ import { TenantScopeGuard } from '../common/guards/tenant-scope.guard';
     TransactionsService,
     TransactionQueryService,
     StellarTransactionBuildService,
+    FeeBumpService,
     CacheService,
     FeatureFlagService,
     TransactionMetricsService,
@@ -43,6 +46,7 @@ import { TenantScopeGuard } from '../common/guards/tenant-scope.guard';
     StellarTransactionBuildService,
     TransactionPollingService,
     TransactionExportService,
+    FeeBumpService,
   ],
 })
 export class TransactionsModule {}
