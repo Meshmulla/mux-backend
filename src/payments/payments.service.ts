@@ -58,6 +58,7 @@ export class PaymentsService {
 
   async create(createPaymentDto: CreatePaymentDto) {
     const requestId = this.requestContext.getRequestId();
+    const clientVersion = this.requestContext.getClientVersion();
     const start = Date.now();
     const {
       walletId,
@@ -78,6 +79,7 @@ export class PaymentsService {
       if (existing) {
         this.logger.logWithContext('Idempotency hit, returning existing payment', {
           requestId,
+          clientVersion,
           entityId: existing.id.toString(),
           entityType: 'payment',
           operation: 'create',
@@ -220,10 +222,12 @@ export class PaymentsService {
 
   async update(id: string, updatePaymentDto: UpdatePaymentDto) {
     const requestId = this.requestContext.getRequestId();
+    const clientVersion = this.requestContext.getClientVersion();
     const paymentId = parseInt(id, 10);
 
     this.logger.logWithContext('Updating payment', {
       requestId,
+      clientVersion,
       entityId: paymentId.toString(),
       entityType: 'payment',
       operation: 'update',

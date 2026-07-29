@@ -54,6 +54,14 @@ async function generate() {
     .setDescription('Wallet, payment, and custody API for mux-backend')
     .setVersion('1.0')
     .addApiKey({ type: 'apiKey', in: 'header', name: 'X-API-Key' }, 'api-key')
+    .addGlobalParameters({
+      name: 'X-Client-Version',
+      in: 'header',
+      required: false,
+      description:
+        'Optional client application version (e.g. "2.4.1"). Included in support logs to help triage wallet/payment/custody issues by reporting client version. Missing or malformed values are ignored and do not affect the request.',
+      schema: { type: 'string' },
+    })
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
