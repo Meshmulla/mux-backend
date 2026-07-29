@@ -548,6 +548,7 @@ Testing
 | `GET` | `/transactions/stellar/:hash` | Find a transaction by Stellar hash |
 | `PATCH` | `/transactions/:id/status` | Update transaction status |
 | `POST` | `/transactions/build` | Build an unsigned Stellar transaction XDR |
+| `POST` | `/transactions/fee-bump` | Wrap an inner signed transaction with a fee-bump envelope and submit to Stellar |
 
 ### Filtering Transactions (#497)
 
