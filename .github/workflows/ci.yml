@@ -36,6 +36,9 @@ jobs:
       - name: Generate Prisma client
         run: pnpm prisma:generate
 
+      - name: Check Prisma migration naming
+        run: pnpm run prisma:check-migrations
+
       - name: Build
         run: pnpm run build
 
@@ -64,3 +67,6 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Test scripts
+        run: pnpm run test:scripts
