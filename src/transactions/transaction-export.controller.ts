@@ -9,7 +9,9 @@ import {
   HttpStatus,
   UseGuards,
   BadRequestException,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -175,6 +177,108 @@ export class TransactionExportController {
       })),
       total: result.total,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // POST /transactions/export/:jobId/issue-link — issue short-lived signed token
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Issue a short-lived signed download link for a completed export job',
+    description:
+      'Generates a signed token that is valid for 1 hour (configurable via `ttlSeconds`, ' +
+      'min 5 min, max 24 h). ' +
+      'Use the returned `downloadUrl` to fetch the export data. ' +
+      'The token can be re-issued any number of times while the job data exists.',
+  })
+  @ApiParam({ name: 'jobId', description: 'Export job ID' })
+  @ApiQuery({
+    name: 'ttlSeconds',
+    required: false,
+    example: 3600,
+    description: 'Token validity in seconds (default 3600, min 300, max 86400)',
+  })
+  @ApiResponse({
+    status: 200,
+    schema: {
+      example: {
+        jobId: 'uuid',
+        token: 'eyJqb2JJZCI6InV1aWQiLCJwcm9qZWN0SWQiOiJwcm9qLXV1aWQifQ.sig',
+        expiresAt: '2026-07-30T03:58:20.651Z',
+        downloadUrl: '/v1/transactions/export/uuid/download?token=...',
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Job is not completed or data is unavailable' })
+  @ApiResponse({ status: 404, description: 'Export job not found' })
+  @Post(':jobId/issue-link')
+  @HttpCode(HttpStatus.OK)
+  async issueDownloadLink(
+    @Param('jobId') jobId: string,
+    @ApiKeyCtx() ctx: ApiKeyContext,
+    @Query('ttlSeconds') ttlSeconds?: string,
+  ) {
+    const ttlMs = ttlSeconds
+      ? Math.round(parseFloat(ttlSeconds) * 1000)
+      : undefined;
+
+    if (ttlSeconds !== undefined && (isNaN(ttlMs!) || ttlMs! <= 0)) {
+      throw new BadRequestException('ttlSeconds must be a positive number');
+    }
+
+    const result = await this.exportService.issueDownloadLink(
+      jobId,
+      ctx.project.id,
+      ttlMs,
+    );
+
+    return {
+      jobId,
+      token: result.token,
+      expiresAt: result.expiresAt,
+      downloadUrl: result.downloadUrl,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /transactions/export/:jobId/download — download via signed token
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Download export data using a signed token',
+    description:
+      'Verifies the signed token and streams the export file. ' +
+      'Does **not** require API key authentication — the token is the credential. ' +
+      'Returns the file as an attachment with the appropriate Content-Type header.',
+  })
+  @ApiParam({ name: 'jobId', description: 'Export job ID' })
+  @ApiQuery({
+    name: 'token',
+    required: true,
+    description: 'Signed download token from POST /transactions/export/:jobId/issue-link',
+  })
+  @ApiResponse({ status: 200, description: 'Export file streamed as an attachment' })
+  @ApiResponse({ status: 400, description: 'Token invalid, expired, or job unavailable' })
+  @ApiResponse({ status: 404, description: 'Export job not found' })
+  @Get(':jobId/download')
+  @UseGuards() // Override class-level guards — token IS the auth credential
+  async downloadExport(
+    @Param('jobId') jobId: string,
+    @Query('token') token: string,
+    @Res() res: Response,
+  ) {
+    if (!token) {
+      throw new BadRequestException('token query parameter is required');
+    }
+
+    const { content, mimeType, filename } =
+      await this.exportService.resolveDownload(jobId, token);
+
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', content.length);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.end(content);
   }
 
   // ---------------------------------------------------------------------------

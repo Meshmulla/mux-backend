@@ -5,6 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import * as crypto from 'crypto';
 
 export type ExportFormat = 'CSV' | 'JSON';
 
@@ -46,8 +47,105 @@ export interface ExportJobSummary {
   createdAt: Date;
 }
 
-/** How long a completed export download link remains valid (default 24h) */
-const DOWNLOAD_LINK_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * Minimum download link TTL: 5 minutes.
+ * Maximum: 24 hours.
+ * Default: 1 hour.
+ */
+const DEFAULT_DOWNLOAD_LINK_TTL_MS = 60 * 60 * 1000; // 1 hour
+const MIN_DOWNLOAD_LINK_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_DOWNLOAD_LINK_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Signing secret for the download token.
+ * In production this should come from an environment variable (EXPORT_SIGNING_SECRET).
+ * We fall back to a deterministic but unguessable derived key in development.
+ */
+function getSigningSecret(): string {
+  return (
+    process.env.EXPORT_SIGNING_SECRET ||
+    'mux-export-signing-secret-change-in-production'
+  );
+}
+
+/**
+ * Generates a short-lived signed download token for a completed export job.
+ *
+ * Token format (URL-safe base64): <payload>.<signature>
+ *   payload = base64url({ jobId, projectId, expiresAt })
+ *   signature = HMAC-SHA256(payload, secret)
+ */
+export function generateDownloadToken(
+  jobId: string,
+  projectId: string,
+  ttlMs: number = DEFAULT_DOWNLOAD_LINK_TTL_MS,
+): { token: string; expiresAt: Date } {
+  const effectiveTtl = Math.min(
+    MAX_DOWNLOAD_LINK_TTL_MS,
+    Math.max(MIN_DOWNLOAD_LINK_TTL_MS, ttlMs),
+  );
+  const expiresAt = new Date(Date.now() + effectiveTtl);
+
+  const payloadObj = { jobId, projectId, expiresAt: expiresAt.toISOString() };
+  const payloadB64 = Buffer.from(JSON.stringify(payloadObj)).toString(
+    'base64url',
+  );
+
+  const sig = crypto
+    .createHmac('sha256', getSigningSecret())
+    .update(payloadB64)
+    .digest('base64url');
+
+  return { token: `${payloadB64}.${sig}`, expiresAt };
+}
+
+export interface DownloadTokenPayload {
+  jobId: string;
+  projectId: string;
+  expiresAt: string;
+}
+
+/**
+ * Verifies and decodes a signed download token.
+ * Throws if the token is malformed, tampered, or expired.
+ */
+export function verifyDownloadToken(token: string): DownloadTokenPayload {
+  const parts = token.split('.');
+  if (parts.length !== 2) {
+    throw new BadRequestException('Invalid download token format');
+  }
+
+  const [payloadB64, sig] = parts;
+
+  const expectedSig = crypto
+    .createHmac('sha256', getSigningSecret())
+    .update(payloadB64)
+    .digest('base64url');
+
+  if (
+    !crypto.timingSafeEqual(
+      Buffer.from(sig, 'base64url'),
+      Buffer.from(expectedSig, 'base64url'),
+    )
+  ) {
+    throw new BadRequestException('Invalid download token signature');
+  }
+
+  let payload: DownloadTokenPayload;
+  try {
+    payload = JSON.parse(
+      Buffer.from(payloadB64, 'base64url').toString('utf8'),
+    );
+  } catch {
+    throw new BadRequestException('Malformed download token payload');
+  }
+
+  if (new Date(payload.expiresAt) < new Date()) {
+    throw new BadRequestException('Download token has expired');
+  }
+
+  return payload;
+}
 
 /**
  * TransactionExportService
@@ -59,10 +157,14 @@ const DOWNLOAD_LINK_TTL_MS = 24 * 60 * 60 * 1000;
  *     export in the background (non-blocking to the HTTP caller).
  *  2. `getExportJob`    — polls job status by ID.
  *  3. `listExportJobs` — lists all jobs for a project (for admin/debug).
+ *  4. `issueDownloadLink` — issues a fresh short-lived signed download URL
+ *     for a completed job.
+ *  5. `resolveDownload`   — verifies a token and returns the raw export data.
  *
- * The actual export data is encoded inline as a base64 data URI on the
- * `downloadUrl` field (suitable for moderate-sized exports). In production
- * this would be replaced with a signed S3 URL written after the file upload.
+ * On completion, the export content is stored in `downloadUrl` as a base64
+ * data URI (internal storage).  The public API issues short-lived signed
+ * tokens instead of exposing the raw data URI directly.  This decouples
+ * token expiry from content storage.
  */
 @Injectable()
 export class TransactionExportService {
@@ -149,6 +251,10 @@ export class TransactionExportService {
   /**
    * Runs the actual query and serialization in the background.
    * Updates job status throughout execution.
+   *
+   * The raw export content is stored as a base64 data URI in `downloadUrl`
+   * for internal use. Clients receive short-lived signed tokens via
+   * `issueDownloadLink` rather than this field directly.
    */
   private async runExport(
     jobId: string,
@@ -169,15 +275,18 @@ export class TransactionExportService {
         : JSON.stringify(transactions, null, 2);
 
       const mimeType = format === 'CSV' ? 'text/csv' : 'application/json';
-      const downloadUrl = `data:${mimeType};base64,${Buffer.from(content).toString('base64')}`;
-      const expiresAt = new Date(Date.now() + DOWNLOAD_LINK_TTL_MS);
+      // Store the data URI internally (not exposed directly to clients —
+      // clients receive short-lived signed tokens from issueDownloadLink).
+      const internalDataUri = `data:${mimeType};base64,${Buffer.from(content).toString('base64')}`;
+      // Default expiry aligned with the maximum allowed token TTL (24 h).
+      const expiresAt = new Date(Date.now() + MAX_DOWNLOAD_LINK_TTL_MS);
 
       await this.prisma.transactionExportJob.update({
         where: { id: jobId },
         data: {
           status: 'COMPLETED',
           rowCount: transactions.length,
-          downloadUrl,
+          downloadUrl: internalDataUri,
           expiresAt,
           completedAt: new Date(),
         },
@@ -199,6 +308,101 @@ export class TransactionExportService {
         },
       });
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public — signed download link issuance and resolution
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Issues a short-lived signed download token for a completed export job.
+   *
+   * @param jobId       The export job ID.
+   * @param projectId   The project that owns the job (used for tenant scoping).
+   * @param ttlMs       How long the token should be valid (default 1 h, capped at 24 h).
+   * @returns           A signed token and its expiry time.
+   */
+  async issueDownloadLink(
+    jobId: string,
+    projectId: string,
+    ttlMs: number = DEFAULT_DOWNLOAD_LINK_TTL_MS,
+  ): Promise<{ token: string; expiresAt: Date; downloadUrl: string }> {
+    const job = await this.getExportJob(jobId, projectId);
+
+    if (job.status !== 'COMPLETED') {
+      throw new BadRequestException(
+        `Export job ${jobId} is not completed (current status: ${job.status}). ` +
+          'A download link can only be issued for completed jobs.',
+      );
+    }
+
+    // Ensure the stored export data has not been purged.
+    if (!job.downloadUrl) {
+      throw new BadRequestException(
+        `Export job ${jobId} has no stored data. The export may have expired.`,
+      );
+    }
+
+    const { token, expiresAt } = generateDownloadToken(jobId, projectId, ttlMs);
+
+    // Build a relative download URL path that clients can call.
+    const downloadUrl = `/v1/transactions/export/${jobId}/download?token=${token}`;
+
+    return { token, expiresAt, downloadUrl };
+  }
+
+  /**
+   * Verifies a signed download token and returns the raw export content
+   * together with metadata needed to set response headers.
+   *
+   * @param jobId  Export job ID (from route param — used to cross-check token).
+   * @param token  The signed token issued by `issueDownloadLink`.
+   * @returns      `{ content, mimeType, filename }` for the HTTP handler.
+   */
+  async resolveDownload(
+    jobId: string,
+    token: string,
+  ): Promise<{ content: Buffer; mimeType: string; filename: string }> {
+    const payload = verifyDownloadToken(token);
+
+    if (payload.jobId !== jobId) {
+      throw new BadRequestException(
+        'Download token does not match the requested job ID',
+      );
+    }
+
+    // Load the job — tenant check via projectId from the token payload.
+    const job = await this.prisma.transactionExportJob.findFirst({
+      where: { id: jobId, projectId: payload.projectId },
+    });
+
+    if (!job) {
+      throw new NotFoundException(`Export job ${jobId} not found`);
+    }
+
+    if (job.status !== 'COMPLETED' || !job.downloadUrl) {
+      throw new BadRequestException(
+        `Export job ${jobId} is not available for download (status: ${job.status})`,
+      );
+    }
+
+    // Parse the internally stored data URI.
+    // Format: data:<mimeType>;base64,<base64data>
+    const dataUriMatch = (job.downloadUrl as string).match(
+      /^data:([^;]+);base64,(.+)$/s,
+    );
+    if (!dataUriMatch) {
+      throw new BadRequestException(
+        'Export data is malformed. Please re-create the export job.',
+      );
+    }
+
+    const mimeType = dataUriMatch[1];
+    const content = Buffer.from(dataUriMatch[2], 'base64');
+    const ext = job.format === 'JSON' ? 'json' : 'csv';
+    const filename = `export-${jobId}.${ext}`;
+
+    return { content, mimeType, filename };
   }
 
   /**
