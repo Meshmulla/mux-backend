@@ -1,6 +1,7 @@
 import { IsEnum, IsOptional, IsString } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { AssetType } from '../domain/balance.model';
+import { IsStellarPublicKey } from '../../common/stellar/is-stellar-public-key.validator';
 
 export class BalanceFilterDto {
   @ApiProperty({
@@ -27,7 +28,7 @@ export class BalanceFilterDto {
     description: 'Filter by asset issuer',
     required: false,
   })
-  @IsString({ message: 'assetIssuer must be a string' })
   @IsOptional()
+  @IsStellarPublicKey()
   assetIssuer?: string;
 }

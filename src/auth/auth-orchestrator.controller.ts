@@ -171,6 +171,21 @@ export class AuthOrchestratorController {
       },
     },
   })
+  @ApiResponse({
+    status: 503,
+    description:
+      'Service Unavailable — an unclassified downstream failure occurred ' +
+      '(e.g. database or Stellar network unreachable). The message is a ' +
+      'consolidated, generic string; internal error details are never ' +
+      'exposed to callers and are logged server-side only.',
+    schema: {
+      example: {
+        statusCode: 503,
+        message: 'Authentication failed. Please try again later.',
+        error: 'Service Unavailable',
+      },
+    },
+  })
   @Public()
   @Post('authenticate')
   @UseGuards(AuthRateLimitGuard)

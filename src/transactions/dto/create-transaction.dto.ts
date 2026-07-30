@@ -1,4 +1,5 @@
 import { MemoType } from '../../common/stellar/memo.util';
+import { IsStellarPublicKey } from '../../common/stellar/is-stellar-public-key.validator';
 import {
   IsEnum,
   IsNotEmpty,
@@ -17,9 +18,6 @@ import { AssetType } from '../../balance-indexer/domain/balance.model';
 /** Positive decimal amount — must be > 0, e.g. "10", "0.0000001", "922337203685.4775807" */
 const AMOUNT_REGEX = /^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/;
 
-/** Stellar public key: G followed by 55 uppercase alphanumeric chars */
-const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z0-9]{55}$/;
-
 export class TransactionAssetDto {
   @IsEnum(AssetType)
   type: AssetType;
@@ -33,10 +31,7 @@ export class TransactionAssetDto {
 
   /** Required for non-native assets */
   @ValidateIf((o) => o.type !== AssetType.NATIVE)
-  @IsString()
-  @Matches(STELLAR_PUBLIC_KEY_REGEX, {
-    message: 'issuer must be a valid Stellar public key',
-  })
+  @IsStellarPublicKey()
   issuer?: string;
 }
 

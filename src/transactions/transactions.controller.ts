@@ -152,6 +152,11 @@ export class TransactionsController {
     },
   })
   @ApiResponse({ status: 400, description: 'Invalid XDR or Horizon rejection' })
+  @ApiResponse({
+    status: 403,
+    description:
+      'Mainnet payment submission is disabled (mainnet_payment_submit feature flag is off)',
+  })
   @ApiResponse({ status: 503, description: 'Horizon unavailable' })
   @Post('fee-bump')
   @SensitiveEndpoint()

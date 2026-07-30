@@ -27,6 +27,11 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src/generated ./src/generated
 COPY prisma ./prisma
 
+# Build identity: pass --build-arg GIT_SHA=$(git rev-parse HEAD) so it's
+# exposed via GET /health. Defaults to "unknown" for local/dev builds.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
+
 EXPOSE 3000
 
 CMD ["node", "dist/main"]

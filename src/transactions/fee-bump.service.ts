@@ -4,8 +4,11 @@ import {
   BadRequestException,
   ServiceUnavailableException,
   NotFoundException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
 import {
   TransactionBuilder,
   Transaction,
@@ -48,6 +51,7 @@ export class FeeBumpService {
     private readonly configService: ConfigService,
     private readonly walletsService: WalletsService,
     private readonly transactionsService: TransactionsService,
+    private readonly featureFlagService: FeatureFlagService,
   ) {
     const testnetUrl = this.configService.get<string>(
       'STELLAR_HORIZON_URL',
@@ -75,6 +79,24 @@ export class FeeBumpService {
       transactionId,
       network,
     } = dto;
+
+    // --- 0. Mainnet kill-switch ------------------------------------------------
+    if (
+      network === 'MAINNET' &&
+      !this.featureFlagService.isEnabled('mainnet_payment_submit')
+    ) {
+      this.logger.warn(
+        'Rejected fee-bump submission: mainnet_payment_submit flag is disabled',
+      );
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.FORBIDDEN,
+          message:
+            'Mainnet payment submission is not available at this time. (Flag: mainnet_payment_submit)',
+        },
+        HttpStatus.FORBIDDEN,
+      );
+    }
 
     // --- 1. Decode inner transaction -----------------------------------------
     let innerTx: Transaction;
