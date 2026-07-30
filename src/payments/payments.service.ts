@@ -3,15 +3,14 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
-  Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { PaymentDryRunResponseDto } from './dto/payment-dry-run-response.dto';
 import { BatchPaymentDto } from './dto/batch-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
-import { LimitsService } from '../limits/limits.service';
 import { WalletsService } from '../wallets/wallets.service';
 import {
   PAYMENT_LIMITS_PORT,
@@ -28,10 +27,8 @@ import { retryWithBackoff } from '../common/utils/retry';
 import { MetricsService } from '../metrics/metrics.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
 import { PaymentMetricsService } from './payment-metrics.service';
-import {
-  StructuredLogger,
-  LogContext,
-} from '../common/logging/structured-logger';
+import { StructuredLogger } from '../common/logging/structured-logger';
+import { PaymentStatusHistoryService } from './payment-status-history.service';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -54,15 +51,46 @@ export class PaymentsService {
     private readonly requestContext: RequestContextService,
     private readonly paymentMetrics: PaymentMetricsService,
     private readonly configService: ConfigService,
+    private readonly statusHistory: PaymentStatusHistoryService,
   ) {}
+
+  /**
+   * Validate a payment exactly as creation does, without signing, submitting,
+   * persisting a payment, or emitting a domain event.
+   */
+  async dryRun(
+    createPaymentDto: CreatePaymentDto,
+  ): Promise<PaymentDryRunResponseDto> {
+    await this.validateForCreation(createPaymentDto);
+
+    return {
+      dryRun: true,
+      valid: true,
+      preview: {
+        senderWalletId: createPaymentDto.walletId,
+        receiverWalletId: createPaymentDto.receiverWalletId,
+        fromId: createPaymentDto.fromId,
+        toId: createPaymentDto.toId,
+        amount: createPaymentDto.amount,
+        currency: createPaymentDto.currency,
+        ...(createPaymentDto.assetCode
+          ? { assetCode: createPaymentDto.assetCode }
+          : {}),
+        status: PaymentStatus.PENDING,
+      },
+      checks: {
+        senderWallet: 'ACTIVE',
+        receiverWallet: 'FOUND',
+        paymentLimits: 'PASSED',
+      },
+    };
+  }
 
   async create(createPaymentDto: CreatePaymentDto) {
     const requestId = this.requestContext.getRequestId();
     const clientVersion = this.requestContext.getClientVersion();
     const start = Date.now();
     const {
-      walletId,
-      receiverWalletId,
       fromId,
       toId,
       amount,
@@ -97,40 +125,7 @@ export class PaymentsService {
     }
 
     try {
-      const senderWallet = await retryWithBackoff(
-        () => this.walletsService.findWalletById(walletId),
-        3,
-        100,
-        this.logger,
-      );
-      if (senderWallet.status !== WalletStatus.ACTIVE) {
-        throw new BadRequestException(
-          `Sender wallet is not active (status: ${senderWallet.status})`,
-        );
-      }
-
-      const blockSelfPayments = this.configService.get<boolean>(
-        'BLOCK_SELF_PAYMENTS',
-        false,
-      );
-      if (blockSelfPayments && fromId === toId) {
-        throw new BadRequestException(
-          'Payments to self are not allowed',
-        );
-      }
-
-      await retryWithBackoff(
-        () => this.walletsService.findWalletById(receiverWalletId),
-        3,
-        100,
-        this.logger,
-      );
-      await retryWithBackoff(
-        () => this.paymentLimitsPort.checkLimits(walletId, amount),
-        3,
-        100,
-        this.logger,
-      );
+      await this.validateForCreation(createPaymentDto);
 
       const payment = await this.prisma.payment.create({
         data: {
@@ -184,6 +179,45 @@ export class PaymentsService {
       throw new BadRequestException('payments must not be empty');
     }
     return Promise.all(dto.payments.map((p) => this.create(p)));
+  }
+
+  private async validateForCreation(
+    createPaymentDto: CreatePaymentDto,
+  ): Promise<void> {
+    const { walletId, receiverWalletId, fromId, toId, amount } =
+      createPaymentDto;
+    const senderWallet = await retryWithBackoff(
+      () => this.walletsService.findWalletById(walletId),
+      3,
+      100,
+      this.logger,
+    );
+    if (senderWallet.status !== WalletStatus.ACTIVE) {
+      throw new BadRequestException(
+        `Sender wallet is not active (status: ${senderWallet.status})`,
+      );
+    }
+
+    const blockSelfPayments = this.configService.get<boolean>(
+      'BLOCK_SELF_PAYMENTS',
+      false,
+    );
+    if (blockSelfPayments && fromId === toId) {
+      throw new BadRequestException('Payments to self are not allowed');
+    }
+
+    await retryWithBackoff(
+      () => this.walletsService.findWalletById(receiverWalletId),
+      3,
+      100,
+      this.logger,
+    );
+    await retryWithBackoff(
+      () => this.paymentLimitsPort.checkLimits(walletId, amount),
+      3,
+      100,
+      this.logger,
+    );
   }
 
   async findAll(
