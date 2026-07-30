@@ -1,4 +1,8 @@
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ServiceUnavailableException,
+  HttpException,
+} from '@nestjs/common';
 import { FeeBumpService } from './fee-bump.service';
 import { TransactionStatus } from './domain/transaction.model';
 
@@ -61,6 +65,7 @@ function makeService(overrides: {
   horizonPost?: jest.Mock;
   getDecryptedPrivateKey?: jest.Mock;
   updateStatus?: jest.Mock;
+  mainnetPaymentSubmitEnabled?: boolean;
 }) {
   const mockHttp = (createRequestIdAwareAxios as jest.Mock)();
   if (overrides.horizonPost) {
@@ -84,16 +89,29 @@ function makeService(overrides: {
     }),
   };
 
+  const mockFeatureFlagService = {
+    isEnabled: jest
+      .fn()
+      .mockReturnValue(overrides.mainnetPaymentSubmitEnabled ?? true),
+  };
+
   const service = new FeeBumpService(
     mockConfigService as any,
     mockWalletsService as any,
     mockTransactionsService as any,
+    mockFeatureFlagService as any,
   );
 
   // Inject the mock http directly
   (service as any).http = mockHttp;
 
-  return { service, mockHttp, mockWalletsService, mockTransactionsService };
+  return {
+    service,
+    mockHttp,
+    mockWalletsService,
+    mockTransactionsService,
+    mockFeatureFlagService,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +177,63 @@ describe('FeeBumpService', () => {
       await service.submitFeeBump({ ...VALID_DTO, transactionId: undefined });
 
       expect(mockTransactionsService.updateStatus).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Mainnet feature flag
+  // -------------------------------------------------------------------------
+  describe('submitFeeBump – mainnet_payment_submit feature flag', () => {
+    it('rejects MAINNET submission with 403 when the flag is disabled', async () => {
+      const mockPost = jest.fn();
+      const { service, mockFeatureFlagService } = makeService({
+        horizonPost: mockPost,
+        mainnetPaymentSubmitEnabled: false,
+      });
+
+      await expect(
+        service.submitFeeBump({ ...VALID_DTO, network: 'MAINNET' }),
+      ).rejects.toThrow(HttpException);
+
+      expect(mockFeatureFlagService.isEnabled).toHaveBeenCalledWith(
+        'mainnet_payment_submit',
+      );
+      // Never reaches Horizon once the flag denies the request.
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('allows MAINNET submission when the flag is enabled', async () => {
+      const mockPost = jest.fn().mockResolvedValue({
+        data: { hash: 'mainnet-hash', successful: true },
+        status: 200,
+      });
+      const { service } = makeService({
+        horizonPost: mockPost,
+        mainnetPaymentSubmitEnabled: true,
+      });
+
+      const result = await service.submitFeeBump({
+        ...VALID_DTO,
+        network: 'MAINNET',
+      });
+
+      expect(result.stellarHash).toBe('mainnet-hash');
+      expect(mockPost).toHaveBeenCalled();
+    });
+
+    it('does not consult the flag for TESTNET submissions', async () => {
+      const mockPost = jest.fn().mockResolvedValue({
+        data: { hash: 'testnet-hash', successful: true },
+        status: 200,
+      });
+      const { service, mockFeatureFlagService } = makeService({
+        horizonPost: mockPost,
+        mainnetPaymentSubmitEnabled: false,
+      });
+
+      await service.submitFeeBump({ ...VALID_DTO, network: 'TESTNET' });
+
+      expect(mockFeatureFlagService.isEnabled).not.toHaveBeenCalled();
     });
   });
 

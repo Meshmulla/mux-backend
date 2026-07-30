@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsIn } from 'class-validator';
+import { IsStellarPublicKey } from '../../common/stellar/is-stellar-public-key.validator';
 
 /**
  * Request body for the fee-bump submission endpoint.
@@ -34,8 +35,7 @@ export class FeeBumpTransactionDto {
       'Stellar public key of the fee-source (sponsor) account that will pay the fee.',
     example: 'GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEF',
   })
-  @IsString()
-  @IsNotEmpty()
+  @IsStellarPublicKey()
   feeSourcePublicKey: string;
 
   /**
@@ -72,8 +72,7 @@ export class FeeBumpTransactionDto {
     enum: ['TESTNET', 'MAINNET'],
     example: 'TESTNET',
   })
-  @IsString()
-  @IsNotEmpty()
+  @IsIn(['TESTNET', 'MAINNET'])
   network: 'TESTNET' | 'MAINNET';
 }
 

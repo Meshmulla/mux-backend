@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   BadRequestException,
   HttpException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
   IdempotentUserService,
@@ -21,6 +22,16 @@ import { WalletNetwork } from '../wallets/domain/wallet.model';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { AuthMetricsService } from './auth-metrics.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
+
+/**
+ * Single consolidated message returned to external callers for any
+ * unclassified authentication failure (downstream DB/Stellar/wallet errors,
+ * etc). Never interpolates the underlying error — those details are logged
+ * server-side only, so partner-facing responses stay consistent and never
+ * leak internal infrastructure state.
+ */
+export const EXTERNAL_AUTH_FAILURE_MESSAGE =
+  'Authentication failed. Please try again later.';
 
 export interface AuthenticationRequest {
   authId: string;
@@ -327,7 +338,10 @@ export class AuthOrchestrator {
       // Only record 'failure_unknown' if not already classified above
       const latency = Date.now() - startTime;
       this.authMetrics.recordAttempt('failure_unknown', latency);
-      throw new Error(`Authentication failed: ${error.message}`);
+      // Consolidated, generic message — the real cause (DB/Stellar/etc) was
+      // already logged above via this.logger.error(); never forward
+      // downstream error text to external callers.
+      throw new ServiceUnavailableException(EXTERNAL_AUTH_FAILURE_MESSAGE);
     }
   }
 
