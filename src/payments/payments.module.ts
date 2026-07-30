@@ -18,6 +18,7 @@ import { PaymentMetricsService } from './payment-metrics.service';
   providers: [
     PaymentsService,
     PaymentMetricsService,
+    PaymentStatusHistoryService,
     { provide: PAYMENT_LIMITS_PORT, useExisting: LimitsService },
     RequestContextService,
     FeatureFlagService,
