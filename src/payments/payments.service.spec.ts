@@ -63,10 +63,10 @@ describe('PaymentsService', () => {
       recordPaymentProcessingDuration: jest.fn(),
       incrementPaymentIdempotencyHit: jest.fn(),
     };
-    requestContext = { getRequestId: jest.fn().mockReturnValue('req-1') };
-    paymentMetrics = { record: jest.fn() };
-    configService = { get: jest.fn().mockReturnValue(false) };
-    statusHistory = { recordStatusChange: jest.fn() };
+    requestContext = {
+      getRequestId: jest.fn().mockReturnValue('req-1'),
+      getClientVersion: jest.fn().mockReturnValue(undefined),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -372,6 +372,58 @@ describe('PaymentsService', () => {
       await service.update('1', { status: PaymentStatus.CONFIRMED });
 
       expect(requestContext.getRequestId).toHaveBeenCalled();
+    });
+  });
+
+  describe('client version propagation (support logs)', () => {
+    it('includes the client version in the update log context when the header was present', async () => {
+      requestContext.getClientVersion.mockReturnValue('2.4.1');
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.PENDING,
+      });
+      prisma.payment.update.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.CONFIRMED,
+      });
+      const logSpy = jest.spyOn(
+        (service as any).logger,
+        'logWithContext',
+      );
+
+      await service.update('1', { status: PaymentStatus.CONFIRMED });
+
+      expect(requestContext.getClientVersion).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(
+        'Updating payment',
+        expect.objectContaining({ clientVersion: '2.4.1' }),
+      );
+    });
+
+    it('omits the client version from the log context without breaking the request when the header was absent', async () => {
+      requestContext.getClientVersion.mockReturnValue(undefined);
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.PENDING,
+      });
+      prisma.payment.update.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.CONFIRMED,
+      });
+      const logSpy = jest.spyOn(
+        (service as any).logger,
+        'logWithContext',
+      );
+
+      const result = await service.update('1', {
+        status: PaymentStatus.CONFIRMED,
+      });
+
+      expect(result).toBeDefined();
+      expect(logSpy).toHaveBeenCalledWith(
+        'Updating payment',
+        expect.objectContaining({ clientVersion: undefined }),
+      );
     });
   });
 

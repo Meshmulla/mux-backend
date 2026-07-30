@@ -23,6 +23,7 @@ import { KeyManagementModule } from './key-management/key-management.module';
 import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
 import { WebhookModule } from './webhooks/webhook.module';
 import { TransactionsModule } from './transactions/transactions.module';
+import { HorizonHistoryImportModule } from './horizon-history-import/horizon-history-import.module';
 import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
@@ -51,6 +52,7 @@ import { LatencySloInterceptor } from './common/slo/latency-slo.interceptor';
     BalanceIndexerModule,
     WebhookModule,
     TransactionsModule,
+    HorizonHistoryImportModule,
     DevelopersModule,
     ProjectsModule,
     HealthModule,

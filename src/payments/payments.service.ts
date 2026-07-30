@@ -88,6 +88,7 @@ export class PaymentsService {
 
   async create(createPaymentDto: CreatePaymentDto) {
     const requestId = this.requestContext.getRequestId();
+    const clientVersion = this.requestContext.getClientVersion();
     const start = Date.now();
     const {
       fromId,
@@ -104,16 +105,14 @@ export class PaymentsService {
         where: { idempotencyKey },
       });
       if (existing) {
-        this.logger.logWithContext(
-          'Idempotency hit, returning existing payment',
-          {
-            requestId,
-            entityId: existing.id.toString(),
-            entityType: 'payment',
-            operation: 'create',
-            outcome: 'idempotent',
-          },
-        );
+        this.logger.logWithContext('Idempotency hit, returning existing payment', {
+          requestId,
+          clientVersion,
+          entityId: existing.id.toString(),
+          entityType: 'payment',
+          operation: 'create',
+          outcome: 'idempotent',
+        });
         this.metrics.incrementPaymentIdempotencyHit();
         this.paymentMetrics.record({
           operation: 'create',
@@ -257,10 +256,12 @@ export class PaymentsService {
 
   async update(id: string, updatePaymentDto: UpdatePaymentDto) {
     const requestId = this.requestContext.getRequestId();
+    const clientVersion = this.requestContext.getClientVersion();
     const paymentId = parseInt(id, 10);
 
     this.logger.logWithContext('Updating payment', {
       requestId,
+      clientVersion,
       entityId: paymentId.toString(),
       entityType: 'payment',
       operation: 'update',
