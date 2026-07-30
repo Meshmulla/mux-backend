@@ -35,6 +35,31 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 
 All routes below are served under the `/v1` prefix (e.g. `GET /v1/health`). See [docs/API-VERSIONING.md](docs/API-VERSIONING.md) for the versioning strategy.
 
+### Error responses
+
+Every error — thrown `HttpException`, unhandled exception, or validation
+failure — is returned by a global exception filter in the same structured
+envelope:
+
+```json
+{
+  "statusCode": 422,
+  "timestamp": "2026-07-30T12:34:56.789Z",
+  "path": "/v1/wallets/123/limits",
+  "method": "POST",
+  "message": "Per-transaction limit exceeded. Limit: 1000",
+  "error": "Unprocessable Entity",
+  "errorCode": "LIMIT_PER_TX_EXCEEDED",
+  "requestId": "..."
+}
+```
+
+`error` and `message` are always present. `errorCode` (a stable, machine-readable
+string) and `details` (a structured object) are included only when the thrown
+exception provides them. `requestId` is echoed back from the `X-Request-ID`
+request header when present. In production, `message` on unhandled 500 errors
+is sanitized to strip connection strings, file paths, and secrets.
+
 ### Request body size
 
 JSON and URL-encoded request bodies are limited to 100 KiB by default. Set

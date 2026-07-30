@@ -50,22 +50,28 @@ export class LimitsService {
   ) {}
 
   async setLimits(walletId: string, daily: number, perTx: number) {
-    const existing = await retryWithBackoff(
+    // Read-then-write is wrapped in a single Prisma transaction so a
+    // concurrent setLimits call for the same wallet can't interleave
+    // between the existence check and the upsert, which would otherwise
+    // produce incorrect limit.updated diffs (comparing against stale data).
+    const { existing, result } = await retryWithBackoff(
       () =>
-        this.prisma.walletLimit.findUnique({
-          where: { walletId },
-        }),
-      3,
-      100,
-      this.logger,
-    );
+        this.prisma.$transaction(async (tx) => {
+          const existing = await tx.walletLimit.findUnique({
+            where: { walletId },
+          });
 
-    const result = await retryWithBackoff(
-      () =>
-        this.prisma.walletLimit.upsert({
-          where: { walletId },
-          update: { dailyLimit: daily, perTransactionLimit: perTx, deletedAt: null },
-          create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
+          const result = await tx.walletLimit.upsert({
+            where: { walletId },
+            update: {
+              dailyLimit: daily,
+              perTransactionLimit: perTx,
+              deletedAt: null,
+            },
+            create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
+          });
+
+          return { existing, result };
         }),
       3,
       100,
