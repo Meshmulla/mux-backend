@@ -10,6 +10,8 @@ import { RequestContextService } from '../common/request-context/request-context
 import { PAYMENT_LIMITS_PORT } from './ports/payment-limits.port';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MetricsService } from '../metrics/metrics.service';
+import { PaymentMetricsService } from './payment-metrics.service';
+import { ConfigService } from '@nestjs/config';
 
 describe('Payments and Limits Integration', () => {
   let paymentsService: PaymentsService;
@@ -28,6 +30,7 @@ describe('Payments and Limits Integration', () => {
     payment: { create: jest.fn(), findMany: jest.fn() },
     transaction: { findMany: jest.fn() },
     legacyUser: {},
+    $transaction: jest.fn((cb: any) => cb(mockPrisma)),
   };
 
   const mockWalletsService = {
@@ -36,6 +39,7 @@ describe('Payments and Limits Integration', () => {
 
   const mockRequestContext = {
     getRequestId: jest.fn().mockReturnValue('integration-req-id'),
+    getClientVersion: jest.fn().mockReturnValue(undefined),
   };
 
   beforeEach(async () => {
@@ -61,6 +65,8 @@ describe('Payments and Limits Integration', () => {
             incrementLimitChecks: jest.fn(),
           },
         },
+        PaymentMetricsService,
+        { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
 
@@ -145,6 +151,7 @@ describe('Payments and Limits Integration', () => {
       const limit = { walletId: testWalletId, dailyLimit: 1000, perTransactionLimit: 500 };
 
       mockPrisma.walletLimit.findUnique.mockResolvedValue(limit);
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
 
       const result = await limitsService.getLimits(testWalletId);
 
@@ -173,6 +180,7 @@ describe('Payments and Limits Integration', () => {
         .mockResolvedValueOnce(senderWallet)
         .mockResolvedValueOnce(receiverWallet);
       mockPrisma.walletLimit.findUnique.mockResolvedValue(limit);
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
 
       const createPaymentDto = {
         walletId: testWalletId,

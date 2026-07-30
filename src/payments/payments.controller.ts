@@ -8,6 +8,8 @@ import {
   Delete,
   Query,
   UseGuards,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -19,6 +21,7 @@ import {
 } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { PaymentDryRunResponseDto } from './dto/payment-dry-run-response.dto';
 import { BatchPaymentDto } from './dto/batch-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PaymentsFilterDto } from './dto/payments-filter.dto';
@@ -81,6 +84,40 @@ export class PaymentsController {
   @SensitiveEndpoint()
   create(@Body() createPaymentDto: CreatePaymentDto) {
     return this.paymentsService.create(createPaymentDto);
+  }
+
+  @ApiOperation({
+    summary: 'Validate a payment without creating or submitting it',
+    description:
+      'Runs the same wallet-state, self-payment, receiver, and payment-limit checks as payment creation. No payment is persisted, no transaction is signed or submitted, and no domain event is emitted.',
+  })
+  @ApiBody({ type: CreatePaymentDto })
+  @ApiResponse({
+    status: 200,
+    description: 'The payment passed all pre-creation checks.',
+    type: PaymentDryRunResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - invalid input or inactive sender wallet.',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - missing or invalid API key.',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Sender or receiver wallet not found.',
+  })
+  @ApiResponse({
+    status: 422,
+    description: 'The payment exceeds a configured wallet limit.',
+  })
+  @Post('dry-run')
+  @HttpCode(HttpStatus.OK)
+  @SensitiveEndpoint()
+  dryRun(@Body() createPaymentDto: CreatePaymentDto) {
+    return this.paymentsService.dryRun(createPaymentDto);
   }
 
   @ApiOperation({

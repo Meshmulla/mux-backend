@@ -22,10 +22,12 @@ import {
 import { TransactionsService } from './transactions.service';
 import { TransactionQueryService } from './transaction-query.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
+import { HorizonSubmissionService } from './horizon-submission.service';
 import { FeeBumpService } from './fee-bump.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
 import { BuildTransactionDto } from './dto/build-transaction.dto';
+import { SubmitTransactionDto } from './dto/submit-transaction.dto';
 import { FeeBumpTransactionDto } from './dto/fee-bump-transaction.dto';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import {
@@ -81,6 +83,7 @@ export class TransactionsController {
     private readonly transactionsService: TransactionsService,
     private readonly queryService: TransactionQueryService,
     private readonly stellarBuildService: StellarTransactionBuildService,
+    private readonly horizonSubmissionService: HorizonSubmissionService,
     private readonly feeBumpService: FeeBumpService,
   ) {}
 
@@ -97,8 +100,9 @@ export class TransactionsController {
           sourcePublicKey: 'GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEF',
           destinationPublicKey: 'GDEF1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEF',
           amount: '10.5',
-          asset: { type: 'NATIVE' },
+          assetCode: 'native',
           memo: 'Payment for services',
+          network: 'TESTNET',
         },
       },
     },
@@ -108,6 +112,44 @@ export class TransactionsController {
   @SensitiveEndpoint()
   buildTransaction(@Body() dto: BuildTransactionDto) {
     return this.stellarBuildService.buildPayment(dto);
+  }
+
+  /**
+   * Submit a signed Stellar transaction envelope to testnet/mainnet Horizon
+   * and persist the resulting status on the internal transaction record.
+   */
+  @ApiOperation({
+    summary: 'Submit a signed Stellar transaction to Horizon',
+    description:
+      'Submits an already-signed XDR envelope to Horizon and updates the ' +
+      'matching internal transaction record with the resulting status and hash.',
+  })
+  @ApiParam({ name: 'id', description: 'Transaction UUID' })
+  @ApiBody({ type: SubmitTransactionDto })
+  @ApiResponse({
+    status: 201,
+    description: 'Transaction submitted to Horizon',
+    schema: {
+      example: {
+        transactionId: '550e8400-e29b-41d4-a716-446655440002',
+        stellarHash: 'a1b2c3d4...',
+        status: 'CONFIRMED',
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Invalid XDR or Horizon rejection' })
+  @ApiResponse({
+    status: 422,
+    description: 'Horizon rejected the transaction due to insufficient balance',
+  })
+  @ApiResponse({ status: 503, description: 'Horizon unavailable' })
+  @Post(':id/submit')
+  @SensitiveEndpoint()
+  submitTransaction(
+    @Param('id') id: string,
+    @Body() dto: SubmitTransactionDto,
+  ) {
+    return this.horizonSubmissionService.submitTransaction(id, dto.signedXdr);
   }
 
   /**

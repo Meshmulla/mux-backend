@@ -1,7 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { WalletsService, CreateWalletRequest } from './wallets.service';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
+import { TransactionStatus } from '../transactions/domain/transaction.model';
 import {
   EncryptionService,
   DecryptionError,
@@ -30,6 +32,11 @@ const mockPrismaUser = {
   update: jest.fn(),
 };
 
+// Shared mock Prisma transaction methods (used by the pending-delete guard)
+const mockPrismaTransactionModel = {
+  count: jest.fn(),
+};
+
 // $transaction mock – executes the callback and passes the wallet mock as the tx client
 const mockPrismaTransaction = jest.fn(async (cb: (tx: any) => Promise<any>) =>
   cb({ wallet: mockPrismaWallet }),
@@ -40,6 +47,7 @@ jest.mock('../generated/prisma/client', () => ({
   PrismaClient: jest.fn(() => ({
     wallet: mockPrismaWallet,
     user: mockPrismaUser,
+    transaction: mockPrismaTransactionModel,
     $transaction: mockPrismaTransaction,
   })),
 }));
@@ -857,6 +865,78 @@ describe('WalletsService', () => {
       ).rejects.toThrow('User with ID missing-user not found');
 
       expect(mockPrismaUser.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remove', () => {
+    const existingWallet = {
+      id: 'wallet-123',
+      userId: 'user-123',
+      publicKey: 'GABC123',
+      encryptedSecret: 'secret',
+      encryptionVersion: 1,
+      secretVersion: 1,
+      keyVersion: 1,
+      network: WalletNetwork.TESTNET,
+      status: 'ACTIVE',
+      statusReason: null,
+      statusChangedAt: new Date(),
+      rotatedFromId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    it('deletes the wallet when there are no pending transactions', async () => {
+      mockPrismaWallet.findUnique.mockResolvedValue(existingWallet);
+      mockPrismaTransactionModel.count.mockResolvedValue(0);
+      mockPrismaWallet.delete.mockResolvedValue(existingWallet);
+
+      const result = await service.remove('wallet-123');
+
+      expect(mockPrismaTransactionModel.count).toHaveBeenCalledWith({
+        where: {
+          OR: [
+            { senderWalletId: 'wallet-123' },
+            { receiverWalletId: 'wallet-123' },
+          ],
+          status: {
+            in: [TransactionStatus.PENDING, TransactionStatus.SUBMITTED],
+          },
+        },
+      });
+      expect(mockPrismaWallet.delete).toHaveBeenCalledWith({
+        where: { id: 'wallet-123' },
+      });
+      expect(result.id).toBe('wallet-123');
+      expect(result).not.toHaveProperty('encryptedSecret');
+    });
+
+    it('blocks deletion with a ConflictException when pending transactions exist', async () => {
+      mockPrismaWallet.findUnique.mockResolvedValue(existingWallet);
+      mockPrismaTransactionModel.count.mockResolvedValue(2);
+
+      await expect(service.remove('wallet-123')).rejects.toThrow(
+        ConflictException,
+      );
+      await expect(service.remove('wallet-123')).rejects.toThrow(
+        'Cannot delete wallet wallet-123: 2 pending transaction(s) must settle first',
+      );
+
+      expect(mockPrismaWallet.delete).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException if the wallet does not exist', async () => {
+      mockPrismaWallet.findUnique.mockResolvedValue(null);
+
+      await expect(service.remove('missing-wallet')).rejects.toThrow(
+        NotFoundException,
+      );
+      await expect(service.remove('missing-wallet')).rejects.toThrow(
+        'Wallet with ID missing-wallet not found',
+      );
+
+      expect(mockPrismaTransactionModel.count).not.toHaveBeenCalled();
+      expect(mockPrismaWallet.delete).not.toHaveBeenCalled();
     });
   });
 });

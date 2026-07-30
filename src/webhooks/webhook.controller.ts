@@ -25,6 +25,8 @@ import { WebhookDlqAlertService } from './webhook-dlq-alert.service';
 import { CreateWebhookEndpointDto } from './dto/create-webhook-endpoint.dto';
 import { UpdateWebhookEndpointDto } from './dto/update-webhook-endpoint.dto';
 import { WebhookFilterDto } from './dto/webhook-filter.dto';
+import { UpdateWebhookSubscriptionsDto } from './dto/update-webhook-subscriptions.dto';
+import { WebhookEventType } from './domain/webhook-events';
 import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 import { FeatureFlag } from '../common/feature-flags/feature-flag.guard';
 import {
@@ -537,6 +539,158 @@ export class WebhookController {
       delivered: result.delivered,
       failed: result.failed,
       retrying: result.retrying,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /webhooks/endpoints/:id/subscriptions
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Get subscribed event types for a webhook endpoint',
+    description:
+      'Returns the list of event types the endpoint is currently subscribed to, ' +
+      'along with a reference of all valid event types.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Current event subscriptions',
+    schema: {
+      example: {
+        endpointId: 'endpoint-uuid',
+        events: ['wallet.created', 'transaction.confirmed'],
+        allValidEvents: [
+          'wallet.created',
+          'wallet.activated',
+          'transaction.confirmed',
+        ],
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Endpoint not found',
+    example: { statusCode: 404, message: 'Webhook endpoint endpoint-uuid not found' },
+  })
+  @Get('endpoints/:id/subscriptions')
+  async getSubscribedEvents(@Param('id') id: string) {
+    const events = await this.webhookService.getSubscribedEvents(id);
+    return {
+      endpointId: id,
+      events,
+      allValidEvents: Object.values(WebhookEventType),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // PUT /webhooks/endpoints/:id/subscriptions
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Replace subscribed event types for a webhook endpoint',
+    description:
+      'Replaces all subscribed event types with the supplied list. ' +
+      'All values must be members of the known WebhookEventType enum. ' +
+      'Providing an unknown event type returns 400 Bad Request.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
+  @ApiBody({
+    type: UpdateWebhookSubscriptionsDto,
+    examples: {
+      default: {
+        value: {
+          events: ['wallet.created', 'transaction.confirmed'],
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Updated event subscriptions',
+    schema: {
+      example: {
+        endpointId: 'endpoint-uuid',
+        events: ['wallet.created', 'transaction.confirmed'],
+        updatedAt: '2026-07-30T00:00:00.000Z',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'One or more event types are not valid WebhookEventType values',
+    example: {
+      statusCode: 400,
+      message: 'Unknown event type(s): foo.bar. Valid values: wallet.created, ...',
+      error: 'Bad Request',
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Endpoint not found',
+  })
+  @Put('endpoints/:id/subscriptions')
+  @HttpCode(HttpStatus.OK)
+  async updateSubscribedEvents(
+    @Param('id') id: string,
+    @Body() dto: UpdateWebhookSubscriptionsDto,
+  ) {
+    const events = await this.webhookService.updateSubscribedEvents(id, dto.events);
+    return {
+      endpointId: id,
+      events,
+      updatedAt: new Date(),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /webhooks/event-types  — reference list of all valid event types
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'List all valid webhook event types',
+    description:
+      'Returns the complete set of event type strings that can be used ' +
+      'when creating or updating webhook endpoint subscriptions.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Enum of all supported event types',
+    schema: {
+      example: {
+        eventTypes: [
+          'wallet.created',
+          'wallet.activated',
+          'wallet.suspended',
+          'wallet.rotated',
+          'transaction.created',
+          'transaction.pending',
+          'transaction.confirmed',
+          'transaction.failed',
+          'balance.updated',
+          'balance.low',
+          'balance.mismatch',
+          'user.created',
+          'user.updated',
+          'auth.user_authenticated',
+          'auth.new_user_registered',
+          'auth.authentication_failed',
+        ],
+      },
+    },
+  })
+  @Get('event-types')
+  listEventTypes() {
+    return {
+      eventTypes: Object.values(WebhookEventType),
     };
   }
 

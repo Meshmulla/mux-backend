@@ -22,7 +22,11 @@ import { createRequestIdAwareAxios } from '../common/http/request-id-axios';
 import { WalletsService } from '../wallets/wallets.service';
 import { TransactionsService } from './transactions.service';
 import { TransactionStatus } from './domain/transaction.model';
-import { mapHorizonResultToStatus } from './horizon-result.mapper';
+import {
+  mapHorizonResultToStatus,
+  isInsufficientBalanceResult,
+} from './horizon-result.mapper';
+import { HorizonInsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { FeeBumpTransactionDto, FeeBumpResultDto } from './dto/fee-bump-transaction.dto';
 
 /**
@@ -186,6 +190,13 @@ export class FeeBumpService {
         // Persist FAILED status when we have an associated transaction
         if (transactionId) {
           await this.safeUpdateStatus(transactionId, TransactionStatus.FAILED, txCode);
+        }
+
+        if (isInsufficientBalanceResult(body, txCode)) {
+          throw new HorizonInsufficientBalanceException(
+            transactionId ?? feeSourceWalletId,
+            txCode,
+          );
         }
 
         throw new BadRequestException(

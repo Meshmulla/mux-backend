@@ -9,6 +9,8 @@ import {
   Query,
   BadRequestException,
   ParseUUIDPipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -419,6 +421,62 @@ export class RecoveryController {
   @Post(':id/initiate')
   initiate(@Param('id', ParseUUIDPipe) id: string) {
     return this.recoveryService.initiate(id);
+  }
+
+  @ApiOperation({
+    summary: 'Cancel a recovery request',
+    description:
+      'Cancels a recovery request by moving it to CANCELLED status. ' +
+      'Only requests in PENDING, IN_REVIEW, or APPROVED state can be cancelled. ' +
+      'Requests that are already COMPLETED, REJECTED, or CANCELLED cannot be cancelled.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Recovery request UUID',
+    example: '660e8400-e29b-41d4-a716-446655440001',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Recovery request cancelled',
+    schema: {
+      example: {
+        id: '660e8400-e29b-41d4-a716-446655440001',
+        walletId: '550e8400-e29b-41d4-a716-446655440000',
+        requester: 'user_abc123',
+        status: 'CANCELLED',
+        metadata: { reason: 'lost_access' },
+        createdAt: '2026-06-29T12:00:00.000Z',
+        updatedAt: '2026-06-29T12:30:00.000Z',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - invalid UUID or cancellation not allowed from current status',
+    schema: {
+      example: {
+        statusCode: 400,
+        message:
+          'Recovery request cannot be cancelled from status COMPLETED. ' +
+          'Only PENDING, IN_REVIEW, or APPROVED requests can be cancelled.',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Recovery request not found',
+    schema: {
+      example: {
+        statusCode: 404,
+        message: 'Recovery request not found',
+        error: 'Not Found',
+      },
+    },
+  })
+  @Post(':id/cancel')
+  cancel(@Param('id', ParseUUIDPipe) id: string) {
+    return this.recoveryService.cancel(id);
   }
 
   @ApiOperation({
