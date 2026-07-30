@@ -984,3 +984,57 @@ model MaintenanceState {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
+
+/// Lifecycle status of a resumable Horizon history import stream.
+enum HorizonImportStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// Tracks resumable Horizon history import progress per Stellar account +
+/// history resource (e.g. "payments", "operations"). Persists the last
+/// successfully processed Horizon paging token ("cursor") so a re-run of the
+/// import resumes exactly where it left off instead of re-scanning history
+/// from the beginning after a restart or transient Horizon failure.
+///
+/// The cursor is only advanced on a successful page fetch+persist; a failed
+/// attempt records `status = FAILED` and `lastError` but leaves `cursor`
+/// untouched so the next run retries from the last known-good position.
+model HorizonImportCursor {
+  id     String @id @default(uuid())
+
+  /// Stellar account public key whose history is being imported
+  accountId String
+
+  /// Network scope — the same account may be imported on both networks
+  network WalletNetwork @default(TESTNET)
+
+  /// Horizon history resource being streamed, e.g. "payments", "operations", "transactions"
+  resourceType String
+
+  /// Last successfully processed Horizon paging token. Null = import has not
+  /// made progress yet (starts from the beginning of history on next run).
+  cursor String?
+
+  /// Lifecycle status of the most recent import attempt
+  status HorizonImportStatus @default(PENDING)
+
+  /// Cumulative count of records imported across all resumed runs
+  recordsImported Int @default(0)
+
+  /// Error tracking for the most recent failed attempt.
+  /// Only ever holds a short human-readable message — never response bodies,
+  /// headers, or credentials, so failures can be persisted without risking
+  /// secret leakage into the database or logs.
+  lastError     String?
+  lastAttemptAt DateTime?
+  lastSuccessAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([accountId, resourceType, network])
+  @@index([status])
+}
