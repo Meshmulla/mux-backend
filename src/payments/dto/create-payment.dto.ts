@@ -6,7 +6,6 @@ import {
   IsOptional,
   IsInt,
   Min,
-  ValidateBy,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -30,19 +29,15 @@ export class CreatePaymentDto {
   receiverWalletId: string;
 
   @ApiProperty({
-    example: 100.50,
-    description: 'Payment amount - must be positive with max 2 decimal places (e.g., 100.50)',
+    example: 100.5,
+    description:
+      'Payment amount - must be positive with max 2 decimal places (e.g., 100.50)',
   })
-  @IsNumber({}, { message: 'amount must be a number' })
-  @IsPositive({ message: 'amount must be positive' })
-  @ValidateBy(
-    (value: any) => {
-      if (typeof value !== 'number') return false;
-      const decimalPlaces = (value.toString().split('.')[1] || '').length;
-      return decimalPlaces <= 2;
-    },
-    { message: 'amount must have maximum 2 decimal places' },
+  @IsNumber(
+    { maxDecimalPlaces: 2 },
+    { message: 'amount must be a number with maximum 2 decimal places' },
   )
+  @IsPositive({ message: 'amount must be positive' })
   amount: number;
 
   @ApiProperty({

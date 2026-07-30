@@ -30,6 +30,7 @@ import {
   StructuredLogger,
   LogContext,
 } from '../common/logging/structured-logger';
+import { TransactionStatus } from '../transactions/domain/transaction.model';
 
 /** Wallet shape safe to return from the API (no encrypted secret material). */
 export type PublicWallet = Omit<Wallet, 'encryptedSecret'>;
@@ -618,8 +619,57 @@ export class WalletsService implements OnModuleDestroy {
     return this.toPublicWallet(this.mapPrismaWalletToDomain(updated));
   }
 
-  remove(id: string) {
-    return this.prisma.wallet.delete({ where: { id } });
+  /**
+   * Deletes a wallet, guarding against removal while transactions are still
+   * in flight.
+   *
+   * #558: A wallet with PENDING or SUBMITTED transactions (sent or received)
+   * must not be deleted — the underlying transaction record would be left
+   * referencing a wallet that no longer exists, and any in-progress Stellar
+   * submission/settlement could silently lose its owning wallet context.
+   * Only wallets whose transactions have all reached a terminal state
+   * (CONFIRMED / FAILED) — or that have none at all — may be deleted.
+   */
+  async remove(id: string): Promise<PublicWallet> {
+    const wallet = await this.prisma.wallet.findUnique({ where: { id } });
+    if (!wallet) {
+      throw new NotFoundException(`Wallet with ID ${id} not found`);
+    }
+
+    const pendingTransactionCount = await this.prisma.transaction.count({
+      where: {
+        OR: [{ senderWalletId: id }, { receiverWalletId: id }],
+        status: {
+          in: [TransactionStatus.PENDING, TransactionStatus.SUBMITTED],
+        },
+      },
+    });
+
+    if (pendingTransactionCount > 0) {
+      this.logger.logWithContext(
+        'Blocked wallet deletion: pending transactions exist',
+        {
+          operation: 'remove',
+          entityType: 'wallet',
+          entityId: id,
+          outcome: 'blocked',
+        },
+      );
+      throw new ConflictException(
+        `Cannot delete wallet ${id}: ${pendingTransactionCount} pending transaction(s) must settle first`,
+      );
+    }
+
+    const deleted = await this.prisma.wallet.delete({ where: { id } });
+
+    this.logger.logWithContext('Deleted wallet', {
+      operation: 'remove',
+      entityType: 'wallet',
+      entityId: id,
+      outcome: 'success',
+    });
+
+    return this.toPublicWallet(this.mapPrismaWalletToDomain(deleted));
   }
 
   async archive(id: string, reason?: string): Promise<PublicWallet> {

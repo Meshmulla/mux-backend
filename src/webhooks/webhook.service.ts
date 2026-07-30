@@ -7,6 +7,7 @@ import {
 import { PrismaClient } from '../generated/prisma/client';
 import {
   WebhookEndpoint,
+  WebhookEventType,
   EndpointStatus,
   DeliveryStatus,
 } from './domain/webhook-events';
@@ -124,16 +125,12 @@ export class WebhookService {
 
     const skip = (page - 1) * take;
 
-    const where: any = { projectId };
-    if (statusFilter) where.status = statusFilter;
-    if (eventFilter) where.events = { has: eventFilter };
-
     const where: Record<string, unknown> = { projectId };
-    if (filter.status) {
-      where.status = filter.status;
+    if (statusFilter) {
+      where.status = statusFilter;
     }
-    if (filter.event) {
-      where.events = { has: filter.event };
+    if (eventFilter) {
+      where.events = { has: eventFilter };
     }
 
     const [endpoints, total] = await Promise.all([
@@ -204,6 +201,48 @@ export class WebhookService {
     });
 
     this.invalidateEndpointCache(endpointId);
+  }
+
+  /**
+   * Returns the list of event types the endpoint is currently subscribed to.
+   */
+  async getSubscribedEvents(endpointId: string): Promise<string[]> {
+    const endpoint = await this.getEndpoint(endpointId);
+    return endpoint.events;
+  }
+
+  /**
+   * Replaces all subscribed event types for the endpoint.
+   * Validates each event against the known WebhookEventType enum before persisting.
+   *
+   * @param endpointId  The endpoint to update.
+   * @param events      The complete replacement set of event type strings.
+   * @returns           The persisted list of event types.
+   */
+  async updateSubscribedEvents(
+    endpointId: string,
+    events: string[],
+  ): Promise<string[]> {
+    const validValues = new Set<string>(Object.values(WebhookEventType));
+    const invalid = events.filter((e) => !validValues.has(e));
+    if (invalid.length > 0) {
+      throw new BadRequestException(
+        `Unknown event type(s): ${invalid.join(', ')}. ` +
+          `Valid values: ${[...validValues].join(', ')}`,
+      );
+    }
+
+    // Verify the endpoint exists (throws NotFoundException if not found)
+    await this.getEndpoint(endpointId);
+
+    const updated = await this.prisma.webhookEndpoint.update({
+      where: { id: endpointId },
+      data: { events },
+    });
+
+    this.invalidateEndpointCache(endpointId);
+
+    return updated.events;
   }
 
   /**

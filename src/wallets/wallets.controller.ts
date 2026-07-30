@@ -304,6 +304,13 @@ export class WalletsController {
 
   @ApiOperation({ summary: 'Delete a wallet' })
   @ApiParam({ name: 'id', description: 'Wallet ID' })
+  @ApiResponse({ status: 200, description: 'Wallet deleted' })
+  @ApiResponse({ status: 404, description: 'Wallet not found' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'Wallet has pending (PENDING/SUBMITTED) transactions and cannot be deleted',
+  })
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.walletsService.remove(id);

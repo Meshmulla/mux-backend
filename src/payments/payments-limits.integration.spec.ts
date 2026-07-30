@@ -39,6 +39,7 @@ describe('Payments and Limits Integration', () => {
 
   const mockRequestContext = {
     getRequestId: jest.fn().mockReturnValue('integration-req-id'),
+    getClientVersion: jest.fn().mockReturnValue(undefined),
   };
 
   beforeEach(async () => {

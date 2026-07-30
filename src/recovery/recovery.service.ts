@@ -11,6 +11,7 @@ import { PaginatedRecoveryDto } from './dto/paginated-recovery.dto';
 import {
   RecoveryStatus,
   transitionRecoveryStatus,
+  canTransitionRecoveryStatus,
 } from './domain/recovery.model';
 
 @Injectable()
@@ -163,6 +164,33 @@ export class RecoveryService {
     const result = await this.prisma.recoveryRequest.update({
       where: { id },
       data: { status: transitioned.status },
+    });
+
+    return this.mapPrismaToEntity(result);
+  }
+
+  /**
+   * Cancels a recovery request by transitioning it to CANCELLED status.
+   * Only requests in PENDING, IN_REVIEW, or APPROVED state can be cancelled.
+   *
+   * @param id  Recovery request UUID
+   * @returns   Updated recovery request with status CANCELLED
+   * @throws    NotFoundException   if the request does not exist
+   * @throws    BadRequestException if the transition is not allowed
+   */
+  async cancel(id: string): Promise<RecoveryRequest> {
+    const recovery = await this.findOne(id);
+
+    if (!canTransitionRecoveryStatus(recovery.status, RecoveryStatus.CANCELLED)) {
+      throw new BadRequestException(
+        `Recovery request cannot be cancelled from status ${recovery.status}. ` +
+          `Only PENDING, IN_REVIEW, or APPROVED requests can be cancelled.`,
+      );
+    }
+
+    const result = await this.prisma.recoveryRequest.update({
+      where: { id },
+      data: { status: RecoveryStatus.CANCELLED },
     });
 
     return this.mapPrismaToEntity(result);
