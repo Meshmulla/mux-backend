@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { AdminRecoveryService } from './admin-recovery.service';
-import { PrismaService } from '../common/prisma/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { RecoveryStatus } from './domain/recovery.model';
 
 describe('AdminRecoveryService', () => {
