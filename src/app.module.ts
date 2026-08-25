@@ -17,6 +17,7 @@ import { RecoveryModule } from './recovery/recovery.module';
 import { AuthModule } from './auth/auth.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
 import { RateLimitGuard } from './rate-limit/rate-limit.guard';
+import { MaintenanceGuard } from './maintenance/maintenance.guard';
 import { ApiKeyModule } from './api-keys/api-key.module';
 import { ApiKeyGuard } from './api-keys/api-key.guard';
 import { KeyManagementModule } from './key-management/key-management.module';
