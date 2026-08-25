@@ -27,6 +27,7 @@ import {
   type AuthenticationRequest,
   type AuthenticationRequestWithIdempotency,
 } from './auth-orchestrator.service';
+import { RefreshTokenService } from './refresh-token.service';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { Public } from './public.decorator';
 import { AuthSessionFilterDto } from './dto/auth-session-filter.dto';
