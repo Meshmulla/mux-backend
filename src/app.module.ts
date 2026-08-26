@@ -30,6 +30,7 @@ import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
 import { ApiChangelogModule } from './api-changelog/api-changelog.module';
+import { BackupModule } from './backup/backup.module';
 import { SloModule } from './common/slo/slo.module';
 import { LatencySloInterceptor } from './common/slo/latency-slo.interceptor';
 
@@ -60,6 +61,7 @@ import { LatencySloInterceptor } from './common/slo/latency-slo.interceptor';
     ProjectsModule,
     HealthModule,
     ApiChangelogModule,
+    BackupModule,
     SloModule,
   ],
   controllers: [AppController],
