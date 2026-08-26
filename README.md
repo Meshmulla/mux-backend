@@ -10,16 +10,20 @@ Mux Backend abstracts blockchain complexity behind a secure, Web2-friendly API, 
 
 Mux Backend is the trusted coordination layer between:
 
-* Web2 authentication providers (Clerk / Better Auth)
+* Web2 authentication providers (Clerk / Better Auth) — verified via cryptographic JWT validation
 * Stellar accounts and Soroban smart contracts
 * Frontend clients and SDKs
 
 It handles wallet creation, transaction orchestration, fee sponsorship, and on-chain/off-chain state reconciliation.
 
+**Critical security invariant**: User identity is established only through cryptographic verification of JWT tokens from the configured identity provider. Tokens are verified at every authentication request. Local user status (ACTIVE/INACTIVE/SUSPENDED) is checked and enforced on every call. No client-supplied identity claims are trusted.
+
 ---
 
 ## Core Responsibilities
 
+* **Cryptographic identity verification**: Verify all user identity claims via signed JWT tokens from the configured identity provider (Clerk or Better Auth). No client-supplied identity is trusted.
+* **User status enforcement**: Enforce local user status checks (ACTIVE/INACTIVE/SUSPENDED) on every authentication request, rejecting disabled or suspended accounts.
 * Invisible wallet creation and management
 * Secure custody and encryption of Stellar keypairs
 * Transaction relaying and fee sponsorship
@@ -140,19 +144,29 @@ Readiness probe endpoint for Kubernetes and container orchestration platforms.
 
 #### `POST /auth/authenticate`
 
-Main authentication endpoint for user onboarding and wallet creation.
+Main authentication endpoint for user onboarding and wallet creation with cryptographic identity verification.
 
-**Purpose**: Handles both first-time and returning users. Creates user and wallet if needed, returns existing data if already exists. All operations are idempotent.
+**Purpose**: Handles both first-time and returning users. Verifies the caller's identity via signed JWT token, creates user and wallet if needed, returns existing data if already exists. All operations are idempotent.
 
-**Authentication**: **Public endpoint** (no API key required) - This must be public as it's used for initial authentication before an API key is available.
+**Authentication**: **Public endpoint** (no API key required) — This must be public as it's used for initial authentication before an API key is available. However, a **valid, signed JWT token** from the configured identity provider (Clerk or Better Auth) is **required** in the Authorization header.
 
-**Request Body**:
+**Identity Verification**:
+- The Authorization header must contain a bearer token (JWT) from the configured identity provider.
+- The backend verifies the token signature cryptographically against the provider's keys.
+- User identity (authId, authProvider) is extracted **only** from the verified token claims.
+- Any authId or authProvider supplied in the request body are ignored; identity always comes from the verified JWT.
+- Suspended or inactive accounts (status != ACTIVE) are rejected.
+
+**Request Headers**:
+```
+Authorization: Bearer <jwt_token_from_clerk_or_better_auth>
+```
+
+**Request Body** (only email, displayName, and network are used; authId/authProvider come from JWT):
 ```json
 {
-  "authId": "auth-provider-user-id",
   "email": "user@example.com",
   "displayName": "User Name",
-  "authProvider": "CLERK",
   "network": "TESTNET"
 }
 ```
@@ -162,33 +176,86 @@ Main authentication endpoint for user onboarding and wallet creation.
 {
   "user": {
     "id": "uuid",
-    "authId": "auth-provider-user-id",
+    "authId": "verified-from-jwt-sub-claim",
     "email": "user@example.com",
     "displayName": "User Name",
     "status": "ACTIVE",
-    "authProvider": "CLERK",
-    "createdAt": "2026-05-30T12:00:00.000Z",
-    "updatedAt": "2026-05-30T12:00:00.000Z"
+    "authProvider": "verified-from-jwt-auth-provider-claim",
+    "lastLoginAt": "2026-05-30T12:00:00.000Z"
   },
   "wallet": {
     "id": "uuid",
-    "userId": "uuid",
     "publicKey": "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
     "network": "TESTNET",
     "status": "ACTIVE",
-    "createdAt": "2026-05-30T12:00:00.000Z",
-    "updatedAt": "2026-05-30T12:00:00.000Z"
+    "createdAt": "2026-05-30T12:00:00.000Z"
   },
+  "refreshToken": "hex-encoded-token",
   "isNewUser": false,
   "isNewWallet": false
 }
 ```
+
+**Response (401 Unauthorized)**:
+- Returned if Authorization header is missing or token verification fails.
+
+**Response (403 Forbidden)**:
+- Returned if the verified user has INACTIVE or SUSPENDED status.
 
 **Use Cases**:
 - Initial user authentication and onboarding
 - Automatic wallet creation for new users
 - Idempotent user/wallet retrieval for returning users
 - Integration with Web2 auth providers (Clerk, Better Auth, etc.)
+- Safe account suspension/deactivation enforcement
+
+---
+
+## Authentication & Trust Model
+
+Mux Backend uses a **server-side verification only** trust model for user authentication. This is critical given that the backend custodies Stellar private keys and relays sponsored transactions.
+
+### What is Verified
+
+1. **JWT Signature**: Every authentication request requires a signed JWT token from the configured identity provider (Clerk or Better Auth). The backend cryptographically verifies the token signature using the provider's public keys. Tampered, forged, or unsigned tokens are rejected.
+
+2. **Token Claims**: The verified token must contain:
+   - `sub` (subject): The user's unique identifier in the identity provider system. This becomes the `authId` in Mux Backend.
+   - `auth_provider`: The identity provider name (CLERK, BETTER_AUTH, etc.). This becomes the `authProvider`.
+
+3. **User Status**: After identity is verified from the JWT, the backend checks the local user record's status field. Users with status `INACTIVE` or `SUSPENDED` are rejected, even if their JWT is valid. This allows operators to disable compromised or abusive accounts immediately.
+
+### What is NOT Trusted
+
+- **Client-supplied identity fields**: Any authId or authProvider values supplied in the request body are ignored. Identity always comes from the verified JWT token. This prevents attacks where a malicious client impersonates another user.
+- **Email or display name**: These are optional metadata fields that are validated but not used for identity. A user's identity is established solely through the verified JWT `sub` claim.
+- **Provider profile fields**: Data relayed from the identity provider (e.g., the user's email stored in Clerk) is not used for access control. Local status is the authoritative source.
+
+### Production Safety
+
+In production (`NODE_ENV=production`):
+- If JWT verification is unavailable (library not installed, configuration missing), the application fails to start or requests fail with 503 Service Unavailable. There is no silent fallback to trusting client-supplied identity.
+- Identity provider configuration (e.g., `CLERK_JWT_PUBLIC_KEY` or `BETTER_AUTH_JWKS_URL`) is required and validated at startup.
+
+### Development & Testing
+
+For local development without live provider credentials, set `AUTH_SKIP_JWT_VERIFICATION=true` and use dev-mode stub tokens in format: `dev-<provider>-<userid>` (e.g., `dev-clerk-user123`). This mode is structurally impossible to enable in production and is clearly marked as development-only in code.
+
+---
+
+## User Lifecycle
+
+Users go through the following lifecycle:
+
+1. **Onboarding**: User presents a valid JWT token to `POST /auth/authenticate`. If new, a user record and wallet are created. Status is set to `ACTIVE`.
+
+2. **Active**: User can authenticate and use all API endpoints. Every request verifies their JWT token and checks they remain `ACTIVE`.
+
+3. **Suspended** (operator-initiated): Operator updates the user's status to `SUSPENDED` via internal admin tools or database. Subsequent authentication attempts fail with 403 Forbidden, even though the user's JWT may still be valid. The user cannot authenticate or access any endpoints.
+
+4. **Inactive** (similar to suspended): User status can be set to `INACTIVE` for other reasons (e.g., terms violation, dormant account cleanup). Behaves identically to `SUSPENDED` — authentication is rejected.
+
+Users cannot be "deleted" through normal API flows; instead, their status is changed to reflect they should not authenticate. This preserves audit trails and on-chain transaction history.
 
 ---
 
