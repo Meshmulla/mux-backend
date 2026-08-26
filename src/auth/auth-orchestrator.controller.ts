@@ -63,9 +63,20 @@ export class AuthOrchestratorController {
   @ApiOperation({
     summary: 'Authenticate a user',
     description:
-      'Handles first-time and returning user authentication. ' +
+      'Handles first-time and returning user authentication with JWT verification. ' +
       'Creates a user record and wallet on first login; returns existing records on repeat calls. ' +
+      'Requires a valid, signed JWT token from the configured identity provider (Clerk/Better Auth). ' +
+      'Identity is extracted ONLY from the verified JWT token; client-supplied authId/authProvider are ignored. ' +
       'Supports idempotent replay via the Idempotency-Key header.',
+  })
+  @ApiHeader({
+    name: 'Authorization',
+    required: true,
+    description:
+      'Bearer token (JWT) from the configured identity provider. ' +
+      'Token must contain sub (subject) and auth_provider claims. ' +
+      'Must be in format: Authorization: Bearer <jwt_token>',
+    example: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
   })
   @ApiHeader({
     name: 'Idempotency-Key',
@@ -78,27 +89,33 @@ export class AuthOrchestratorController {
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['authId'],
+      required: [],
       properties: {
         authId: {
           type: 'string',
-          description: 'External auth provider user identifier (e.g. OAuth sub claim)',
+          deprecated: true,
+          description:
+            'DEPRECATED: authId is now derived from the verified JWT token (sub claim). ' +
+            'This field is ignored if provided in the request body.',
           example: 'google|1234567890',
         },
         email: {
           type: 'string',
           format: 'email',
-          description: 'User email address (optional)',
+          description: 'User email address (optional metadata, not from JWT)',
           example: 'alice@example.com',
         },
         displayName: {
           type: 'string',
-          description: 'Human-readable display name (optional)',
+          description: 'Human-readable display name (optional metadata, not from JWT)',
           example: 'Alice Smith',
         },
         authProvider: {
           type: 'string',
-          description: 'Authentication provider identifier',
+          deprecated: true,
+          description:
+            'DEPRECATED: authProvider is now derived from the verified JWT token (auth_provider claim). ' +
+            'This field is ignored if provided in the request body.',
           example: 'GOOGLE',
         },
         network: {
@@ -146,12 +163,27 @@ export class AuthOrchestratorController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Bad request — invalid or missing authId, bad email format, or invalid network.',
+    description:
+      'Bad request — missing Authorization header, invalid JWT format, ' +
+      'bad email format, or invalid network.',
     schema: {
       example: {
         statusCode: 400,
-        message: 'Invalid authentication payload: authId is required and must be a string',
+        message: 'Authorization header with bearer token is required',
         error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description:
+      'Unauthorized — JWT token verification failed. ' +
+      'Possible causes: invalid token signature, expired token, missing required claims (sub, auth_provider).',
+    schema: {
+      example: {
+        statusCode: 401,
+        message: 'Bearer token verification failed',
+        error: 'Unauthorized',
       },
     },
   })
@@ -198,6 +230,7 @@ export class AuthOrchestratorController {
   @HttpCode(HttpStatus.OK)
   async authenticate(
     @Body() request: AuthenticationRequest,
+    @Headers('authorization') authorizationHeader: string | undefined,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Req() httpRequest: Request,
     @Res() response: Response,
@@ -206,6 +239,7 @@ export class AuthOrchestratorController {
     const requestWithIdempotency: AuthenticationRequestWithIdempotency = {
       ...request,
       idempotencyKey,
+      bearerToken: authorizationHeader,
       ipAddress: httpRequest.ip,
       userAgent: httpRequest.headers['user-agent'],
     };
@@ -258,18 +292,23 @@ export class AuthOrchestratorController {
   }
 
   /**
-   * Sessions listing endpoint - returns recent auth sessions with optional filters.
+   * Sessions listing endpoint - returns the authenticated user's sessions.
    *
+   * Requires authentication and is scoped to the authenticated caller's sessions only.
    * Supports filtering by account status, authProvider, and lastLoginAt date range.
    * Results are paginated and ordered by lastLoginAt descending.
+   *
+   * Access control: Authenticated callers can only see their own sessions,
+   * never another user's sessions.
    */
   @ApiOperation({
-    summary: 'List auth sessions',
+    summary: 'List authenticated user sessions',
     description:
-      'Returns a paginated list of authenticated user sessions. ' +
+      'Returns a paginated list of the authenticated user\'s sessions. ' +
       'A session entry corresponds to a user record that has completed at least one login. ' +
       'Results are sorted by lastLoginAt descending. Supports filtering by status, ' +
-      'authProvider, and date range.',
+      'authProvider, and date range. Scoped to the authenticated user only — ' +
+      'callers cannot access another user\'s sessions.',
   })
   @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (starting from 1)' })
   @ApiQuery({ name: 'limit', required: false, example: 20, description: 'Items per page (max 100)' })
@@ -277,6 +316,14 @@ export class AuthOrchestratorController {
   @ApiQuery({ name: 'authProvider', required: false, example: 'GOOGLE', description: 'Filter by authentication provider' })
   @ApiQuery({ name: 'dateFrom', required: false, example: '2024-01-01T00:00:00.000Z', description: 'Filter sessions with lastLoginAt on or after this ISO date' })
   @ApiQuery({ name: 'dateTo', required: false, example: '2024-12-31T23:59:59.999Z', description: 'Filter sessions with lastLoginAt on or before this ISO date' })
+  @ApiHeader({
+    name: 'Authorization',
+    required: true,
+    description:
+      'Bearer token (JWT) from the configured identity provider. ' +
+      'Required for authentication. Results are scoped to the authenticated user only.',
+    example: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+  })
   @ApiResponse({
     status: 200,
     description: 'Paginated list of auth sessions.',
@@ -317,10 +364,37 @@ export class AuthOrchestratorController {
       },
     },
   })
+  @ApiResponse({
+    status: 401,
+    description:
+      'Unauthorized — Authorization header is missing or JWT token verification failed. ' +
+      'Callers must be authenticated to list sessions.',
+    schema: {
+      example: {
+        statusCode: 401,
+        message: 'Bearer token verification failed',
+        error: 'Unauthorized',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 403,
+    description:
+      'Forbidden — Caller\'s account is suspended or inactive. ' +
+      'Even though the JWT is valid, the account status prevents access.',
+    schema: {
+      example: {
+        statusCode: 403,
+        message: 'Account is suspended. Cannot authenticate.',
+        error: 'Forbidden',
+      },
+    },
+  })
   @Get('sessions')
-  listSessions(
+  async listSessions(
     @Query() pagination: PaginationDto,
     @Query() filters: AuthSessionFilterDto,
+    @Req() request: Request,
   ) {
     return this.authOrchestrator.listSessions({
       page: pagination.page,
@@ -335,25 +409,38 @@ export class AuthOrchestratorController {
   /**
    * Validation endpoint - checks if authentication is possible for the given authId.
    *
-   * Returns `{ valid: true }` for any authId that can proceed with authentication
-   * (both new users and existing active users). Returns `{ valid: false }` only
-   * when the lookup itself encounters an unrecoverable error.
+   * Returns `{ valid: true }` only for existing users with ACTIVE status.
+   * Returns `{ valid: false }` if the user doesn't exist or if a system-level error occurs.
+   * Throws 403 Forbidden if the user exists but has INACTIVE or SUSPENDED status.
    */
   @ApiOperation({
     summary: 'Validate an auth ID',
     description:
       'Checks whether an authId can proceed with authentication. ' +
-      'Returns valid: true for new users and existing active users. ' +
-      'Returns valid: false only when a system-level lookup error occurs.',
+      'Returns valid: true only for existing users with ACTIVE status. ' +
+      'Returns valid: false if user not found or system error occurs. ' +
+      'Throws 403 Forbidden if user is INACTIVE or SUSPENDED.',
   })
   @ApiParam({ name: 'authId', description: 'External auth provider user identifier', example: 'google|1234567890' })
   @ApiResponse({
     status: 200,
-    description: 'Validation result.',
+    description: 'Validation result for active user.',
     schema: {
       type: 'object',
       properties: {
         valid: { type: 'boolean', example: true },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 403,
+    description:
+      'Forbidden — user exists but is INACTIVE or SUSPENDED and cannot authenticate.',
+    schema: {
+      example: {
+        statusCode: 403,
+        message: 'Account is suspended. Cannot authenticate.',
+        error: 'Forbidden',
       },
     },
   })
