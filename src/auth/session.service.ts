@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '../common/prisma/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { SessionStatus } from '../generated/prisma';
 
 export interface CreateSessionRequest {

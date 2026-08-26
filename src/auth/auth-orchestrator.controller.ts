@@ -11,6 +11,7 @@ import {
   Res,
   UseGuards,
   Query,
+  Logger,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -22,6 +23,7 @@ import {
   ApiHeader,
 } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
+import * as crypto from 'crypto';
 import {
   AuthOrchestrator,
   type AuthenticationRequest,
@@ -42,6 +44,8 @@ import {
 @FeatureFlag('auth_api')
 @UseGuards(FeatureFlagGuard)
 export class AuthOrchestratorController {
+  private readonly logger = new Logger(AuthOrchestratorController.name);
+
   constructor(
     private readonly authOrchestrator: AuthOrchestrator,
     private readonly refreshTokenService: RefreshTokenService,
@@ -108,7 +112,7 @@ export class AuthOrchestratorController {
   })
   @ApiResponse({
     status: 200,
-    description: 'Authentication successful. Returns the user and their wallet.',
+    description: 'Authentication successful. Returns the user, wallet, and refresh token.',
     schema: {
       type: 'object',
       properties: {
@@ -134,6 +138,7 @@ export class AuthOrchestratorController {
             createdAt: { type: 'string', format: 'date-time' },
           },
         },
+        refreshToken: { type: 'string', example: 'hex-encoded-refresh-token' },
         isNewUser: { type: 'boolean', example: true },
         isNewWallet: { type: 'boolean', example: true },
       },
@@ -197,6 +202,7 @@ export class AuthOrchestratorController {
     @Req() httpRequest: Request,
     @Res() response: Response,
   ): Promise<void> {
+    const requestId = crypto.randomUUID();
     const requestWithIdempotency: AuthenticationRequestWithIdempotency = {
       ...request,
       idempotencyKey,
@@ -208,9 +214,36 @@ export class AuthOrchestratorController {
       requestWithIdempotency,
     );
 
+    // Issue a refresh token on successful authentication
+    const refreshTokenValue = crypto.randomBytes(32).toString('hex');
+    const refreshTokenHash = crypto
+      .createHash('sha256')
+      .update(refreshTokenValue)
+      .digest('hex');
+    const refreshTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+    try {
+      await this.refreshTokenService.createRefreshToken({
+        userId: result.user.id,
+        tokenHash: refreshTokenHash,
+        expiresAt: refreshTokenExpiresAt,
+      });
+      this.logger.log(
+        `[${requestId}] Refresh token issued for user ${result.user.id}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `[${requestId}] Failed to issue refresh token for user ${result.user.id}: ${error instanceof Error ? error.message : 'unknown error'}`,
+      );
+      throw error;
+    }
+
     // Extract and remove metadata before sending response
     const idempotencyReplayed = (result as any)._idempotencyReplayed ?? false;
-    const responseBody = { ...result };
+    const responseBody = {
+      ...result,
+      refreshToken: refreshTokenValue,
+    };
     delete (responseBody as any)._idempotencyReplayed;
 
     // Set idempotency-replayed header if idempotency key was provided
