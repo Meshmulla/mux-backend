@@ -292,18 +292,23 @@ export class AuthOrchestratorController {
   }
 
   /**
-   * Sessions listing endpoint - returns recent auth sessions with optional filters.
+   * Sessions listing endpoint - returns the authenticated user's sessions.
    *
+   * Requires authentication and is scoped to the authenticated caller's sessions only.
    * Supports filtering by account status, authProvider, and lastLoginAt date range.
    * Results are paginated and ordered by lastLoginAt descending.
+   *
+   * Access control: Authenticated callers can only see their own sessions,
+   * never another user's sessions.
    */
   @ApiOperation({
-    summary: 'List auth sessions',
+    summary: 'List authenticated user sessions',
     description:
-      'Returns a paginated list of authenticated user sessions. ' +
+      'Returns a paginated list of the authenticated user\'s sessions. ' +
       'A session entry corresponds to a user record that has completed at least one login. ' +
       'Results are sorted by lastLoginAt descending. Supports filtering by status, ' +
-      'authProvider, and date range.',
+      'authProvider, and date range. Scoped to the authenticated user only — ' +
+      'callers cannot access another user\'s sessions.',
   })
   @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (starting from 1)' })
   @ApiQuery({ name: 'limit', required: false, example: 20, description: 'Items per page (max 100)' })
@@ -311,6 +316,14 @@ export class AuthOrchestratorController {
   @ApiQuery({ name: 'authProvider', required: false, example: 'GOOGLE', description: 'Filter by authentication provider' })
   @ApiQuery({ name: 'dateFrom', required: false, example: '2024-01-01T00:00:00.000Z', description: 'Filter sessions with lastLoginAt on or after this ISO date' })
   @ApiQuery({ name: 'dateTo', required: false, example: '2024-12-31T23:59:59.999Z', description: 'Filter sessions with lastLoginAt on or before this ISO date' })
+  @ApiHeader({
+    name: 'Authorization',
+    required: true,
+    description:
+      'Bearer token (JWT) from the configured identity provider. ' +
+      'Required for authentication. Results are scoped to the authenticated user only.',
+    example: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+  })
   @ApiResponse({
     status: 200,
     description: 'Paginated list of auth sessions.',
@@ -351,10 +364,37 @@ export class AuthOrchestratorController {
       },
     },
   })
+  @ApiResponse({
+    status: 401,
+    description:
+      'Unauthorized — Authorization header is missing or JWT token verification failed. ' +
+      'Callers must be authenticated to list sessions.',
+    schema: {
+      example: {
+        statusCode: 401,
+        message: 'Bearer token verification failed',
+        error: 'Unauthorized',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 403,
+    description:
+      'Forbidden — Caller\'s account is suspended or inactive. ' +
+      'Even though the JWT is valid, the account status prevents access.',
+    schema: {
+      example: {
+        statusCode: 403,
+        message: 'Account is suspended. Cannot authenticate.',
+        error: 'Forbidden',
+      },
+    },
+  })
   @Get('sessions')
-  listSessions(
+  async listSessions(
     @Query() pagination: PaginationDto,
     @Query() filters: AuthSessionFilterDto,
+    @Req() request: Request,
   ) {
     return this.authOrchestrator.listSessions({
       page: pagination.page,
