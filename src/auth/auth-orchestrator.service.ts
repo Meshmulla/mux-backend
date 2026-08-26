@@ -22,6 +22,7 @@ import { WalletNetwork } from '../wallets/domain/wallet.model';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { AuthMetricsService } from './auth-metrics.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
+import { JwtVerificationService } from './jwt-verification.service';
 
 /**
  * Single consolidated message returned to external callers for any
@@ -34,13 +35,14 @@ export const EXTERNAL_AUTH_FAILURE_MESSAGE =
   'Authentication failed. Please try again later.';
 
 export interface AuthenticationRequest {
-  authId: string;
+  authId?: string;
   email?: string;
   displayName?: string;
   authProvider?: string;
   network?: WalletNetwork;
   ipAddress?: string;
   userAgent?: string;
+  bearerToken?: string;
 }
 
 export class AuthPayloadValidator {
@@ -178,6 +180,7 @@ export class AuthOrchestrator {
     private readonly walletCreationOrchestrator: WalletCreationOrchestrator,
     private readonly idempotencyService: IdempotencyService,
     private readonly authMetrics: AuthMetricsService,
+    private readonly jwtVerification: JwtVerificationService,
   ) {}
 
   /**
@@ -194,15 +197,34 @@ export class AuthOrchestrator {
    * Handles first-time or returning user authentication.
    * Creates user and wallet atomically on first authentication.
    * Supports idempotency via optional Idempotency-Key header.
+   *
+   * CRITICAL: Identity is now extracted from verified JWT token claims only.
+   * Client-supplied authId/authProvider are no longer trusted.
    */
   async handleAuthentication(
     request: AuthenticationRequestWithIdempotency,
   ): Promise<AuthenticationResult> {
     const startTime = Date.now();
 
-    // Validate auth provider payload shape before processing
+    // Verify JWT and extract identity from verified claims
+    let verifiedIdentity: { authId: string; authProvider: string };
     try {
-      AuthPayloadValidator.validate(request);
+      verifiedIdentity = await this.verifyIdentity(request);
+    } catch (verificationError) {
+      const latency = Date.now() - startTime;
+      this.authMetrics.recordAttempt('failure_jwt_verification', latency);
+      throw verificationError;
+    }
+
+    // Validate auth provider payload shape (email, displayName, network, etc.)
+    try {
+      // Only validate the optional fields, not authId (derived from JWT)
+      const optionalFields = {
+        email: request.email,
+        displayName: request.displayName,
+        network: request.network,
+      };
+      this.validateOptionalAuthFields(optionalFields);
     } catch (validationError) {
       const latency = Date.now() - startTime;
       this.authMetrics.recordAttempt('failure_invalid_payload', latency);
@@ -212,7 +234,7 @@ export class AuthOrchestrator {
     const network = request.network || WalletNetwork.TESTNET;
 
     this.logger.log(
-      `${this.logPrefix()} Starting authentication orchestration for authId: ${request.authId}`,
+      `${this.logPrefix()} Starting authentication orchestration for verified authId (JWT verified)`,
     );
 
     try {
@@ -234,7 +256,11 @@ export class AuthOrchestrator {
       }
 
       // Step 1: Find or create user (idempotent)
-      const userResult = await this.findOrCreateUser(request);
+      const userResult = await this.findOrCreateUser({
+        ...request,
+        authId: verifiedIdentity.authId,
+        authProvider: verifiedIdentity.authProvider,
+      });
 
       // Step 1.5: Check if user is active
       try {
@@ -261,7 +287,7 @@ export class AuthOrchestrator {
 
       const duration = Date.now() - startTime;
       this.logger.log(
-        `${this.logPrefix()} Authentication orchestration completed in ${duration}ms for authId: ${request.authId} ` +
+        `${this.logPrefix()} Authentication orchestration completed in ${duration}ms ` +
           `(newUser: ${userResult.isNewUser}, newWallet: ${walletResult.isNewWallet})`,
       );
 
@@ -315,22 +341,9 @@ export class AuthOrchestrator {
       return result;
     } catch (error) {
       this.logger.error(
-        `${this.logPrefix()} Authentication orchestration failed for authId ${request.authId}:`,
+        `${this.logPrefix()} Authentication orchestration failed:`,
         error,
       );
-
-      // Emit failure event best-effort
-      this.webhookEventEmitter
-        .emitAuthenticationFailed({
-          authId: request.authId,
-          reason: error.message ?? 'unknown',
-          errorCode: (error as any)?.status?.toString(),
-        })
-        .catch((err) =>
-          this.logger.warn(
-            `Auth failure event emission failed: ${err.message}`,
-          ),
-        );
 
       if (error instanceof HttpException) {
         throw error;
@@ -475,6 +488,93 @@ export class AuthOrchestrator {
         `${this.logPrefix()} Authentication rejected: user status is ${status}`,
       );
       throw new ForbiddenException('Account is inactive');
+    }
+  }
+
+  /**
+   * Verifies the bearer token and extracts the authenticated identity.
+   * Identity (authId and authProvider) is ALWAYS derived from the verified JWT token,
+   * never from client-supplied request fields. This is the critical security boundary.
+   *
+   * @throws UnauthorizedException if token verification fails
+   * @throws ServiceUnavailableException if JWT verification service is unavailable
+   */
+  private async verifyIdentity(
+    request: AuthenticationRequest,
+  ): Promise<{ authId: string; authProvider: string }> {
+    if (!request.bearerToken) {
+      throw new BadRequestException('Authorization header with bearer token is required');
+    }
+
+    const verifiedToken = await this.jwtVerification.verifyToken(
+      request.bearerToken,
+    );
+
+    if (!verifiedToken.sub) {
+      throw new BadRequestException(
+        'JWT token must contain sub (subject) claim with user identity',
+      );
+    }
+
+    const authProvider = verifiedToken.auth_provider?.toUpperCase();
+    if (!authProvider) {
+      throw new BadRequestException(
+        'JWT token must contain auth_provider claim',
+      );
+    }
+
+    this.logger.log(
+      `${this.logPrefix()} Identity verified from JWT (provider: ${authProvider})`,
+    );
+
+    return {
+      authId: verifiedToken.sub,
+      authProvider,
+    };
+  }
+
+  /**
+   * Validates optional authentication fields (email, displayName, network).
+   * These fields are optional metadata passed alongside the verified JWT token.
+   */
+  private validateOptionalAuthFields(fields: {
+    email?: string;
+    displayName?: string;
+    network?: string;
+  }): void {
+    // Validate email format if provided
+    if (fields.email !== undefined && fields.email !== null) {
+      if (typeof fields.email !== 'string') {
+        throw new BadRequestException('email must be a string');
+      }
+
+      if (fields.email.trim().length > 0) {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(fields.email)) {
+          throw new BadRequestException('email format is invalid');
+        }
+      }
+    }
+
+    // Validate displayName if provided
+    if (fields.displayName !== undefined && fields.displayName !== null) {
+      if (typeof fields.displayName !== 'string') {
+        throw new BadRequestException('displayName must be a string');
+      }
+
+      if (fields.displayName.trim().length === 0) {
+        throw new BadRequestException('displayName cannot be empty');
+      }
+    }
+
+    // Validate network if provided
+    if (fields.network !== undefined && fields.network !== null) {
+      if (
+        typeof fields.network !== 'string' ||
+        !Object.values(WalletNetwork).includes(fields.network as WalletNetwork)
+      ) {
+        throw new BadRequestException('network must be a valid WalletNetwork');
+      }
     }
   }
 }

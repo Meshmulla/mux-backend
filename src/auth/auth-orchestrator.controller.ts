@@ -63,9 +63,20 @@ export class AuthOrchestratorController {
   @ApiOperation({
     summary: 'Authenticate a user',
     description:
-      'Handles first-time and returning user authentication. ' +
+      'Handles first-time and returning user authentication with JWT verification. ' +
       'Creates a user record and wallet on first login; returns existing records on repeat calls. ' +
+      'Requires a valid, signed JWT token from the configured identity provider (Clerk/Better Auth). ' +
+      'Identity is extracted ONLY from the verified JWT token; client-supplied authId/authProvider are ignored. ' +
       'Supports idempotent replay via the Idempotency-Key header.',
+  })
+  @ApiHeader({
+    name: 'Authorization',
+    required: true,
+    description:
+      'Bearer token (JWT) from the configured identity provider. ' +
+      'Token must contain sub (subject) and auth_provider claims. ' +
+      'Must be in format: Authorization: Bearer <jwt_token>',
+    example: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
   })
   @ApiHeader({
     name: 'Idempotency-Key',
@@ -78,27 +89,33 @@ export class AuthOrchestratorController {
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['authId'],
+      required: [],
       properties: {
         authId: {
           type: 'string',
-          description: 'External auth provider user identifier (e.g. OAuth sub claim)',
+          deprecated: true,
+          description:
+            'DEPRECATED: authId is now derived from the verified JWT token (sub claim). ' +
+            'This field is ignored if provided in the request body.',
           example: 'google|1234567890',
         },
         email: {
           type: 'string',
           format: 'email',
-          description: 'User email address (optional)',
+          description: 'User email address (optional metadata, not from JWT)',
           example: 'alice@example.com',
         },
         displayName: {
           type: 'string',
-          description: 'Human-readable display name (optional)',
+          description: 'Human-readable display name (optional metadata, not from JWT)',
           example: 'Alice Smith',
         },
         authProvider: {
           type: 'string',
-          description: 'Authentication provider identifier',
+          deprecated: true,
+          description:
+            'DEPRECATED: authProvider is now derived from the verified JWT token (auth_provider claim). ' +
+            'This field is ignored if provided in the request body.',
           example: 'GOOGLE',
         },
         network: {
@@ -146,12 +163,27 @@ export class AuthOrchestratorController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Bad request — invalid or missing authId, bad email format, or invalid network.',
+    description:
+      'Bad request — missing Authorization header, invalid JWT format, ' +
+      'bad email format, or invalid network.',
     schema: {
       example: {
         statusCode: 400,
-        message: 'Invalid authentication payload: authId is required and must be a string',
+        message: 'Authorization header with bearer token is required',
         error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description:
+      'Unauthorized — JWT token verification failed. ' +
+      'Possible causes: invalid token signature, expired token, missing required claims (sub, auth_provider).',
+    schema: {
+      example: {
+        statusCode: 401,
+        message: 'Bearer token verification failed',
+        error: 'Unauthorized',
       },
     },
   })
@@ -198,6 +230,7 @@ export class AuthOrchestratorController {
   @HttpCode(HttpStatus.OK)
   async authenticate(
     @Body() request: AuthenticationRequest,
+    @Headers('authorization') authorizationHeader: string | undefined,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Req() httpRequest: Request,
     @Res() response: Response,
@@ -206,6 +239,7 @@ export class AuthOrchestratorController {
     const requestWithIdempotency: AuthenticationRequestWithIdempotency = {
       ...request,
       idempotencyKey,
+      bearerToken: authorizationHeader,
       ipAddress: httpRequest.ip,
       userAgent: httpRequest.headers['user-agent'],
     };

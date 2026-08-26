@@ -39,6 +39,9 @@ export interface ValidatedEnv {
   KEY_MGMT_MAX_RETRIES: number;
   KEY_MGMT_RETRY_BACKOFF_MS: number;
   BLOCK_SELF_PAYMENTS: boolean;
+  AUTH_IDENTITY_PROVIDER: string;
+  CLERK_JWT_PUBLIC_KEY: string;
+  BETTER_AUTH_JWKS_URL: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -316,6 +319,35 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     violations,
   );
 
+  // ── JWT Verification / Identity Provider ──────────────────────────────────
+  const AUTH_IDENTITY_PROVIDER = env.AUTH_IDENTITY_PROVIDER?.trim() || '';
+  const CLERK_JWT_PUBLIC_KEY = env.CLERK_JWT_PUBLIC_KEY?.trim() || '';
+  const BETTER_AUTH_JWKS_URL = env.BETTER_AUTH_JWKS_URL?.trim() || '';
+
+  // In production, fail closed if identity provider not configured
+  if (process.env.NODE_ENV === 'production') {
+    if (!AUTH_IDENTITY_PROVIDER) {
+      violations.push({
+        variable: 'AUTH_IDENTITY_PROVIDER',
+        message: 'AUTH_IDENTITY_PROVIDER is required in production (set to CLERK or BETTER_AUTH)',
+      });
+    }
+
+    if (AUTH_IDENTITY_PROVIDER === 'CLERK' && !CLERK_JWT_PUBLIC_KEY) {
+      violations.push({
+        variable: 'CLERK_JWT_PUBLIC_KEY',
+        message: 'CLERK_JWT_PUBLIC_KEY is required when AUTH_IDENTITY_PROVIDER=CLERK',
+      });
+    }
+
+    if (AUTH_IDENTITY_PROVIDER === 'BETTER_AUTH' && !BETTER_AUTH_JWKS_URL) {
+      violations.push({
+        variable: 'BETTER_AUTH_JWKS_URL',
+        message: 'BETTER_AUTH_JWKS_URL is required when AUTH_IDENTITY_PROVIDER=BETTER_AUTH',
+      });
+    }
+  }
+
   // ── Report violations ─────────────────────────────────────────────────────
   if (violations.length > 0) {
     const lines = violations.map((v) => `  • ${v.message}`).join('\n');
@@ -356,5 +388,8 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     KEY_MGMT_MAX_RETRIES,
     KEY_MGMT_RETRY_BACKOFF_MS,
     BLOCK_SELF_PAYMENTS,
+    AUTH_IDENTITY_PROVIDER,
+    CLERK_JWT_PUBLIC_KEY,
+    BETTER_AUTH_JWKS_URL,
   };
 }
