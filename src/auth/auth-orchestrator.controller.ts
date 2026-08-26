@@ -369,25 +369,38 @@ export class AuthOrchestratorController {
   /**
    * Validation endpoint - checks if authentication is possible for the given authId.
    *
-   * Returns `{ valid: true }` for any authId that can proceed with authentication
-   * (both new users and existing active users). Returns `{ valid: false }` only
-   * when the lookup itself encounters an unrecoverable error.
+   * Returns `{ valid: true }` only for existing users with ACTIVE status.
+   * Returns `{ valid: false }` if the user doesn't exist or if a system-level error occurs.
+   * Throws 403 Forbidden if the user exists but has INACTIVE or SUSPENDED status.
    */
   @ApiOperation({
     summary: 'Validate an auth ID',
     description:
       'Checks whether an authId can proceed with authentication. ' +
-      'Returns valid: true for new users and existing active users. ' +
-      'Returns valid: false only when a system-level lookup error occurs.',
+      'Returns valid: true only for existing users with ACTIVE status. ' +
+      'Returns valid: false if user not found or system error occurs. ' +
+      'Throws 403 Forbidden if user is INACTIVE or SUSPENDED.',
   })
   @ApiParam({ name: 'authId', description: 'External auth provider user identifier', example: 'google|1234567890' })
   @ApiResponse({
     status: 200,
-    description: 'Validation result.',
+    description: 'Validation result for active user.',
     schema: {
       type: 'object',
       properties: {
         valid: { type: 'boolean', example: true },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 403,
+    description:
+      'Forbidden — user exists but is INACTIVE or SUSPENDED and cannot authenticate.',
+    schema: {
+      example: {
+        statusCode: 403,
+        message: 'Account is suspended. Cannot authenticate.',
+        error: 'Forbidden',
       },
     },
   })

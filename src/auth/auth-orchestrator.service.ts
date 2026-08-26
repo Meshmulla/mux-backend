@@ -457,18 +457,39 @@ export class AuthOrchestrator {
   }
 
   /**
-   * Validates that a user can authenticate (pre-authentication check)
+   * Validates that a user can authenticate (pre-authentication check).
+   * Returns true only if the user exists AND has ACTIVE status.
+   * Throws ForbiddenException if user is INACTIVE/SUSPENDED (explicit rejection).
+   *
+   * @throws ForbiddenException if user status prevents authentication
+   * @returns true if user exists and is ACTIVE; false if user not found
    */
   async validateAuthentication(authId: string): Promise<boolean> {
     try {
       // Check if user exists
       const user = await this.idempotentUserService.findUserByAuthId(authId);
 
-      // User can authenticate if they exist or if they're new
+      // Check user status - reject INACTIVE/SUSPENDED accounts
+      const status = (user.status || UserStatus.ACTIVE) as UserStatus;
+      if (status !== UserStatus.ACTIVE) {
+        this.logger.warn(
+          `${this.logPrefix()} Authentication validation rejected: user status is ${status}`,
+        );
+        throw new ForbiddenException(
+          `Account is ${status.toLowerCase()}. Cannot authenticate.`,
+        );
+      }
+
       return true;
     } catch (error) {
+      // Re-throw ForbiddenException (user exists but is suspended/inactive)
+      if (error instanceof ForbiddenException) {
+        throw error;
+      }
+
+      // Log other errors and return false (user not found, DB error, etc.)
       this.logger.error(
-        `${this.logPrefix()} Authentication validation failed for authId ${authId}:`,
+        `${this.logPrefix()} Authentication validation failed:`,
         error,
       );
       return false;
