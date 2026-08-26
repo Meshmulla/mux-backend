@@ -6,6 +6,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Request } from 'express';
+import { Public } from '../auth/public.decorator';
 import { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import {
   MaintenanceStatusDto,
@@ -20,8 +21,9 @@ import { MaintenanceService } from './maintenance.service';
 export class MaintenanceController {
   constructor(private readonly maintenance: MaintenanceService) {}
 
+  @Public()
   @Get()
-  @ApiOperation({ summary: 'Get the current maintenance mode status' })
+  @ApiOperation({ summary: 'Get the current maintenance mode status (public inspection endpoint)' })
   @ApiResponse({ status: 200, type: MaintenanceStatusDto })
   getStatus(): Promise<MaintenanceStatusDto> {
     return this.maintenance.getStatus();

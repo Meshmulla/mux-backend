@@ -81,7 +81,7 @@ While enabled, `POST`, `PUT`, `PATCH`, and `DELETE` routes return `503 Service
 Unavailable`; `GET`, `HEAD`, and `OPTIONS` remain available. A configured retry
 delay is returned in the `Retry-After` header.
 
-Authenticated callers can inspect `GET /v1/maintenance`. To change the state,
+Inspect the current maintenance status with `GET /v1/maintenance` (public endpoint, no authentication required). To change the state,
 send `PATCH /v1/maintenance` with normal API-key authentication plus the
 `X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`:
 
