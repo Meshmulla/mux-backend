@@ -22,6 +22,7 @@ import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
 import { IdempotentUserModule } from './users/idempotent-user.module';
+import { FeatureFlagModule } from './common/feature-flags/feature-flag.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { IdempotentUserModule } from './users/idempotent-user.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    FeatureFlagModule,
     PrismaModule,
     AuthModule,
     RateLimitModule,
