@@ -22,6 +22,7 @@ import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
 import { IdempotentUserModule } from './users/idempotent-user.module';
+import { TracingModule } from './tracing/tracing.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { IdempotentUserModule } from './users/idempotent-user.module';
     ProjectsModule,
     HealthModule,
     IdempotentUserModule,
+    TracingModule,
   ],
   controllers: [AppController],
   providers: [
