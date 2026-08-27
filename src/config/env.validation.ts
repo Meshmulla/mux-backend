@@ -42,6 +42,11 @@ export interface ValidatedEnv {
   AUTH_IDENTITY_PROVIDER: string;
   CLERK_JWT_PUBLIC_KEY: string;
   BETTER_AUTH_JWKS_URL: string;
+  // OpenTelemetry / tracing
+  OTEL_ENABLED: boolean;
+  OTEL_EXPORTER_OTLP_ENDPOINT: string;
+  OTEL_EXPORTER_OTLP_PROTOCOL: string;
+  OTEL_SERVICE_NAME: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -348,6 +353,50 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     }
   }
 
+  // ── OpenTelemetry / Tracing ────────────────────────────────────────────────
+  const OTEL_ENABLED = optionalBoolean(env, 'OTEL_ENABLED', false, violations);
+
+  // When OTEL is explicitly enabled, the OTLP endpoint is required so traces
+  // are not silently dropped.
+  const OTEL_EXPORTER_OTLP_ENDPOINT = env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ?? '';
+  const OTEL_EXPORTER_OTLP_PROTOCOL = env.OTEL_EXPORTER_OTLP_PROTOCOL?.trim() ?? 'http/protobuf';
+  const OTEL_SERVICE_NAME = env.OTEL_SERVICE_NAME?.trim() ?? 'mux-backend';
+
+  if (OTEL_ENABLED) {
+    if (!OTEL_EXPORTER_OTLP_ENDPOINT) {
+      violations.push({
+        variable: 'OTEL_EXPORTER_OTLP_ENDPOINT',
+        message:
+          'OTEL_EXPORTER_OTLP_ENDPOINT is required when OTEL_ENABLED=true ' +
+          '(e.g. http://localhost:4318)',
+      });
+    } else {
+      // Validate that the endpoint is a valid http/https URL
+      try {
+        const url = new URL(OTEL_EXPORTER_OTLP_ENDPOINT);
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          violations.push({
+            variable: 'OTEL_EXPORTER_OTLP_ENDPOINT',
+            message: `OTEL_EXPORTER_OTLP_ENDPOINT must use http or https protocol (received "${OTEL_EXPORTER_OTLP_ENDPOINT}")`,
+          });
+        }
+      } catch {
+        violations.push({
+          variable: 'OTEL_EXPORTER_OTLP_ENDPOINT',
+          message: `OTEL_EXPORTER_OTLP_ENDPOINT must be a valid URL (received "${OTEL_EXPORTER_OTLP_ENDPOINT}")`,
+        });
+      }
+    }
+
+    const allowedProtocols = ['http/protobuf', 'grpc'];
+    if (!allowedProtocols.includes(OTEL_EXPORTER_OTLP_PROTOCOL)) {
+      violations.push({
+        variable: 'OTEL_EXPORTER_OTLP_PROTOCOL',
+        message: `OTEL_EXPORTER_OTLP_PROTOCOL must be one of: ${allowedProtocols.join(', ')} (received "${OTEL_EXPORTER_OTLP_PROTOCOL}")`,
+      });
+    }
+  }
+
   // ── Report violations ─────────────────────────────────────────────────────
   if (violations.length > 0) {
     const lines = violations.map((v) => `  • ${v.message}`).join('\n');
@@ -391,5 +440,9 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     AUTH_IDENTITY_PROVIDER,
     CLERK_JWT_PUBLIC_KEY,
     BETTER_AUTH_JWKS_URL,
+    OTEL_ENABLED,
+    OTEL_EXPORTER_OTLP_ENDPOINT,
+    OTEL_EXPORTER_OTLP_PROTOCOL,
+    OTEL_SERVICE_NAME,
   };
 }
