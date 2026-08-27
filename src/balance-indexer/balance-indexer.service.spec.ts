@@ -4,7 +4,10 @@ import { NotFoundException } from '@nestjs/common';
 import { BalanceIndexerService } from './balance-indexer.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { BalanceRepository } from './balance.repository';
+import { PrismaService } from '../prisma/prisma.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
 import { AssetType, BalanceSyncStatus } from './domain/balance.model';
 
 const WALLET_ID = 'wallet-123';
@@ -31,12 +34,42 @@ function makeBalance(overrides: Partial<any> = {}) {
   };
 }
 
+const mockPrisma = {
+  walletBalance: {
+    findUnique: jest.fn(),
+    findMany: jest.fn(),
+    updateMany: jest.fn(),
+    upsert: jest.fn(),
+  },
+  wallet: {
+    findUnique: jest.fn(),
+    findMany: jest.fn(),
+  },
+  balanceSyncJob: {
+    create: jest.fn().mockResolvedValue({ id: 'job-1' }),
+    update: jest.fn().mockResolvedValue({}),
+  },
+};
+
 describe('BalanceIndexerService', () => {
   let service: BalanceIndexerService;
+  let prisma: jest.Mocked<PrismaService>;
   let repo: jest.Mocked<BalanceRepository>;
   let horizonService: jest.Mocked<StellarHorizonService>;
   let webhookEmitter: jest.Mocked<WebhookEventEmitterService>;
   let configService: jest.Mocked<ConfigService>;
+  const mockHorizon = {
+    getAccountBalances: jest.fn(),
+    accountExists: jest.fn(),
+  };
+
+  const mockRequestContext = {
+    getRequestId: jest.fn().mockReturnValue('test-request-id-spec'),
+  };
+
+  const mockMetrics = {
+    record: jest.fn(),
+  };
 
   beforeEach(async () => {
     repo = {
@@ -63,18 +96,24 @@ describe('BalanceIndexerService', () => {
 
     configService = {
       get: jest.fn((key: string, defaultValue?: any) => {
-        if (key === 'STELLAR_HORIZON_URL') return 'https://horizon-testnet.stellar.org';
-        if (key === 'BALANCE_STALE_THRESHOLD_MS') return defaultValue ?? 300_000;
+        if (key === 'STELLAR_HORIZON_URL')
+          return 'https://horizon-testnet.stellar.org';
+        if (key === 'BALANCE_STALE_THRESHOLD_MS')
+          return defaultValue ?? 300_000;
         return defaultValue;
       }),
     } as any;
+    jest.clearAllMocks();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BalanceIndexerService,
-        { provide: StellarHorizonService, useValue: horizonService },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: StellarHorizonService, useValue: mockHorizon },
         { provide: ConfigService, useValue: configService },
         { provide: WebhookEventEmitterService, useValue: webhookEmitter },
+        { provide: RequestContextService, useValue: mockRequestContext },
+        { provide: BalanceIndexerMetricsService, useValue: mockMetrics },
         { provide: BalanceRepository, useValue: repo },
       ],
     }).compile();
@@ -83,6 +122,15 @@ describe('BalanceIndexerService', () => {
     // Run lifecycle hook manually (compile() calls onModuleInit automatically
     // only in full NestJS apps; call explicitly in unit tests)
     service.onModuleInit();
+    prisma = module.get(PrismaService);
+    horizonService = module.get(StellarHorizonService);
+
+    mockPrisma.balanceSyncJob.create.mockResolvedValue({ id: 'job-1' });
+    mockPrisma.balanceSyncJob.update.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    service.onModuleDestroy();
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -106,7 +154,8 @@ describe('BalanceIndexerService', () => {
 
     it('throws when BALANCE_STALE_THRESHOLD_MS is zero', () => {
       configService.get.mockImplementation((key: string, def?: any) => {
-        if (key === 'STELLAR_HORIZON_URL') return 'https://horizon-testnet.stellar.org';
+        if (key === 'STELLAR_HORIZON_URL')
+          return 'https://horizon-testnet.stellar.org';
         if (key === 'BALANCE_STALE_THRESHOLD_MS') return 0;
         return def;
       });
@@ -146,7 +195,11 @@ describe('BalanceIndexerService', () => {
       const staleDate = new Date(Date.now() - 10 * 60 * 1000); // 10 min ago
       const balance = makeBalance({ lastSyncedAt: staleDate });
       repo.findOne.mockResolvedValue(balance);
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.accountExists.mockResolvedValue(true);
       horizonService.getAccountBalances.mockResolvedValue([]);
 
@@ -171,7 +224,11 @@ describe('BalanceIndexerService', () => {
     });
 
     it('sets zero balances when account is not on-chain', async () => {
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.accountExists.mockResolvedValue(false);
       repo.upsertNativeZero.mockResolvedValue(undefined);
 
@@ -183,7 +240,11 @@ describe('BalanceIndexerService', () => {
     });
 
     it('syncs balances and returns SYNCED status when no mismatches', async () => {
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.accountExists.mockResolvedValue(true);
       horizonService.getAccountBalances.mockResolvedValue([
         {
@@ -207,7 +268,11 @@ describe('BalanceIndexerService', () => {
     // #387 — Emit domain events
     it('emits balance.updated when balance value changes', async () => {
       const existingBalance = makeBalance({ balance: '50.0000000' });
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.accountExists.mockResolvedValue(true);
       horizonService.getAccountBalances.mockResolvedValue([
         {
@@ -235,7 +300,11 @@ describe('BalanceIndexerService', () => {
 
     it('does NOT emit balance.updated when balance is unchanged', async () => {
       const existingBalance = makeBalance({ balance: '100.0000000' });
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.accountExists.mockResolvedValue(true);
       horizonService.getAccountBalances.mockResolvedValue([
         {
@@ -272,7 +341,11 @@ describe('BalanceIndexerService', () => {
     it('returns matches=true and clears mismatch when balances are equal', async () => {
       const balance = makeBalance({ balance: '100.0000000' });
       repo.findOne.mockResolvedValue(balance);
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.getAccountBalances.mockResolvedValue([
         {
           walletId: WALLET_ID,
@@ -299,7 +372,11 @@ describe('BalanceIndexerService', () => {
       repo.findOne
         .mockResolvedValueOnce(balance) // getBalance call
         .mockResolvedValueOnce(balance); // applyBalanceUpdate findOne call
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.getAccountBalances.mockResolvedValue([
         {
           walletId: WALLET_ID,
