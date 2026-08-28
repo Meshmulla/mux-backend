@@ -26,6 +26,7 @@ import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.se
 import { WalletApiMetricsService } from './wallet-api-metrics.service';
 import { WalletRetryService } from './wallet-retry.service';
 import * as crypto from 'crypto';
+import { TransactionBuilder, Keypair } from 'stellar-sdk';
 import {
   StructuredLogger,
   LogContext,
@@ -300,6 +301,20 @@ export class WalletsService implements OnModuleDestroy {
         error,
       );
       throw new Error('Transaction signing failed');
+    }
+  }
+
+  async signStellarEnvelope(walletId: string, unsignedXdr: string): Promise<string> {
+    const privateKey = await this.getDecryptedPrivateKey(walletId);
+    try {
+      const transaction = TransactionBuilder.fromXDR(
+        unsignedXdr,
+        this.configService.get<string>('STELLAR_NETWORK_PASSPHRASE'),
+      );
+      transaction.sign(Keypair.fromSecret(privateKey));
+      return transaction.toEnvelope().toXDR('base64');
+    } catch {
+      throw new Error('Stellar transaction signing failed');
     }
   }
 

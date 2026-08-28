@@ -22,6 +22,8 @@ export interface ValidatedEnv {
   PORT: number;
   JSON_BODY_LIMIT_BYTES: number;
   MAINTENANCE_ADMIN_SECRET: string;
+  RECOVERY_ADMIN_SECRET: string;
+  RECOVERY_ADMIN_DEV_BYPASS: boolean;
   WALLET_ENCRYPTION_KEY: string;
   STELLAR_HORIZON_URL: string;
   BALANCE_STALE_THRESHOLD_MS: number;
@@ -209,6 +211,16 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
   );
   const MAINTENANCE_ADMIN_SECRET =
     env.MAINTENANCE_ADMIN_SECRET?.trim() ?? '';
+  const RECOVERY_ADMIN_SECRET =
+    process.env.NODE_ENV === 'production'
+      ? requireMinLength(env, 'RECOVERY_ADMIN_SECRET', 32, violations)
+      : env.RECOVERY_ADMIN_SECRET?.trim() ?? '';
+  const RECOVERY_ADMIN_DEV_BYPASS = optionalBoolean(
+    env,
+    'RECOVERY_ADMIN_DEV_BYPASS',
+    false,
+    violations,
+  );
 
   // ── Optional numeric fields ───────────────────────────────────────────────
   const PORT = optionalInt(env, 'PORT', 3000, { min: 1, max: 65535 }, violations);
@@ -420,6 +432,8 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     PORT,
     JSON_BODY_LIMIT_BYTES,
     MAINTENANCE_ADMIN_SECRET,
+    RECOVERY_ADMIN_SECRET,
+    RECOVERY_ADMIN_DEV_BYPASS,
     WALLET_ENCRYPTION_KEY,
     STELLAR_HORIZON_URL,
     BALANCE_STALE_THRESHOLD_MS,
