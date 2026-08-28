@@ -1,4 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 export interface IdempotencyCacheOptions {
@@ -41,7 +45,12 @@ export class IdempotencyService {
         `Error retrieving idempotency record for key ${key}:`,
         error,
       );
-      return null;
+      // Fail closed: if the idempotency cache cannot be queried (e.g. DB
+      // outage), an absent key must NOT be assumed — otherwise duplicate
+      // auth/wallet operations could be executed during an outage.
+      throw new ServiceUnavailableException(
+        'Idempotency cache is temporarily unavailable',
+      );
     }
   }
 
