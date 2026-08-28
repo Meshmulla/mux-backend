@@ -29,6 +29,8 @@ export interface ValidatedEnv {
   WEBHOOK_RETRY_BACKOFF_MS: number;
   WEBHOOK_TIMEOUT_MS: number;
   WEBHOOK_MAX_CONSECUTIVE_FAILURES: number;
+  WEBHOOK_QUEUE_INTERVAL_MS: number;
+  WEBHOOK_INBOUND_SECRET: string;
   AUTH_RATE_LIMIT_MAX: number;
   AUTH_RATE_LIMIT_WINDOW_MS: number;
   RATE_LIMIT_WINDOW_MS: number;
@@ -254,6 +256,15 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     { min: 1 },
     violations,
   );
+  const WEBHOOK_QUEUE_INTERVAL_MS = optionalInt(
+    env,
+    'WEBHOOK_QUEUE_INTERVAL_MS',
+    30_000,
+    { min: 100 },
+    violations,
+  );
+  const WEBHOOK_INBOUND_SECRET =
+    env.WEBHOOK_INBOUND_SECRET?.trim() ?? '';
   const AUTH_RATE_LIMIT_MAX = optionalInt(
     env,
     'AUTH_RATE_LIMIT_MAX',
@@ -427,6 +438,8 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     WEBHOOK_RETRY_BACKOFF_MS,
     WEBHOOK_TIMEOUT_MS,
     WEBHOOK_MAX_CONSECUTIVE_FAILURES,
+    WEBHOOK_QUEUE_INTERVAL_MS,
+    WEBHOOK_INBOUND_SECRET,
     AUTH_RATE_LIMIT_MAX,
     AUTH_RATE_LIMIT_WINDOW_MS,
     RATE_LIMIT_WINDOW_MS,

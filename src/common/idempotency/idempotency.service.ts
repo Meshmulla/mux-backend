@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 export interface IdempotencyCacheOptions {
@@ -6,11 +11,32 @@ export interface IdempotencyCacheOptions {
 }
 
 @Injectable()
-export class IdempotencyService {
+export class IdempotencyService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(IdempotencyService.name);
   private readonly defaultTTLMs = 60000; // 60 seconds default
+  private cleanupTimer: NodeJS.Timeout | null = null;
+  private readonly cleanupIntervalMs = 60_000; // 60 seconds
 
   constructor(private readonly prisma: PrismaService) {}
+
+  onModuleInit(): void {
+    this.cleanupTimer = setInterval(() => {
+      this.cleanupExpiredRecords().catch((error) => {
+        this.logger.error('Scheduled idempotency record cleanup failed:', error);
+      });
+    }, this.cleanupIntervalMs);
+    this.logger.log(
+      `Idempotency record cleanup scheduled (interval: ${this.cleanupIntervalMs}ms)`,
+    );
+  }
+
+  onModuleDestroy(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    this.logger.log('Idempotency record cleanup scheduler stopped');
+  }
 
   /**
    * Retrieves a cached response for an idempotency key if it exists and hasn't expired
