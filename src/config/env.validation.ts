@@ -212,6 +212,16 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
   );
   const MAINTENANCE_ADMIN_SECRET =
     env.MAINTENANCE_ADMIN_SECRET?.trim() ?? '';
+  const RECOVERY_ADMIN_SECRET =
+    process.env.NODE_ENV === 'production'
+      ? requireMinLength(env, 'RECOVERY_ADMIN_SECRET', 32, violations)
+      : env.RECOVERY_ADMIN_SECRET?.trim() ?? '';
+  const RECOVERY_ADMIN_DEV_BYPASS = optionalBoolean(
+    env,
+    'RECOVERY_ADMIN_DEV_BYPASS',
+    false,
+    violations,
+  );
 
   // ── Optional numeric fields ───────────────────────────────────────────────
   const PORT = optionalInt(env, 'PORT', 3000, { min: 1, max: 65535 }, violations);
