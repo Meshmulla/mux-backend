@@ -26,6 +26,7 @@ import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.se
 import { WalletApiMetricsService } from './wallet-api-metrics.service';
 import { WalletRetryService } from './wallet-retry.service';
 import * as crypto from 'crypto';
+import { TransactionBuilder, Keypair } from 'stellar-sdk';
 import {
   StructuredLogger,
   LogContext,
@@ -318,20 +319,21 @@ export class WalletsService implements OnModuleDestroy {
     }
   }
 
-  /**
-   * Rotates the key for a wallet.
-   *
-   * INTERNAL-ONLY (issue #691): not exposed on the public `/v1/wallets` API.
-   * Rotation is an operator/custody action driven through the internal
-   * key-management route (`POST /v1/internal/key-management/rotate`).
-   *
-   * Unified on the successor model (issue #692): delegates to
-   * `KeyManagementService.rotateKey`, which creates a successor wallet with new
-   * key material and transitions the predecessor to `ROTATING`. The previous
-   * in-place overwrite behaviour (and the private-key return value) has been
-   * removed so there is a single rotation implementation across the codebase.
-   */
-  async rotateWalletKey(walletId: string): Promise<WalletKeyRotationResult> {
+  async signStellarEnvelope(walletId: string, unsignedXdr: string): Promise<string> {
+    const privateKey = await this.getDecryptedPrivateKey(walletId);
+    try {
+      const transaction = TransactionBuilder.fromXDR(
+        unsignedXdr,
+        this.configService.get<string>('STELLAR_NETWORK_PASSPHRASE'),
+      );
+      transaction.sign(Keypair.fromSecret(privateKey));
+      return transaction.toEnvelope().toXDR('base64');
+    } catch {
+      throw new Error('Stellar transaction signing failed');
+    }
+  }
+
+  async rotateWalletKey(walletId: string): Promise<WalletCreationResult> {
     const startedAt = Date.now();
     const existing = await this.prisma.wallet.findUnique({
       where: { id: walletId },
