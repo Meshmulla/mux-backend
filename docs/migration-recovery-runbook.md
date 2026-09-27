@@ -9,6 +9,8 @@ This runbook provides procedures for detecting, diagnosing, and recovering from 
 > - [`docs/key-management-consolidation.md`](./key-management-consolidation.md)
 > - [`docs/custody-security-model.md`](./custody-security-model.md)
 
+> **Successor migration tooling:** For the wallet successor migration path (`wallet.successor_id`, migration `prisma/migrations/20260601000000_add_wallet_successor_id/`), see the dedicated [Successor Migration Runbook](#successor-migration-runbook) section below.
+
 ## Quick Reference
 
 | Scenario | Steps | Recovery Time |
@@ -18,6 +20,7 @@ This runbook provides procedures for detecting, diagnosing, and recovering from 
 | Constraint violation | Backfill data → Rollback → Retry | 15-30 min |
 | Lock timeout | Kill blocking query → Retry | 5 min |
 | Key envelope migration failure | Halt writes → Verify version → Rollback → Retry | 15-30 min |
+| Successor migration failure | Halt writes → Verify successor_id → Rollback → Retry | 15-30 min |
 
 ---
 
@@ -205,206 +208,51 @@ Key-management operations return the shared error envelope (`src/common/dto/erro
 | Operation | Entrypoint | Authz | Stable error codes |
 |-----------|-----------|-------|--------------------|
 | Rotate `keyVersion` | `POST /v1/wallets/:id/key/rotate` | owner / guardian | `KEY_ROTATION_VERSION_CONFLICT`, `KEY_ROTATION_DECRYPT_FAILED`, `KEY_ROTATION_INSUFFICIENT_ROLE` |
-| Read key metadata | `GET /v1/wallets/:id/key` | owner / delegate / guardian / API-key | `KEY_ROTATION_WALLET_NOT_FOUND`, `KEY_ROTATION_NOT_AUTHORIZED` |
-| List supported versions | `GET /v1/wallets/key/versions` | API-key | — |
+| Read key metadata | `GET /v1/wallets/:id/key` | owner / delegate / guardian / API-key | `KEY_ROTATION_WALLET_NOT_FOUND`, `KEY_ROT
 
-Rotation error codes are namespaced `KEY_ROTATION_*` and defined in
-`src/wallets/key-rotation.model.ts`. The full set:
+---
 
-| Code | Status | Meaning |
-|------|--------|---------|
-| `KEY_ROTATION_INVALID_INPUT` | 400 | Malformed wallet id, or a `targetKeyVersion` outside `SUPPORTED_KEY_VERSIONS`. |
-| `KEY_ROTATION_WALLET_NOT_FOUND` | 404 | No wallet with that id. |
-| `KEY_ROTATION_NOT_AUTHORIZED` | 403 | Caller claimed `owner` for a wallet they do not own. |
-| `KEY_ROTATION_INSUFFICIENT_ROLE` | 403 | Role (e.g. `delegate`) may not rotate. |
-| `KEY_ROTATION_VERSION_CONFLICT` | 409 | Rotation would not increase `keyVersion` (no-op or downgrade). |
-| `KEY_ROTATION_IDEMPOTENCY_CONFLICT` | 409 | Idempotency key reused for a different target version. |
-| `KEY_ROTATION_DECRYPT_FAILED` | 503 | Envelope could not be decrypted; **rotation refused, no write applied**. |
-| `KEY_ROTATION_VERSION_UNSUPPORTED` | 503 | The wallet's stored version is outside the supported set. |
-| `KEY_ROTATION_FEATURE_FLAG_DISABLED` | 503 | `KEY_ROTATION_ENABLED` is not `true`. |
-| `KEY_ROTATION_DEPENDENCY_UNAVAILABLE` | 503 | Key store unreachable; **rotation refused, no write applied**. |
+## Successor Migration Runbook
 
-All responses include a `correlationId` for tracing; errors are actionable and never echo key material.
+This section covers the **successor migration tooling** path: setting/updating a wallet's `successor_id` (schema field added by `prisma/migrations/20260601000000_add_wallet_successor_id/`). It complements the key-management path above and shares the same fail-closed, deny-by-default posture.
 
-### Authz enforcement
+### Invariants (must hold at all times)
 
-- **Owner / delegate / guardian** roles are checked server-side before any key mutation.
-- **API-key / JWT** callers are scoped; revoked delegates are rejected (`AUTHZ_DENIED`).
-- Expired tokens fail closed; no privileged surface is reachable without an explicit allow.
+1. **Server is source of truth.** Successor assignment is authorized server-side; clients cannot bypass policy by supplying a role or successor id directly.
+2. **Fail-closed on dependency outage.** If the DB, RPC, or Horizon is unavailable, successor writes MUST fail with a stable error code — never partially apply or silently succeed.
+3. **Idempotency.** Replayed successor-migration requests with the same idempotency key return the original result and do not re-apply the successor assignment.
+4. **No secret leakage.** Logs/metrics never contain raw key material, JWTs, or webhook secrets; only correlation ids and wallet ids.
+5. **Deny-by-default.** The successor entrypoint requires explicit owner/delegate/guardian/API-key/JWT authorization; wrong role, expired auth, and revoked delegates are rejected.
 
-### Recovery procedure: failed key-envelope migration
+### Typed entrypoints & stable error codes
 
-**Symptoms:**
-- `KEY_DECRYPT_FAILED` or `KEY_VERSION_UNKNOWN` in logs
-- Writes to the money path failing closed
+Successor-migration operations return the shared error envelope (`src/common/dto/error-envelope.dto.ts`) with a stable `code` and a `correlationId`:
 
-**Steps:**
+| Operation | Entrypoint | Authz | Stable error codes |
+|-----------|-----------|-------|--------------------|
+| Set/update successor | `POST /v1/wallets/:id/successor` | owner / guardian | `SUCCESSOR_INSUFFICIENT_ROLE`, `SUCCESSOR_WALLET_NOT_FOUND`, `SUCCESSOR_INVALID_TARGET`, `SUCCESSOR_VERSION_CONFLICT` |
+| Read successor | `GET /v1/wallets/:id/successor` | owner / delegate / guardian / API-key | `SUCCESSOR_WALLET_NOT_FOUND`, `SUCCESSOR_INSUFFICIENT_ROLE` |
 
-1. **Halt writes** to the affected money path (enable the key-migration kill-switch / feature flag).
+### Recovery procedure
+
+1. **Halt writes** to the successor entrypoint (feature flag / kill-switch) before touching data.
+2. **Verify current state** — confirm `successor_id` values and that the migration is applied:
    ```bash
-   kubectl set env deployment/mux-api KEY_MIGRATION_ENABLED=false
+   psql -U $DB_USER -d $DB_NAME -c "SELECT id, successor_id FROM wallet WHERE successor_id IS NOT NULL LIMIT 20;"
+   psql -U $DB_USER -d $DB_NAME -c "SELECT name FROM _prisma_migrations WHERE name LIKE '%add_wallet_successor_id%';"
    ```
-
-2. **Verify envelope versions** (no raw key material is read or logged):
+3. **Rollback** the migration if it is partially applied:
    ```bash
-   psql -U $DB_USER -d $DB_NAME -c "SELECT id, wallet_key_version FROM wallets WHERE wallet_key_version IS NULL OR wallet_key_version < 1;"
+   npm run prisma:migrate:resolve -- --rolled-back 20260601000000_add_wallet_successor_id
    ```
-
-3. **Roll back the failed migration** (see Scenario 1) and confirm `_prisma_migrations` shows it as rolled back.
-
-4. **Re-run the migration** behind the flag, then re-enable writes:
+4. **Retry** once the root cause is fixed, then re-enable the entrypoint:
    ```bash
    npm run prisma:migrate:deploy
-   kubectl set env deployment/mux-api KEY_MIGRATION_ENABLED=true
    ```
+5. **Verify** idempotency by replaying a request with the same idempotency key and confirming the original result is returned.
 
-5. **Verify** with the integrity checks below and confirm no `KEY_*` errors in logs.
+### Rollback / flag strategy
 
-### Rotation invariants (enforced in code)
-
-`KeyRotationService` (`src/wallets/key-rotation.service.ts`) enforces these
-mechanically, each covered by a unit test:
-
-1. **Fail-closed decrypt.** A provider that cannot decrypt the envelope aborts
-   the rotation with `KEY_ROTATION_DECRYPT_FAILED` and **no write is applied**.
-   There is no fallback to plaintext, to an older key, or to a prior version.
-2. **Closed version set.** A wallet whose stored `keyVersion` is not in
-   `SUPPORTED_KEY_VERSIONS` is refused with
-   `KEY_ROTATION_VERSION_UNSUPPORTED`. An unknown version is never treated as
-   "the latest" — that is how a rotation destroys the only copy of a key.
-3. **Monotonicity.** `keyVersion` only increases. A no-op or downgrade returns
-   `KEY_ROTATION_VERSION_CONFLICT`, so a replayed or out-of-order request cannot
-   walk a wallet backwards through derivation schemes.
-4. **Idempotent replay.** A repeated request with the same `Idempotency-Key` and
-   target returns the original result with `applied: false` and does **not**
-   re-encrypt. Reusing the key for a *different* target is
-   `KEY_ROTATION_IDEMPOTENCY_CONFLICT` rather than a silent re-run.
-5. **Ownership is server-resolved.** The `owner` role is checked against the
-   stored `userId`, never against a client-supplied claim. A `delegate` may read
-   metadata but can never rotate key material.
-6. **No key material anywhere.** Logs, metrics and responses carry version
-   numbers, wallet ids and correlation ids only. The envelope is passed through
-   opaquely and never inspected, logged, or returned.
-
-### Crypto provider binding
-
-`KeyEnvelopeProvider` is intentionally **not** registered in `WalletsModule`.
-Re-encryption belongs to the custody/HSM layer (`src/key-management`), which
-owns `WALLET_ENCRYPTION_KEY` and the derivation scheme. Until a deployment binds
-the token, `KeyRotationService` fails to construct and the surface is
-unreachable — fail-closed by absence rather than fail-open with a stub that
-silently "succeeds" and loses a wallet's key. Do not add a default provider
-here.
-
-### Rollback / kill-switch
-
-- Rotation is gated by `KEY_ROTATION_ENABLED`; setting it to `false` and
-  redeploying returns the service to metadata-read-only. No data migration is
-  required: the `keyVersion` column and its `>= 1` check already exist.
-- Rollback is safe because envelopes are additive: old versions remain readable
-  until explicitly retired.
-- To roll a single wallet back after a bad rotation, do **not** attempt a
-  version downgrade — it is refused by design. Follow the recovery procedure
-  above and re-issue key material through the custody layer instead.
-
----
-
-## Verification
-
-### After Any Recovery Attempt
-
-1. **Verify database consistency**
-   ```bash
-   npm run prisma:generate
-   npm run prisma:migrate:status
-   ```
-
-2. **Run integrity checks**
-   ```bash
-   npm run db:integrity-check
-   ```
-
-3. **Test critical flows**
-   ```bash
-   npm run test:integration -- --suite=payments
-   npm run test:integration -- --suite=wallets
-   npm run test:integration -- --suite=recovery
-   ```
-
-4. **Monitor application health**
-   ```bash
-   kubectl logs -f deployment/mux-api -c mux-api | grep -E "ERROR|WARN|migration|KEY_"
-   ```
-
----
-
-## Prevention
-
-### Best Practices
-
-1. **Test migrations locally first**
-   ```bash
-   docker-compose up -d postgres
-   npm run prisma:migrate:dev
-   ```
-
-2. **Write idempotent migrations**
-   - Use `IF NOT EXISTS` / `IF EXISTS`
-   - Handle both old and new schema during transition
-
-3. **Add data backfill migrations separately**
-   - Split schema changes and data changes
-   - Allows rollback at schema layer
-
-4. **Monitor lock timeouts**
-   - Set `statement_timeout = 30s` for large ALTER TABLE
-   - Use `ALTER TABLE ... CONCURRENTLY` for indexes on large tables
-
-5. **Use feature flags for compatibility**
-   - Support both old and new column names during migration
-   - Clean up old code after deployment
-
-### Example: Safe Schema Evolution
-
-```sql
--- Migration 1: Add new column
-ALTER TABLE payments ADD COLUMN assetCode TEXT;
-
--- Migration 2: Populate data (separate, can be retried safely)
-UPDATE payments SET assetCode = currency WHERE assetCode IS NULL;
-
--- Migration 3: Add constraints
-ALTER TABLE payments ALTER COLUMN assetCode SET NOT NULL;
-
--- Migration 4: Deprecate old column (after code updated)
--- ALTER TABLE payments DROP COLUMN currency_old;
-```
-
----
-
-## Troubleshooting
-
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `relation already exists` | Migration already applied | Check `_prisma_migrations` table, mark as rolled-back |
-| `column does not exist` | Schema mismatch | Regenerate Prisma client: `npm run prisma:generate` |
-| `deadlock detected` | Concurrent migrations | Ensure migrations run serially, check app replicas |
-| `statement timeout` | Large table operation | Increase timeout or break into smaller batches |
-| `disk space low` | Insufficient storage | Add disk space or clean old transaction logs |
-| `KEY_DECRYPT_FAILED` | Envelope unreadable / wrong key | Halt writes, verify `wallet_key_version`, roll back, retry |
-| `KEY_VERSION_CONFLICT` | Concurrent rotation | Retry with idempotency key; ensure serial rotation |
-| `AUTHZ_DENIED` | Wrong role / revoked delegate | Verify owner/delegate/guardian or API-key/JWT scope |
-
----
-
-## Escalation
-
-**Immediate:**
-- Migration stuck > 30 minutes
-- Multiple `KEY_*` errors on the money path
-- Suspected key-material exposure (rotate immediately, follow [`docs/custody-security-model.md`](./custody-security-model.md))
-
-**Contacts:**
-- On-call engineer (PagerDuty)
-- Database team
-- Security team (for key-material incidents)
+- The successor entrypoint is gated behind a feature flag; disabling it denies all writes (deny-by-default) without data loss.
+- Rollback is safe because `successor_id` is additive; reverting the migration drops only the new column.
+- Document the flag state and rollback steps in the PR description before landing any mainnet-affecting change.

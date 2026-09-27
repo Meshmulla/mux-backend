@@ -141,6 +141,61 @@ webhook secrets are redacted.
 6. Simulate a dependency outage; confirm `DEPENDENCY_UNAVAILABLE` and that no
    payment is written.
 
+## End-to-end proof: auth → wallet → limits → dry-run payment
+
+This section is the canonical E2E proof for the critical path. It is the
+contract that `TEST_VERIFICATION_GUIDE.md` and the automated e2e suite assert
+against. Each stage is fail-closed: a failure at any stage aborts the run and
+no payment is written.
+
+### Stages and invariants
+
+| # | Stage | Invariant | Failure mode |
+| --- | --- | --- | --- |
+| 1 | **Auth** | A valid principal (owner/delegate/guardian/API-key/JWT) is required. Expired, revoked, or wrong-role principals are rejected before any wallet or limit work. | `AUTH_*` (401/403) |
+| 2 | **Wallet** | The resolved wallet belongs to the authenticated principal and is active. A wallet owned by another principal is never used. | `WALLET_NOT_FOUND` / `AUTH_FORBIDDEN` |
+| 3 | **Limits** | Per-principal and per-wallet spend limits are evaluated against the requested amount. Over-limit requests are rejected before the dry-run commit. | `LIMIT_EXCEEDED` |
+| 4 | **Dry-run payment** | The payment is validated and simulated with the same policy as live, then stopped before any side effect. | `VALIDATION_FAILED` / `DEPENDENCY_UNAVAILABLE` |
+
+### Ordering guarantee
+
+Stages run strictly in order (auth → wallet → limits → dry-run). A later stage
+MUST NOT run if an earlier stage fails, so that an unauthorized caller cannot
+learn wallet or limit state. This ordering is asserted by the e2e suite.
+
+### Authz negatives (must all be rejected)
+
+- **Owner**: valid owner succeeds; a different owner's wallet is rejected.
+- **Delegate**: a valid, non-revoked delegate succeeds; a revoked delegate is
+  rejected with `AUTH_FORBIDDEN`.
+- **Guardian**: a guardian may act only within its granted scope; out-of-scope
+  actions are rejected.
+- **API-key**: a valid key succeeds; a revoked or wrong-scope key is rejected.
+- **JWT**: a valid, unexpired JWT succeeds; an expired or wrong-role JWT is
+  rejected with `AUTH_*`.
+
+A valid idempotency key or dry-run flag never upgrades authority; authz is
+always evaluated first.
+
+### Idempotency / replay on the critical path
+
+- The same `(principal, Idempotency-Key)` replayed returns the original result
+  and creates no second payment.
+- A key issued by one principal cannot be replayed by another principal.
+- A dry-run key cannot be replayed as a live write, and vice versa.
+
+### Fail-closed on dependency outage
+
+If RPC, Horizon, or the DB is unavailable at any stage, the run is rejected
+with `DEPENDENCY_UNAVAILABLE` (503) and no payment is written. The path never
+falls through to an unguarded write.
+
+### Automated coverage
+
+The e2e suite exercises this path end-to-end, including the authz negatives,
+idempotency/replay, and dependency-outage cases above. CI keeps this check
+required so the critical path cannot regress silently.
+
 ## Rollback / kill-switch
 
 Dry-run and idempotency enforcement on the money path are feature-flagged.
@@ -150,5 +205,6 @@ duplicate-payment risk.
 
 ## References
 
+- `TEST_VERIFICATION_GUIDE.md` — how to run the e2e proof above.
 - `prisma/migrations/20260724010000_add_payment_idempotency_key/`
 - `SECURITY.md` — secret handling and redaction policy.
