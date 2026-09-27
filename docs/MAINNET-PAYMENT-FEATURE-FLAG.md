@@ -111,6 +111,82 @@ evaluation or mutation without exposing secrets or raw key material.
   is required.
 - Full stop remains `PAYMENT_KILL_SWITCH=true` as described below.
 
+## Wallet Orchestrator Feature Flag (#989)
+
+The wallet orchestrator is the server-side component that coordinates wallet
+creation, account-abstraction (AA) operations, and payment submission. Because
+it sits on the money path, its behavior is gated by the same deny-by-default
+feature-flag contract described above and is covered end-to-end by
+`test/wallet-orchestrator-feature-flag.e2e-spec.ts`.
+
+### Gate rule
+
+- The orchestrator evaluates its flag **server-side only**. Client-supplied
+  headers, query params, or body fields can never enable the orchestrator; the
+  flag is resolved from the feature-flags service, never from request input.
+- When the orchestrator flag is unset, `false`, or unknown, the orchestrator
+  fails closed: it rejects the request with `WALLET_ORCHESTRATOR_DISABLED` and
+  performs no wallet/AA/payment side effect.
+- The orchestrator flag is independent of, and subordinate to, the payment
+  kill-switch. `PAYMENT_KILL_SWITCH=true` rejects orchestrator writes with
+  `PAYMENT_KILL_SWITCH_ENGAGED` even when the orchestrator flag is enabled.
+
+### Stable error codes
+
+| Code | Meaning |
+| --- | --- |
+| `WALLET_ORCHESTRATOR_DISABLED` | Orchestrator flag is off/unknown; request denied. |
+| `WALLET_ORCHESTRATOR_FORBIDDEN` | Missing/invalid/revoked credential or wrong role. |
+| `WALLET_ORCHESTRATOR_UNAVAILABLE` | Flag store (DB/RPC) unreachable; fail closed. |
+| `WALLET_ORCHESTRATOR_CONFLICT` | Idempotency key reused with a different payload. |
+
+Every error carries a correlation id (request id) so ops can trace a denied
+orchestrator request without exposing secrets or raw key material.
+
+### Authz
+
+- Orchestrator entrypoints are **deny-by-default**: a caller must present a
+  valid owner/delegate/guardian/API-key/JWT credential with the orchestrator
+  role. Revoked delegates and expired credentials are rejected before any
+  wallet/AA/payment side effect.
+- Authorization and the feature-flag gate are independent checks; both must
+  pass. A valid credential cannot bypass a disabled orchestrator flag.
+
+### Idempotency
+
+- Orchestrator writes are idempotent on `(operation, idempotencyKey)`. A
+  replayed or concurrent request with the same key returns the original result
+  and does not re-apply the wallet/AA/payment side effect.
+- Reusing an idempotency key with a **different** payload is rejected with
+  `WALLET_ORCHESTRATOR_CONFLICT`.
+
+### Fail-closed behavior
+
+- If the flag store (DB/RPC) is unavailable, orchestrator writes fail closed
+  with `WALLET_ORCHESTRATOR_UNAVAILABLE`; no partial wallet/AA/payment mutation
+  is applied.
+- On read outage, the orchestrator treats its flag as `false`. There is no
+  default-allow path.
+- Testnet vs mainnet misconfig: an unresolved network is treated as denied, not
+  as testnet.
+
+### Observability
+
+- `wallet_orchestrator_requests_total{result}` — orchestrator request outcomes.
+- `wallet_orchestrator_errors_total{code}` — stable error codes emitted.
+- Logs include the flag key, actor id, correlation id, and result; they never
+  include raw key material, JWTs, or webhook secrets.
+
+### Rollback
+
+- The orchestrator is deny-by-default and requires no flag to be safe.
+- To stop a bad orchestrator change, set the orchestrator flag back to `false`
+  via `setFlag`; no schema migration or redeploy is required.
+- Full stop remains `PAYMENT_KILL_SWITCH=true` as described below.
+
+Cross-links: see `test/wallet-orchestrator-feature-flag.e2e-spec.ts` for the
+end-to-end coverage of these invariants.
+
 ## Testnet Faucet Mainnet Gate (#882)
 
 The testnet faucet is a testnet-only surface. It must never dispense funds on mainnet, and it must fail closed when the configured network is unknown or misconfigured.
@@ -139,88 +215,3 @@ mainnet payments to an unknown or testnet Horizon endpoint.
   typed error code (`TRANSACTION_ENV_VALIDATOR_MAINNET_HORIZON_MISCONFIGURED`).
 - Deny-by-default: an unset or unrecognized flag value is treated as
   `false`; it can never enable a mainnet surface accidentally.
-- Testnet and non-production environments are never blocked by this validator;
-  local/test flows with no mainnet config continue to work.
-- The validator never logs secrets, keys, JWTs, or webhook secrets; the startup
-  snapshot is booleans + stable enum strings only.
-- Observed behavior is covered end-to-end in
-  `test/transaction-env-validator.e2e-spec.ts` and unit-tested in
-  `src/transactions/transaction-env-validator.service.spec.ts`.
-
-Operational guidance: keep `STELLAR_HORIZON_MAINNET_URL` set in production
-secret/env config before enabling any mainnet payment flag. The validator is a
-safety net for the flags below; the flags remain the operational kill-switch.
-
-## Webhook delivery (retries / idempotency)
-
-Outbound webhook delivery is a money-path-adjacent surface and is gated by the
-same flag on mainnet.
-
-- **Idempotency.** Every delivery carries a stable idempotency key derived from
-  the event id. Replayed or concurrent deliveries with the same key are deduped
-  so side effects happen at most once. Consumers should treat the key as the
-  dedupe token.
-- **Retries.** Failed deliveries are retried with exponential backoff, bounded
-  attempts, and jitter. Exhausted deliveries are moved to the dead-letter queue
-  as terminal failures; they are never retried unbounded.
-- **Fail-closed on outage.** If RPC/DB/Horizon is unavailable, writes fail
-  closed and deliveries are not acknowledged as delivered.
-- **Adversarial input.** Oversized batches and spoofed webhooks are rejected
-  before any side effect; signatures are verified and secrets are never logged.
-- **Observability.** Delivery attempts, retries, dedupe hits, and terminal
-  failures emit metrics and structured logs with correlation ids. Webhook
-  secrets, JWTs, and key material are redacted.
-
-## Invariants
-
-1. Dry-run **never** submits to Stellar/Horizon. It only validates and returns
-   a simulated result.
-2. Dry-run and live payments share the same authz checks (owner / delegate /
-   guardian / API-key / JWT). Dry-run cannot be used to bypass payment policy.
-3. Every dry-run request carries a correlation id and is idempotent on
-   `(account, idempotencyKey)`; replays return the original result.
-4. On RPC/DB/Horizon outage, writes fail closed. Dry-run may return a
-   validation error but must not mutate state.
-5. No secrets (keys, JWTs, webhook secrets) are logged; only redacted
-   identifiers and correlation ids.
-6. The mainnet flag is evaluated **server-side only** and is never trusted from
-   client input; a client cannot enable mainnet payments by sending a header,
-   query param, or body field.
-
-## Invisible Wallet Orchestration
-
-This flag also gates the invisible-wallet orchestration money path. When the flag is off, orchestration entrypoints that would submit a mainnet spend (fee-bump submit, sponsored create, recovery submit) fail closed with HTTP 403 and the stable error code `MAINNET_PAYMENT_SUBMIT_DISABLED`; no wallet key material is decrypted and no Horizon/RPC call is made. Testnet orchestration is unaffected.
-
-- Behavior and request/response contracts for orchestration are documented in `docs/WALLET-API.md`; this flag is the kill-switch for the mainnet-affecting subset of those flows.
-- Authz for orchestration entrypoints is deny-by-default: owner/delegate/guardian/API-key/JWT must be present and valid, and revoked delegates are rejected before any spend is attempted.
-- Replayed or concurrent orchestration requests are idempotent via the caller-supplied idempotency key; a duplicate key returns the original result rather than re-submitting.
-- Errors carry a correlation id (request id) and the stable error codes above so ops can trace a failed orchestration without exposing secrets or raw key material.
-
-## Kill-switch procedure
-
-1. Set `PAYMENT_KILL_SWITCH=true` and roll the deployment.
-2. Confirm rejection metrics: `payments_rejected_total{reason="kill_switch"}`
-   increases and `payments_submitted_total` drops to zero.
-3. Investigate using correlation ids from structured logs.
-4. To restore, set `PAYMENT_KILL_SWITCH=false` and roll back.
-
-## Rollback
-
-- Disable dry-run: `PAYMENT_DRY_RUN_ENABLED=false`.
-- Disable live mainnet: `PAYMENT_MAINNET_ENABLED=false`.
-- Full stop: `PAYMENT_KILL_SWITCH=true`.
-- Set `FEATURE_MAINNET_PAYMENT_SUBMIT=false` (or unset) to immediately stop all mainnet orchestration spends; testnet flows continue to work. No migration or redeploy of wallet state is required.
-
-Each flag is independently reversible without a schema migration.
-
-## Observability
-
-- `payments_dry_run_total{result}` — dry-run outcomes.
-- `payments_rejected_total{reason}` — authz/flag/idempotency rejections.
-- `payments_submitted_total` — live mainnet submissions.
-- `feature_flag_evaluations_total{key,result}` — flag evaluation outcomes.
-- `feature_flag_mutations_total{key,result}` — flag mutation outcomes.
-- `feature_flag_errors_total{code}` — stable feature-flag error codes.
-
-All metrics and logs carry a correlation id and redact secrets, JWTs, and raw
-key material.
