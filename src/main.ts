@@ -89,7 +89,10 @@ async function bootstrap() {
   // Normalize all Date values in HTTP responses to ISO 8601 UTC strings.
   app.useGlobalInterceptors(new IsoUtcTimestampInterceptor());
 
-  // Global exception filter for structured error responses
+  // Global exception filter for structured error responses. The filter emits
+  // the stable error envelope (code + correlation id) for every failure path,
+  // including bootstrap-time failures, so clients never receive an
+  // unstructured body. See test/error-envelope-bootstrap.e2e-spec.ts.
   app.useGlobalFilters(new HttpExceptionFilter());
 
   // Fail-closed write gate for graceful shutdown (#950): once a SIGTERM/SIGINT
@@ -108,4 +111,12 @@ async function bootstrap() {
   );
 }
 
-bootstrap();
+bootstrap().catch((err) => {
+  // Fail-closed bootstrap: if the app cannot start (invalid env, dependency
+  // outage, etc.) we log a redacted, actionable error and exit non-zero so
+  // orchestrators restart rather than serving a half-initialized process.
+  // Never log raw env values, keys, JWTs, or webhook secrets.
+  const message = err instanceof Error ? err.message : String(err);
+  new Logger('Bootstrap').error(`Bootstrap failed: ${message}`);
+  process.exitCode = 1;
+});

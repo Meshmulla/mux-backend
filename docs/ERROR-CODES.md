@@ -117,6 +117,34 @@ the catalog documents every member of `ErrorCode` exactly once and that its
 | `UNAUTHENTICATED` | 401 | auth | no | REAUTHENTICATE |
 | `RATE_LIMITED` | 429 | rate_limit | yes | RETRY_WITH_BACKOFF |
 
+## Bootstrap path
+
+The bootstrap path (`POST /v1/bootstrap`) is the first privileged surface a
+client touches, so it is held to the same envelope contract as every other
+endpoint and is covered end-to-end by
+`test/error-envelope-bootstrap.e2e-spec.ts`. The invariants that test asserts:
+
+* **Stable codes.** Every failure returns one of the codes above — never a raw
+  framework error, stack trace, or upstream message. Bootstrap-specific
+  failures map to `UNAUTHENTICATED` (missing/invalid credentials),
+  `INSUFFICIENT_ROLE` (authenticated but not owner/delegate/guardian),
+  `DELEGATE_REVOKED` (revoked delegate), `IDEMPOTENCY_KEY_REQUIRED` /
+  `IDEMPOTENCY_CONFLICT` (replay), and `DEPENDENCY_UNAVAILABLE` /
+  `WRITE_REJECTED` (RPC/DB/Horizon outage).
+* **Correlation ids.** Every response — success or failure — carries a
+  `requestId` echoed from the inbound `X-Request-Id` (or generated when
+  absent), so a client can quote it to support and ops can join logs.
+* **Deny-by-default authz.** Bootstrap is privileged: an unauthenticated or
+  wrong-role caller is rejected before any write, and a revoked delegate cannot
+  re-bootstrap. There is no anonymous bootstrap path.
+* **Idempotency.** Bootstrap writes require an idempotency key; a replayed key
+  with the same body returns the original result, and a replayed key with a
+  different body returns `IDEMPOTENCY_CONFLICT` rather than applying a second
+  write.
+* **Fail-closed on outage.** When RPC/DB/Horizon is unavailable the request
+  fails with `DEPENDENCY_UNAVAILABLE`/`WRITE_REJECTED` and **no** partial write
+  is applied; the client retries with backoff.
+
 ## Security notes
 
 * The catalog is static and contains **no** tenant data, key material, tokens, or
@@ -126,6 +154,9 @@ the catalog documents every member of `ErrorCode` exactly once and that its
 * In production, `message` on `5xx` responses is replaced with a generic string
   and every payload passes through secret redaction — a leaked connection
   string, JWT, or Stellar secret can never reach a browser.
+* Bootstrap failures are logged with the `requestId`, `errorCode`, and route
+  only — never the request body, idempotency key, JWT, or key material — so ops
+  can act on the error without the logs becoming a secret-leak surface.
 
 See also: [README § Error responses](../README.md#error-responses),
 [docs/AUTH-FEATURE-FLAGS.md](AUTH-FEATURE-FLAGS.md).
